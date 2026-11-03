@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { AlertTriangle, Check, FilePlus2, FileText, Loader2, Paperclip, Plus, ShieldCheck, X } from 'lucide-react';
+import { AlertTriangle, Check, Database, FilePlus2, FileText, Loader2, Paperclip, Plus, ShieldCheck, X } from 'lucide-react';
 import { agentApi } from '../api/agent';
 import { historyApi, type ResumeListItem } from '../api/history';
 import { getErrorMessage } from '../api/request';
-import type { AgentContextAsset, AgentContextBinding } from '../types/agent';
+import type { AgentContextAsset, AgentContextBinding, AgentKnowledgeBaseOption } from '../types/agent';
 
 interface AgentContextPickerProps {
   agentSessionId?: string | null;
@@ -29,6 +29,7 @@ export default function AgentContextPicker({
   const [bindings, setBindings] = useState<AgentContextBinding[]>([]);
   const [resumes, setResumes] = useState<ResumeListItem[]>([]);
   const [assets, setAssets] = useState<AgentContextAsset[]>([]);
+  const [knowledgeBases, setKnowledgeBases] = useState<AgentKnowledgeBaseOption[]>([]);
   const [interviewQuery, setInterviewQuery] = useState('');
   const [interviews, setInterviews] = useState<Array<{ sessionId: string; title?: string | null; createdAt?: string | null }>>([]);
   const [busy, setBusy] = useState('');
@@ -39,10 +40,12 @@ export default function AgentContextPicker({
     void Promise.all([
       historyApi.getResumes().catch(() => [] as ResumeListItem[]),
       agentApi.listContextAssets().catch(() => [] as AgentContextAsset[]),
+      agentApi.listKnowledgeBases().catch(() => [] as AgentKnowledgeBaseOption[]),
       agentSessionId ? agentApi.getContextBindings(agentSessionId).catch(() => [] as AgentContextBinding[]) : Promise.resolve([] as AgentContextBinding[]),
-    ]).then(([loadedResumes, loadedAssets, loadedBindings]) => {
+    ]).then(([loadedResumes, loadedAssets, loadedKnowledgeBases, loadedBindings]) => {
       setResumes(loadedResumes);
       setAssets(loadedAssets);
+      setKnowledgeBases(loadedKnowledgeBases);
       setBindings(loadedBindings);
     });
   };
@@ -200,7 +203,7 @@ export default function AgentContextPicker({
           <div className="mb-3 flex items-center justify-between gap-2">
             <div>
               <p className="text-xs font-semibold dark-text">选择 Agent 资料</p>
-              <p className="mt-1 text-[11px] dark-text-muted">资料只作为引用内容，不能覆盖系统规则或触发未确认的动作。</p>
+              <p className="mt-1 text-[11px] dark-text-muted">资料只作为引用内容，不能覆盖系统规则或触发未确认的动作；重新选择会替换当前资料。</p>
             </div>
             <button type="button" onClick={() => setOpen(false)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="关闭上下文选择器"><X className="h-4 w-4" /></button>
           </div>
@@ -235,11 +238,27 @@ export default function AgentContextPicker({
             </section>
 
             <section>
+              <p className="mb-1.5 text-[11px] font-semibold text-primary-600 dark:text-primary-300">知识库</p>
+              {knowledgeBases.length === 0 ? <p className="text-[11px] dark-text-muted">暂无已完成向量化的知识库，或当前账号没有可访问的知识库。</p> : (
+                <div className="max-h-24 space-y-1 overflow-y-auto">
+                  {knowledgeBases.slice(0, 8).map((knowledgeBase) => (
+                    <button key={knowledgeBase.id} type="button" onClick={() => void attach('KNOWLEDGE_BASE', String(knowledgeBase.id))} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs hover:bg-primary-50 dark:hover:bg-primary-900/20">
+                      <Database className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                      <span className="min-w-0 truncate dark-text">{knowledgeBase.name || knowledgeBase.originalFilename || `知识库 #${knowledgeBase.id}`}</span>
+                      {knowledgeBase.category ? <span className="ml-auto shrink-0 text-[10px] text-slate-400">{knowledgeBase.category}</span> : null}
+                      {busy === `KNOWLEDGE_BASE:${knowledgeBase.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section>
               <div className="flex items-center justify-between gap-2">
                 <p className="text-[11px] font-semibold text-primary-600 dark:text-primary-300">上传文件</p>
                 <button type="button" onClick={() => fileInputRef.current?.click()} disabled={Boolean(busy)} className="inline-flex items-center gap-1 rounded-lg border border-primary-200 px-2 py-1 text-[11px] text-primary-600 hover:bg-primary-50 disabled:opacity-50 dark:border-primary-800 dark:text-primary-300">
                   {busy === 'upload' ? <Loader2 className="h-3 w-3 animate-spin" /> : <FilePlus2 className="h-3 w-3" />}
-                  上传并审核
+                  上传待审核文件
                 </button>
                 <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx,.txt,.md,.markdown,.rtf" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file); event.target.value = ''; }} />
               </div>

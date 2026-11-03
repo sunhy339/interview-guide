@@ -24,6 +24,7 @@ import interview.guide.modules.agent.model.AgentContextBindingResponse;
 import interview.guide.modules.agent.model.AttachAgentContextRequest;
 import interview.guide.modules.agent.model.AgentInterviewSearchResult;
 import interview.guide.modules.agent.model.AgentContextAssetResponse;
+import interview.guide.modules.agent.model.AgentKnowledgeBaseOption;
 import interview.guide.modules.agent.model.AttachAgentResourceRequest;
 import interview.guide.modules.agent.model.UpdateAgentTrainingTaskRequest;
 import interview.guide.modules.agent.service.AgentConversationService;
@@ -149,6 +150,17 @@ public class AgentController {
         @RequestHeader(value = "X-User-Id", required = false) String ownerKey
     ) {
         return Result.success(contextAssetService.list(authIdentityService.requireIdentity(ownerKey)));
+    }
+
+    /** 查询当前用户可作为 Agent 上下文的已完成知识库，只返回摘要元数据。 */
+    @GetMapping("/api/agent/knowledge-bases")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
+    public Result<List<AgentKnowledgeBaseOption>> listAgentKnowledgeBases(
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        return Result.success(contextBindingService.listKnowledgeBases(
+            authIdentityService.requireIdentity(ownerKey)
+        ));
     }
 
     @GetMapping("/api/agent/context-assets/{assetId}")

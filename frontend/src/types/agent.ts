@@ -188,6 +188,14 @@ export interface AgentContextBinding {
   attachedAt?: string | null;
 }
 
+export interface AgentKnowledgeBaseOption {
+  id: number;
+  name: string;
+  category?: string | null;
+  originalFilename?: string | null;
+  vectorStatus?: string | null;
+}
+
 export type AgentContextAssetStatus =
   | 'READY_FOR_REVIEW'
   | 'APPROVED_FOR_CONTEXT'

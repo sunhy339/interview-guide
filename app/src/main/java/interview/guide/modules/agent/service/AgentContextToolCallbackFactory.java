@@ -140,6 +140,7 @@ public class AgentContextToolCallbackFactory {
 
     private String searchInterviews(JsonNode input, ToolContext toolContext) {
         ToolContextData context = context(toolContext);
+        requireUserIntent(context.userMessage(), "面试", "报告", "使用", "根据", "搜索", "查找");
         List<AgentInterviewSearchResult> results = interviewContextService.search(
             context.ownerKey(), safeContextText(text(input, "query")), integer(input, "limit", 8)
         );
@@ -173,6 +174,9 @@ public class AgentContextToolCallbackFactory {
 
     private String listContext(JsonNode ignored, ToolContext toolContext) {
         ToolContextData context = context(toolContext);
+        requireUserIntent(
+            context.userMessage(), "上下文", "资料", "文件", "附件", "知识库", "简历", "报告", "绑定"
+        );
         return emit(new ContextListResult(
             contextBindingService.list(context.agentSessionId(), context.ownerKey()),
             contextAssetService.list(context.ownerKey())
@@ -238,6 +242,7 @@ public class AgentContextToolCallbackFactory {
 
     private String listSchedules(JsonNode input, ToolContext toolContext) {
         ToolContextData context = context(toolContext);
+        requireUserIntent(context.userMessage(), "日程", "预约", "面试安排", "时间冲突", "冲突", "排期");
         LocalDateTime start = optionalTime(input, "startTime");
         LocalDateTime end = optionalTime(input, "endTime");
         List<ScheduleSummary> schedules = interviewScheduleService.listForOwner(
@@ -253,6 +258,7 @@ public class AgentContextToolCallbackFactory {
 
     private String checkScheduleConflict(JsonNode input, ToolContext toolContext) {
         ToolContextData context = context(toolContext);
+        requireUserIntent(context.userMessage(), "日程", "预约", "面试安排", "时间冲突", "冲突", "排期");
         LocalDateTime interviewTime = requiredTime(input, "interviewTime", "面试时间不能为空");
         int windowMinutes = integer(input, "windowMinutes", 60);
         if (windowMinutes < 5 || windowMinutes > 240) {
@@ -278,6 +284,9 @@ public class AgentContextToolCallbackFactory {
     private String scheduleDraft(JsonNode input, ToolContext toolContext) {
         ToolContextData context = context(toolContext);
         requireUserIntent(context.userMessage(), "预约", "安排", "创建面试", "添加面试", "日程");
+        rejectInjectedToolArguments(
+            input, "companyName", "position", "interviewType", "meetingLink", "interviewer", "notes"
+        );
         String time = required(input, "interviewTime", "面试时间不能为空");
         LocalDateTime interviewTime = parseTime(time, "面试时间格式应为 yyyy-MM-ddTHH:mm");
         conversationService.assertAccess(
@@ -296,6 +305,26 @@ public class AgentContextToolCallbackFactory {
             "message", "已生成待确认的面试日程草稿，请用户在动作与训练页确认后才会写入日程",
             "action", action
         ));
+    }
+
+    /**
+     * 工具参数可能由模型从报告、RAG 或历史消息中提取，不能只信任当前用户的动作意图。
+     * 对会产生业务动作的自由文本参数再次做注入检测，避免不可信资料借模型参数进入草稿。
+     */
+    private void rejectInjectedToolArguments(JsonNode input, String... fields) {
+        if (input == null) {
+            return;
+        }
+        for (String field : fields) {
+            JsonNode value = input.get(field);
+            if (value != null && value.isTextual()
+                && promptSanitizer.detectInjectionAttempt(value.asText())) {
+                throw new BusinessException(
+                    ErrorCode.BAD_REQUEST,
+                    "工具参数包含疑似提示注入内容，未执行任何 Agent 操作"
+                );
+            }
+        }
     }
 
     private ToolContextData context(ToolContext toolContext) {

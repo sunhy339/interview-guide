@@ -5,11 +5,13 @@ import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.agent.model.AgentChatSessionEntity;
 import interview.guide.modules.agent.model.AgentContextAssetEntity;
 import interview.guide.modules.agent.model.AgentContextBindingResponse;
+import interview.guide.modules.agent.model.AgentKnowledgeBaseOption;
 import interview.guide.modules.agent.model.AgentSessionContextEntity;
 import interview.guide.modules.agent.model.AttachAgentResourceRequest;
 import interview.guide.modules.agent.repository.AgentChatSessionRepository;
 import interview.guide.modules.agent.repository.AgentSessionContextRepository;
 import interview.guide.modules.knowledgebase.model.KnowledgeBaseEntity;
+import interview.guide.modules.knowledgebase.model.VectorStatus;
 import interview.guide.modules.knowledgebase.repository.KnowledgeBaseRepository;
 import interview.guide.modules.resume.repository.ResumeRepository;
 import java.time.LocalDateTime;
@@ -80,6 +82,20 @@ public class AgentContextBindingService {
         requireSession(agentSessionId, ownerId);
         return contextRepository.findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc(agentSessionId).stream()
             .map(AgentContextBindingResponse::from)
+            .toList();
+    }
+
+    /** 返回 Agent 可选择的知识库摘要，不把知识库正文直接注入前端或会话。 */
+    @Transactional(readOnly = true)
+    public List<AgentKnowledgeBaseOption> listKnowledgeBases(String ownerId) {
+        if (ownerId == null || ownerId.isBlank()) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED, "用户身份不能为空");
+        }
+        return knowledgeBaseRepository.findAccessibleByOwnerAndVectorStatus(
+                ownerId, VectorStatus.COMPLETED
+            ).stream()
+            .limit(50)
+            .map(AgentKnowledgeBaseOption::from)
             .toList();
     }
 

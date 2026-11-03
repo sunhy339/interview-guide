@@ -38,6 +38,14 @@ public interface KnowledgeBaseRepository extends JpaRepository<KnowledgeBaseEnti
         @Param("id") Long id, @Param("ownerId") String ownerId
     );
 
+    /** Agent 选择器使用：只列出当前用户可访问且已经完成向量化的知识库。 */
+    @Query("SELECT k FROM KnowledgeBaseEntity k WHERE "
+        + "(k.ownerId IS NULL OR k.ownerId = :ownerId) "
+        + "AND k.vectorStatus = :status ORDER BY k.uploadedAt DESC")
+    List<KnowledgeBaseEntity> findAccessibleByOwnerAndVectorStatus(
+        @Param("ownerId") String ownerId, @Param("status") VectorStatus status
+    );
+
     /**
      * 锁定知识库行，用于串行化同一知识库的题目生成状态迁移。
      */

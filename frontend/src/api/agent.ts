@@ -14,6 +14,7 @@ import type {
   AgentUsageRun,
   AgentContextBinding,
   AgentContextAsset,
+  AgentKnowledgeBaseOption,
 } from '../types/agent.ts';
 import { getAgentMemoryKey } from '../utils/clientIdentity.ts';
 
@@ -126,6 +127,12 @@ export const agentApi = {
 
   listContextAssets(): Promise<AgentContextAsset[]> {
     return request.get<AgentContextAsset[]>('/api/agent/context-assets', { headers: agentHeaders() });
+  },
+
+  listKnowledgeBases(): Promise<AgentKnowledgeBaseOption[]> {
+    return request.get<AgentKnowledgeBaseOption[]>('/api/agent/knowledge-bases', {
+      headers: agentHeaders(),
+    });
   },
 
   approveContextAsset(assetId: string, confirmSecurity = false): Promise<AgentContextAsset> {
