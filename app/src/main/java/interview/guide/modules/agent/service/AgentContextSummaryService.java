@@ -81,8 +81,12 @@ public class AgentContextSummaryService {
         if (agentSessionId == null || agentSessionId.isBlank()) {
             return "暂无会话摘要";
         }
+        if (ownerKey == null || ownerKey.isBlank()) {
+            // 摘要包含用户历史消息；缺少身份时宁可不注入，也不能依赖调用方自行保证归属。
+            return "暂无会话摘要";
+        }
         return sessionRepository.findByAgentSessionId(agentSessionId)
-            .filter(session -> ownerKey == null || ownerKey.isBlank() || ownerKey.equals(session.getOwnerKey()))
+            .filter(session -> ownerKey.equals(session.getOwnerKey()))
             .map(AgentChatSessionEntity::getContextSummary)
             .filter(summary -> summary != null && !summary.isBlank())
             .map(summary -> promptSanitizer.sanitizeForContext(truncate(summary, MAX_SUMMARY_CHARS)))

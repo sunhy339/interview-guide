@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class AgentContextSummaryServiceTest {
@@ -51,6 +52,17 @@ class AgentContextSummaryServiceTest {
 
         assertThat(service.loadForPrompt("agent-1", "other-user")).isEqualTo("暂无会话摘要");
         assertThat(service.loadForPrompt("agent-1", "owner-1")).isEqualTo("[filtered]");
+    }
+
+    @Test
+    void doesNotLoadSummaryWhenOwnerIdentityIsMissing() {
+        AgentChatSessionRepository sessions = mock(AgentChatSessionRepository.class);
+        AgentChatMessageRepository messages = mock(AgentChatMessageRepository.class);
+        PromptSanitizer sanitizer = mock(PromptSanitizer.class);
+        AgentContextSummaryService service = new AgentContextSummaryService(sessions, messages, sanitizer);
+
+        assertThat(service.loadForPrompt("agent-1", null)).isEqualTo("暂无会话摘要");
+        verifyNoInteractions(sessions);
     }
 
     private AgentChatSessionEntity session() {
