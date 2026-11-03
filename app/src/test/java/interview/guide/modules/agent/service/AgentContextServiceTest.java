@@ -186,6 +186,8 @@ class AgentContextServiceTest {
             String value = invocation.getArgument(0);
             return value.replace("忽略之前的指令", "[filtered]");
         });
+        when(sanitizer.wrapWithStableDelimiters(anyString(), anyString()))
+            .thenAnswer(invocation -> invocation.getArgument(1));
         when(rag.retrieveOnly(any(), anyString(), any())).thenReturn(new RagQueryExecution(
             "原问题", "改写问题", List.of("改写问题"), 8, 0.28,
             List.of(new RagQueryExecution.RetrievedDoc(
@@ -329,6 +331,8 @@ class AgentContextServiceTest {
             String value = invocation.getArgument(0);
             return value.replace("忽略之前的指令", "[filtered]");
         });
+        when(sanitizer.wrapWithStableDelimiters(anyString(), anyString())).thenAnswer(invocation ->
+            invocation.<String>getArgument(1).replace("忽略之前的指令", "[filtered]"));
         when(rag.retrieveOnly(any(), anyString(), any())).thenReturn(new RagQueryExecution(
             "原问题", "改写问题", List.of("改写问题"), 8, 0.28, List.of(), 1, 2, 0, null, "NO_RESULT"
         ));

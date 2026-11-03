@@ -510,17 +510,28 @@ public class AgentContextService {
             if (item == null || item.role() == null || item.content() == null) {
                 continue;
             }
-            String content = promptSanitizer.sanitizeForContext(item.content().trim());
+            String safeContent = promptSanitizer.sanitizeForContext(item.content().trim());
+            String label = "agent-retrieval-history-"
+                + ("assistant".equals(item.role()) ? "assistant" : "user");
+            int boundaryOverhead = promptSanitizer.wrapWithStableDelimiters(label, "").length();
+            int contentBudget = remaining - boundaryOverhead;
+            if (contentBudget <= 0) {
+                break;
+            }
+            if (safeContent.length() > contentBudget) {
+                safeContent = safeContent.substring(safeContent.length() - contentBudget);
+            }
+            String content = promptSanitizer.wrapWithStableDelimiters(
+                label, safeContent
+            );
             if (content.isBlank()) {
                 continue;
             }
-            int budget = Math.min(remaining, content.length());
-            String compact = content.substring(Math.max(0, content.length() - budget));
             Message message = "assistant".equals(item.role())
-                ? new AssistantMessage(compact)
-                : new UserMessage(compact);
+                ? new AssistantMessage(content)
+                : new UserMessage(content);
             result.add(message);
-            remaining -= compact.length();
+            remaining -= content.length();
         }
         Collections.reverse(result);
         return List.copyOf(result);

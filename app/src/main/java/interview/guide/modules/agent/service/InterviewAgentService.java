@@ -1367,8 +1367,11 @@ public class InterviewAgentService {
         }
         List<Message> result = new ArrayList<>();
         for (AgentHistoryMessage message : messages) {
-            String content = promptSanitizer.sanitizeForContext(message.content());
-            if ("assistant".equals(message.role())) {
+            String role = "assistant".equals(message.role()) ? "assistant" : "user";
+            String content = promptSanitizer.wrapWithStableDelimiters(
+                "agent-history-" + role, message.content()
+            );
+            if ("assistant".equals(role)) {
                 result.add(new AssistantMessage(content));
             } else {
                 result.add(new UserMessage(content));
