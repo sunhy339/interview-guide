@@ -144,6 +144,19 @@ class AgentContextToolCallbackFactoryTest {
     }
 
     @Test
+    void refusesScheduleMutationWhenUserOnlyAsksToInspectCalendar() {
+        String result = tool("schedule.create_draft").call(
+            "{\"companyName\":\"示例公司\",\"position\":\"Java\",\"interviewTime\":\"2026-11-03T10:00\"}",
+            context("查看我的日程")
+        );
+
+        assertThat(result).contains("需要用户明确、直接确认该操作");
+        verify(actionService, never()).proposeInterviewScheduleDraft(
+            any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+        );
+    }
+
+    @Test
     void allowsExplicitClearBindingRequest() {
         String result = tool("interview.clear_context").call(
             "{}", context("取消绑定当前面试报告")
@@ -159,7 +172,7 @@ class AgentContextToolCallbackFactoryTest {
             "{}", context("为什么要清除当前面试报告？")
         );
 
-        assertThat(result).contains("需要用户明确、直接确认清除操作");
+        assertThat(result).contains("需要用户明确");
         verify(contextBindingService, never()).clear(any(), any());
     }
 
@@ -170,6 +183,16 @@ class AgentContextToolCallbackFactoryTest {
         );
 
         assertThat(result).contains("需要用户明确、直接确认清除操作");
+        verify(contextBindingService, never()).clear(any(), any());
+    }
+
+    @Test
+    void refusesAmbiguousClearRequestWithoutContextBindingTarget() {
+        String result = tool("interview.clear_context").call(
+            "{}", context("移除这条内容")
+        );
+
+        assertThat(result).contains("需要用户明确说明要执行该操作");
         verify(contextBindingService, never()).clear(any(), any());
     }
 

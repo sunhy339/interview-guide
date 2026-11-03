@@ -1,5 +1,7 @@
 package interview.guide.modules.agent.service;
 
+import interview.guide.common.ai.PromptSanitizer;
+import interview.guide.common.config.LlmProviderProperties;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.agent.model.AgentActionRequestEntity;
@@ -73,6 +75,7 @@ public class AgentActionService {
     private final AgentTrainingTaskService trainingTaskService;
     private final ResumeEditorService resumeEditorService;
     private final InterviewScheduleService interviewScheduleService;
+    private final PromptSanitizer promptSanitizer;
 
     /** 保留轻量构造方式，便于只测试草稿状态机的调用方。 */
     public AgentActionService(
@@ -116,7 +119,7 @@ public class AgentActionService {
             trainingTaskService, resumeEditorService, null);
     }
 
-    @Autowired
+    /** 保留既有测试和轻量调用方的七参数构造方式。 */
     public AgentActionService(
         AgentActionRequestRepository repository,
         AgentAuditService auditService,
@@ -126,6 +129,22 @@ public class AgentActionService {
         ResumeEditorService resumeEditorService,
         InterviewScheduleService interviewScheduleService
     ) {
+        this(repository, auditService, memoryService, interviewPersistenceService,
+            trainingTaskService, resumeEditorService, interviewScheduleService,
+            new PromptSanitizer(new LlmProviderProperties()));
+    }
+
+    @Autowired
+    public AgentActionService(
+        AgentActionRequestRepository repository,
+        AgentAuditService auditService,
+        AgentMemoryService memoryService,
+        InterviewPersistenceService interviewPersistenceService,
+        AgentTrainingTaskService trainingTaskService,
+        ResumeEditorService resumeEditorService,
+        InterviewScheduleService interviewScheduleService,
+        PromptSanitizer promptSanitizer
+    ) {
         this.repository = repository;
         this.auditService = auditService;
         this.memoryService = memoryService;
@@ -133,6 +152,7 @@ public class AgentActionService {
         this.trainingTaskService = trainingTaskService;
         this.resumeEditorService = resumeEditorService;
         this.interviewScheduleService = interviewScheduleService;
+        this.promptSanitizer = promptSanitizer;
     }
 
     /** 生成待确认的简历编辑版草稿；确认后写入现有简历编辑器，不覆盖原始上传文件。 */
@@ -177,15 +197,15 @@ public class AgentActionService {
         String owner = requireOwner(ownerKey);
         String interviewId = normalizeOptional(interviewSessionId, 64);
         String agentId = requireText(agentSessionId, "Agent 会话不能为空", 64);
-        String normalizedCompany = requireText(companyName, "公司或面试主题不能为空", 255);
-        String normalizedPosition = requireText(position, "复习岗位不能为空", 255);
+        String normalizedCompany = sanitizeRequiredText(companyName, "公司或面试主题不能为空", 255);
+        String normalizedPosition = sanitizeRequiredText(position, "复习岗位不能为空", 255);
         if (interviewTime == null) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "复习时间不能为空");
         }
-        String normalizedType = normalizeOptional(interviewType, 64);
-        String normalizedLink = normalizeOptional(meetingLink, 1000);
-        String normalizedInterviewer = normalizeOptional(interviewer, 255);
-        String normalizedNotes = normalizeOptional(notes, 2000);
+        String normalizedType = sanitizeOptionalText(interviewType, 64);
+        String normalizedLink = sanitizeOptionalText(meetingLink, 1000);
+        String normalizedInterviewer = sanitizeOptionalText(interviewer, 255);
+        String normalizedNotes = sanitizeOptionalText(notes, 2000);
         int normalizedRound = roundNumber == null ? 1 : roundNumber;
         if (normalizedRound < 1 || normalizedRound > 20) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "轮次必须在1到20之间");
@@ -284,8 +304,8 @@ public class AgentActionService {
         String requestedIdempotencyKey
     ) {
         String normalizedCategory = normalizeMemoryCategory(category);
-        String normalizedScope = normalizeOptional(jobScope, 64);
-        String memory = requireText(content, "记忆草稿不能为空", MAX_MEMORY_CONTENT);
+        String normalizedScope = sanitizeOptionalText(jobScope, 64);
+        String memory = sanitizeRequiredText(content, "记忆草稿不能为空", MAX_MEMORY_CONTENT);
         String owner = requireOwner(ownerKey);
         String interviewId = requireText(interviewSessionId, "面试会话不能为空", 64);
         String agentId = requireText(agentSessionId, "Agent 会话不能为空", 64);
@@ -329,7 +349,7 @@ public class AgentActionService {
         String owner = requireOwner(ownerKey);
         String interviewId = requireText(interviewSessionId, "面试会话不能为空", 64);
         String agentId = requireText(agentSessionId, "Agent 会话不能为空", 64);
-        String normalizedTitle = requireText(title, "面试记录名称不能为空", MAX_TITLE);
+        String normalizedTitle = sanitizeRequiredText(title, "面试记录名称不能为空", MAX_TITLE);
         String idempotencyKey = normalizeIdempotencyKey(requestedIdempotencyKey);
         if (idempotencyKey == null) {
             idempotencyKey = digest(owner + "\n" + interviewId + "\n" + agentId
@@ -671,9 +691,9 @@ public class AgentActionService {
         String updatedContent = INTERVIEW_SCHEDULE_CREATE_TOOL.equals(entity.getToolId())
             ? updateScheduleDraft(entity, content)
             : MEMORY_TOOL.equals(entity.getToolId())
-            ? requireText(content, "记忆草稿不能为空", MAX_MEMORY_CONTENT)
+            ? sanitizeRequiredText(content, "记忆草稿不能为空", MAX_MEMORY_CONTENT)
             : INTERVIEW_TITLE_TOOL.equals(entity.getToolId())
-                ? requireText(content, "面试记录名称不能为空", MAX_TITLE)
+                ? sanitizeRequiredText(content, "面试记录名称不能为空", MAX_TITLE)
                 : normalizeContent(content);
         entity.setDraftContent(updatedContent);
         if (INTERVIEW_TITLE_TOOL.equals(entity.getToolId())) {
@@ -779,7 +799,20 @@ public class AgentActionService {
 
     private String normalizeContent(String value) {
         String normalized = requireText(value, "草稿不能为空", MAX_CONTENT);
-        return normalized;
+        return promptSanitizer.sanitizeForAction(normalized);
+    }
+
+    private String sanitizeRequiredText(String value, String message, int maxLength) {
+        return promptSanitizer.sanitizeForAction(requireText(value, message, maxLength));
+    }
+
+    private String sanitizeOptionalText(String value, int maxLength) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return promptSanitizer.sanitizeForAction(
+            requireText(value, "Agent 动作参数过长", maxLength)
+        );
     }
 
     private String normalizeMemoryCategory(String value) {
@@ -859,10 +892,10 @@ public class AgentActionService {
         if (round < 1 || round > 20) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "轮次必须在1到20之间");
         }
-        String type = normalizeOptional(values.get("类型"), 64);
-        String link = normalizeOptional(values.get("链接"), 1000);
-        String interviewer = normalizeOptional(values.get("联系人"), 255);
-        String notes = normalizeOptional(values.get("备注"), 2000);
+        String type = sanitizeOptionalText(values.get("类型"), 64);
+        String link = sanitizeOptionalText(values.get("链接"), 1000);
+        String interviewer = sanitizeOptionalText(values.get("联系人"), 255);
+        String notes = sanitizeOptionalText(values.get("备注"), 2000);
         entity.setScheduleCompanyName(company);
         entity.setSchedulePosition(position);
         entity.setScheduleInterviewTime(time);
@@ -877,7 +910,7 @@ public class AgentActionService {
     private String requireScheduleValue(
         Map<String, String> values, String key, String message, int maxLength
     ) {
-        return requireText(values.get(key), message, maxLength);
+        return sanitizeRequiredText(values.get(key), message, maxLength);
     }
 
     private void appendSummary(StringBuilder summary, String label, String value) {

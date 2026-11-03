@@ -142,6 +142,22 @@ public class PromptSanitizer {
         return sanitizeInternal(text);
     }
 
+    /**
+     * 为需要落库或展示的 Agent 动作净化文本。
+     *
+     * <p>正常文本保留原有全角标点和排版，避免安全处理改变用户的简历、名称或日程内容；
+     * 一旦检测到注入、角色伪造或边界伪造，则回退到强制归一化净化结果。</p>
+     */
+    public String sanitizeForAction(String text) {
+        if (text == null || text.isBlank()) {
+            return text;
+        }
+        if (detectInjectionAttempt(text)) {
+            return sanitizeForContext(text);
+        }
+        return normalizeForStorage(text);
+    }
+
     private String sanitizeInternal(String text) {
 
         boolean injected = false;
@@ -191,6 +207,11 @@ public class PromptSanitizer {
     private String normalizeForSecurity(String text) {
         String normalized = Normalizer.normalize(text, Normalizer.Form.NFKC);
         normalized = INVISIBLE_CONTROL_PATTERN.matcher(normalized).replaceAll("");
+        return normalized.replace("\r\n", "\n").replace('\r', '\n');
+    }
+
+    private String normalizeForStorage(String text) {
+        String normalized = INVISIBLE_CONTROL_PATTERN.matcher(text).replaceAll("");
         return normalized.replace("\r\n", "\n").replace('\r', '\n');
     }
 
