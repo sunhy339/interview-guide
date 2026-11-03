@@ -411,6 +411,12 @@ public class AgentContextToolCallbackFactory {
                 "检测到当前请求包含疑似提示注入内容，未执行任何 Agent 操作"
             );
         }
+        if (containsIndirectAuthorizationIntent(message)) {
+            throw new BusinessException(
+                ErrorCode.BAD_REQUEST,
+                "当前请求把操作授权归因于资料内容，未执行任何 Agent 操作"
+            );
+        }
         if (!containsAny(message, phrases)) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "需要用户明确说明要执行该操作");
         }
@@ -473,6 +479,21 @@ public class AgentContextToolCallbackFactory {
 
     private boolean containsIndirectConfirmationIntent(String message) {
         return containsAny(message, "资料中", "文件中", "报告中", "内容中", "写着", "提到", "显示");
+    }
+
+    /**
+     * 资料可以被分析，但不能替用户说“确认”“预约”或“执行”。
+     * 只拦截明显的转述授权表达，避免把普通的“根据报告给建议”误判为攻击。
+     */
+    private boolean containsIndirectAuthorizationIntent(String message) {
+        return containsAny(
+            message,
+            "文件中写着", "文件里写着", "资料中写着", "资料里写着", "报告中写着", "报告里写着",
+            "文件中提到", "文件里提到", "资料中提到", "资料里提到", "报告中提到", "报告里提到",
+            "文件中显示", "文件里显示", "资料中显示", "资料里显示", "报告中显示", "报告里显示",
+            "文件要求", "资料要求", "报告要求", "上下文要求", "文件指示", "资料指示", "报告指示",
+            "写着“", "写着\"", "提到“", "提到\"", "显示“", "显示\""
+        );
     }
 
     private boolean containsAny(String value, String... phrases) {
