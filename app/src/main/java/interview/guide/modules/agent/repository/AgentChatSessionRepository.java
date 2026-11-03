@@ -36,6 +36,11 @@ public interface AgentChatSessionRepository extends JpaRepository<AgentChatSessi
         String ownerKey, String interviewSessionId
     );
 
+    /** 通用 Agent 会话列表，不绑定任何面试报告。 */
+    List<AgentConversationSummaryProjection> findTop50ByOwnerKeyAndArchivedFalseOrderByUpdatedAtDesc(
+        String ownerKey
+    );
+
     interface AgentConversationSummaryProjection {
         String getAgentSessionId();
         String getInterviewSessionId();

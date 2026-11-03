@@ -9,9 +9,11 @@ import interview.guide.modules.agent.model.AgentLoopTraceItem;
 import interview.guide.modules.agent.model.AgentRunUsage;
 import interview.guide.modules.agent.model.AgentSource;
 import interview.guide.modules.agent.model.AgentRunStatus;
+import interview.guide.modules.agent.model.AgentSessionContextEntity;
 import interview.guide.modules.agent.repository.AgentChatMessageRepository;
 import interview.guide.modules.agent.repository.AgentChatSessionRepository;
 import interview.guide.modules.agent.repository.AgentConversationCreationRequestRepository;
+import interview.guide.modules.agent.repository.AgentSessionContextRepository;
 import interview.guide.modules.agent.model.AgentConversationCreationRequestEntity;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
@@ -57,6 +59,7 @@ public class AgentConversationService {
     private final AgentAuditService auditService;
     private final AgentUsageService usageService;
     private final AgentConversationCreationRequestRepository creationRequestRepository;
+    private final AgentSessionContextRepository contextRepository;
 
     /** 兼容无 Spring 容器的旧测试和内部调用方。 */
     public AgentConversationService(
@@ -65,7 +68,8 @@ public class AgentConversationService {
         ObjectMapper objectMapper,
         InterviewPersistenceService interviewPersistenceService
     ) {
-        this(sessionRepository, messageRepository, objectMapper, interviewPersistenceService, null, null, null);
+        this(sessionRepository, messageRepository, objectMapper, interviewPersistenceService,
+            null, null, null, null);
     }
 
     @Autowired
@@ -76,7 +80,8 @@ public class AgentConversationService {
         InterviewPersistenceService interviewPersistenceService,
         AgentAuditService auditService,
         AgentUsageService usageService,
-        AgentConversationCreationRequestRepository creationRequestRepository
+        AgentConversationCreationRequestRepository creationRequestRepository,
+        AgentSessionContextRepository contextRepository
     ) {
         this.sessionRepository = sessionRepository;
         this.messageRepository = messageRepository;
@@ -85,6 +90,21 @@ public class AgentConversationService {
         this.auditService = auditService;
         this.usageService = usageService;
         this.creationRequestRepository = creationRequestRepository;
+        this.contextRepository = contextRepository;
+    }
+
+    /** 保留旧测试和内部调用方的七参数构造方式。 */
+    public AgentConversationService(
+        AgentChatSessionRepository sessionRepository,
+        AgentChatMessageRepository messageRepository,
+        ObjectMapper objectMapper,
+        InterviewPersistenceService interviewPersistenceService,
+        AgentAuditService auditService,
+        AgentUsageService usageService,
+        AgentConversationCreationRequestRepository creationRequestRepository
+    ) {
+        this(sessionRepository, messageRepository, objectMapper, interviewPersistenceService,
+            auditService, usageService, creationRequestRepository, null);
     }
 
     @Transactional
@@ -260,6 +280,46 @@ public class AgentConversationService {
         return toSummary(saved);
     }
 
+    /** 创建不绑定面试报告的通用 Agent 会话。 */
+    @Transactional
+    public AgentConversationSummary createGeneralConversation(
+        String title, String ownerKey, String requestedIdempotencyKey
+    ) {
+        String normalizedOwnerKey = normalizeOwnerKey(ownerKey, true);
+        String normalizedTitle = title == null || title.isBlank()
+            ? "新 Agent 对话" : truncate(title.trim(), 120);
+        String idempotencyKey = normalizeCreationIdempotencyKey(requestedIdempotencyKey);
+        String agentSessionId = UUID.randomUUID().toString();
+
+        if (creationRequestRepository != null && idempotencyKey != null) {
+            int claimed = creationRequestRepository.tryClaim(
+                normalizedOwnerKey, null, idempotencyKey, agentSessionId
+            );
+            if (claimed == 0) {
+                AgentConversationCreationRequestEntity existing = creationRequestRepository
+                    .findByOwnerKeyAndIdempotencyKey(normalizedOwnerKey, idempotencyKey)
+                    .orElseThrow(() -> new IllegalStateException("Agent 创建请求幂等记录未找到"));
+                if (existing.getInterviewSessionId() != null) {
+                    throw new BusinessException(ErrorCode.BAD_REQUEST, "Agent 创建请求标识已用于面试绑定会话");
+                }
+                return sessionRepository.findByAgentSessionId(existing.getAgentSessionId())
+                    .filter(session -> isOwnedBy(session, normalizedOwnerKey))
+                    .map(this::toSummary)
+                    .orElseThrow(() -> new IllegalStateException("Agent 创建请求对应的会话不存在"));
+            }
+        }
+
+        AgentChatSessionEntity saved = sessionRepository.save(AgentChatSessionEntity.builder()
+            .interviewSessionId(null)
+            .agentSessionId(agentSessionId)
+            .title(normalizedTitle)
+            .ownerKey(normalizedOwnerKey)
+            .memoryKey(normalizedOwnerKey)
+            .build());
+        audit(saved, "CONVERSATION_CREATED", "agent-session", saved.getAgentSessionId(), "success");
+        return toSummary(saved);
+    }
+
     @Transactional
     public List<AgentConversationSummary> listConversations(String interviewSessionId) {
         return listConversations(interviewSessionId, null);
@@ -283,6 +343,96 @@ public class AgentConversationService {
             .filter(session -> !session.isArchived())
             .map(this::toSummary)
             .toList();
+    }
+
+    /** 查询当前用户所有未归档的通用 Agent 会话。 */
+    @Transactional
+    public List<AgentConversationSummary> listGeneralConversations(String ownerKey) {
+        String normalizedOwnerKey = normalizeOwnerKey(ownerKey, true);
+        return sessionRepository
+            .findTop50ByOwnerKeyAndArchivedFalseOrderByUpdatedAtDesc(normalizedOwnerKey)
+            .stream()
+            .filter(item -> item.getInterviewSessionId() == null)
+            .map(item -> new AgentConversationSummary(
+                item.getAgentSessionId(), item.getInterviewSessionId(), item.getTitle(),
+                item.getRunStatus(), item.getCreatedAt(), item.getUpdatedAt()))
+            .toList();
+    }
+
+    /** 读取通用 Agent 会话；当前用户只能读取自己的会话。 */
+    @Transactional
+    public AgentConversationResponse getGeneralConversation(String agentSessionId, String ownerKey) {
+        return getConversation(null, agentSessionId, normalizeOwnerKey(ownerKey, true));
+    }
+
+    /** 通用 Agent 会话的历史消息读取入口。 */
+    public List<AgentHistoryMessage> loadGeneralHistory(String agentSessionId, String ownerKey) {
+        return loadHistory(null, agentSessionId, normalizeOwnerKey(ownerKey, true));
+    }
+
+    /** 将当前用户的一场面试绑定到通用 Agent 会话。 */
+    @Transactional
+    public AgentSessionContextEntity attachInterviewContext(
+        String agentSessionId, String interviewSessionId, String ownerKey, Long sourceMessageId
+    ) {
+        String normalizedOwnerKey = normalizeOwnerKey(ownerKey, true);
+        if (interviewSessionId == null || interviewSessionId.isBlank()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "面试记录不能为空");
+        }
+        AgentChatSessionEntity session = findSession(null, agentSessionId)
+            .filter(candidate -> isOwnedBy(candidate, normalizedOwnerKey))
+            .orElseThrow(this::accessDenied);
+        assertInterviewAccess(interviewSessionId, normalizedOwnerKey);
+        if (contextRepository == null) {
+            throw new IllegalStateException("Agent 会话上下文存储未配置");
+        }
+        contextRepository.deactivateActive(
+            session.getAgentSessionId(), "INTERVIEW_REPORT", LocalDateTime.now()
+        );
+        AgentSessionContextEntity context = contextRepository.save(AgentSessionContextEntity.builder()
+            .agentSessionId(session.getAgentSessionId())
+            .contextType("INTERVIEW_REPORT")
+            .interviewSessionId(interviewSessionId.trim())
+            .active(true)
+            .sourceMessageId(sourceMessageId)
+            .build());
+        audit(session, "CONTEXT_ATTACHED", "interview-session", interviewSessionId, "success");
+        return context;
+    }
+
+    /** 清除当前通用 Agent 会话的面试上下文。 */
+    @Transactional
+    public void clearInterviewContext(String agentSessionId, String ownerKey) {
+        String normalizedOwnerKey = normalizeOwnerKey(ownerKey, true);
+        AgentChatSessionEntity session = findSession(null, agentSessionId)
+            .filter(candidate -> isOwnedBy(candidate, normalizedOwnerKey))
+            .orElseThrow(this::accessDenied);
+        if (contextRepository != null) {
+            contextRepository.deactivateActive(
+                session.getAgentSessionId(), "INTERVIEW_REPORT", LocalDateTime.now()
+            );
+        }
+        audit(session, "CONTEXT_CLEARED", "interview-session", agentSessionId, "success");
+    }
+
+    public Optional<AgentSessionContextEntity> activeInterviewContext(String agentSessionId, String ownerKey) {
+        String normalizedOwnerKey = normalizeOwnerKey(ownerKey, true);
+        AgentChatSessionEntity session = findSession(null, agentSessionId)
+            .filter(candidate -> isOwnedBy(candidate, normalizedOwnerKey))
+            .orElseThrow(this::accessDenied);
+        if (contextRepository == null) {
+            return Optional.empty();
+        }
+        return contextRepository.findFirstByAgentSessionIdAndContextTypeAndActiveTrueOrderByAttachedAtDesc(
+            session.getAgentSessionId(), "INTERVIEW_REPORT"
+        );
+    }
+
+    /** 返回通用 Agent 当前绑定的面试 ID；没有绑定时返回空。 */
+    public Optional<String> activeInterviewSessionId(String agentSessionId, String ownerKey) {
+        return activeInterviewContext(agentSessionId, ownerKey)
+            .map(AgentSessionContextEntity::getInterviewSessionId)
+            .filter(value -> value != null && !value.isBlank());
     }
 
     @Transactional
@@ -331,6 +481,10 @@ public class AgentConversationService {
         assertInterviewAccess(interviewSessionId, normalizedOwnerKey);
         Optional<AgentChatSessionEntity> session = findRawSession(interviewSessionId, agentSessionId);
         if (agentSessionId != null && !agentSessionId.isBlank() && session.isEmpty()) {
+            throw accessDenied();
+        }
+        if (interviewSessionId == null && session.isPresent()
+            && session.get().getInterviewSessionId() != null) {
             throw accessDenied();
         }
         // 未指定线程时允许旧的无 owner 线程自然迁移：后续读取会返回空会话，
@@ -672,6 +826,9 @@ public class AgentConversationService {
         AgentChatSessionEntity session = findSession(interviewSessionId, agentSessionId)
             .filter(candidate -> normalizedOwnerKey == null || isOwnedBy(candidate, normalizedOwnerKey))
             .orElse(null);
+        if (interviewSessionId == null && session != null && session.getInterviewSessionId() != null) {
+            session = null;
+        }
         if (session == null) {
             return new AgentConversationResponse(
                 interviewSessionId, null, null, null, null, null, AgentRunStatus.IDLE,
@@ -882,7 +1039,11 @@ public class AgentConversationService {
     ) {
         if (agentSessionId != null && !agentSessionId.isBlank()) {
             return sessionRepository.findByAgentSessionId(agentSessionId)
-                .filter(session -> interviewSessionId.equals(session.getInterviewSessionId()));
+                .filter(session -> interviewSessionId == null
+                    || interviewSessionId.equals(session.getInterviewSessionId()));
+        }
+        if (interviewSessionId == null || interviewSessionId.isBlank()) {
+            return Optional.empty();
         }
         Optional<AgentChatSessionEntity> oldest = sessionRepository
             .findFirstByInterviewSessionIdOrderByCreatedAtAsc(interviewSessionId);
@@ -900,7 +1061,11 @@ public class AgentConversationService {
     ) {
         if (agentSessionId != null && !agentSessionId.isBlank()) {
             return sessionRepository.findByAgentSessionId(agentSessionId)
-                .filter(session -> interviewSessionId.equals(session.getInterviewSessionId()));
+                .filter(session -> interviewSessionId == null
+                    || interviewSessionId.equals(session.getInterviewSessionId()));
+        }
+        if (interviewSessionId == null || interviewSessionId.isBlank()) {
+            return Optional.empty();
         }
         Optional<AgentChatSessionEntity> oldest = sessionRepository
             .findFirstByInterviewSessionIdOrderByCreatedAtAsc(interviewSessionId);
@@ -964,6 +1129,9 @@ public class AgentConversationService {
     }
 
     private void assertInterviewAccess(String interviewSessionId, String ownerKey) {
+        if (interviewSessionId == null || interviewSessionId.isBlank()) {
+            return;
+        }
         if (ownerKey != null && AuthUserContext.currentUserId().isPresent()
             && interviewPersistenceService != null) {
             Optional<?> ownedSession = interviewPersistenceService.findBySessionIdForOwnerOrClaimLegacy(
@@ -979,7 +1147,11 @@ public class AgentConversationService {
     ) {
         if (agentSessionId != null && !agentSessionId.isBlank()) {
             return sessionRepository.findByAgentSessionIdForUpdate(agentSessionId)
-                .filter(session -> interviewSessionId.equals(session.getInterviewSessionId()));
+                .filter(session -> interviewSessionId == null
+                    || interviewSessionId.equals(session.getInterviewSessionId()));
+        }
+        if (interviewSessionId == null || interviewSessionId.isBlank()) {
+            return Optional.empty();
         }
         List<AgentChatSessionEntity> oldest = sessionRepository
             .findTop1ByInterviewSessionIdOrderByCreatedAtAsc(interviewSessionId);
@@ -994,7 +1166,7 @@ public class AgentConversationService {
     }
 
     private void ensureSessionIdentity(AgentChatSessionEntity session, String interviewSessionId) {
-        if (session.getInterviewSessionId() == null) {
+        if (session.getInterviewSessionId() == null && interviewSessionId != null) {
             session.setInterviewSessionId(interviewSessionId);
         }
         if (session.getAgentSessionId() == null || session.getAgentSessionId().isBlank()) {

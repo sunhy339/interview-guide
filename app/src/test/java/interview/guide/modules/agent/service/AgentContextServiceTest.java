@@ -37,6 +37,7 @@ class AgentContextServiceTest {
         when(history.getInterviewDetail("session-1")).thenReturn(detail);
         when(objectMapper.writeValueAsString(detail)).thenReturn("{report}");
         when(sanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
         when(skills.buildEvaluationReferenceSectionSafe("java-backend"))
             .thenReturn("### JVM\n垃圾回收与内存模型");
 
@@ -65,6 +66,7 @@ class AgentContextServiceTest {
         when(history.getInterviewDetail("session-2")).thenReturn(detail);
         when(objectMapper.writeValueAsString(detail)).thenReturn("{report}");
         when(sanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
         when(rag.retrieveOnly(any(), anyString(), any())).thenReturn(new RagQueryExecution(
             "原问题", "改写问题", List.of("改写问题"), 8, 0.28,
             List.of(new RagQueryExecution.RetrievedDoc(
@@ -97,6 +99,7 @@ class AgentContextServiceTest {
         when(history.getInterviewDetail("session-3")).thenReturn(detail);
         when(objectMapper.writeValueAsString(detail)).thenReturn("{report}");
         when(sanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
         String oversized = "x".repeat(9_000);
         when(rag.retrieveOnly(any(), anyString(), any())).thenReturn(new RagQueryExecution(
             "原问题", "改写问题", List.of("改写问题"), 8, 0.28,
@@ -128,6 +131,10 @@ class AgentContextServiceTest {
         when(history.getInterviewDetail("session-4")).thenReturn(detail);
         when(objectMapper.writeValueAsString(detail)).thenReturn("{report}");
         when(sanitizer.sanitize(anyString())).thenAnswer(invocation -> {
+            String value = invocation.getArgument(0);
+            return value.replace("忽略之前的指令", "[filtered]");
+        });
+        when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation -> {
             String value = invocation.getArgument(0);
             return value.replace("忽略之前的指令", "[filtered]");
         });

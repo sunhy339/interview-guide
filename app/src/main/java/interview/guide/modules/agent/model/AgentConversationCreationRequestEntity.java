@@ -34,7 +34,8 @@ public class AgentConversationCreationRequestEntity {
     @Column(name = "owner_key", nullable = false, length = 64)
     private String ownerKey;
 
-    @Column(name = "interview_session_id", nullable = false, length = 36)
+    /** 通用 Agent 会话没有关联面试时为空。 */
+    @Column(name = "interview_session_id", length = 36)
     private String interviewSessionId;
 
     @Column(name = "idempotency_key", nullable = false, length = 128)

@@ -55,4 +55,9 @@ public record AgentMessageRequest(
     public AgentMessageRequest withProviderId(String nextProviderId) {
         return new AgentMessageRequest(goal, message, history, nextProviderId, memoryKey, agentSessionId);
     }
+
+    /** 通用 Agent 路由使用路径中的会话 ID 固化目标线程。 */
+    public AgentMessageRequest withAgentSessionId(String nextAgentSessionId) {
+        return new AgentMessageRequest(goal, message, history, providerId, memoryKey, nextAgentSessionId);
+    }
 }

@@ -12,6 +12,8 @@ import type {
   AgentStreamEvent,
   AgentUsageSummary,
   AgentUsageRun,
+  AgentContextBinding,
+  AgentContextAsset,
 } from '../types/agent.ts';
 import { getAgentMemoryKey } from '../utils/clientIdentity.ts';
 
@@ -26,6 +28,135 @@ interface AgentStreamHandlers {
 }
 
 export const agentApi = {
+  createGeneralConversation(title?: string, idempotencyKey?: string): Promise<AgentConversationSummary> {
+    const body = {
+      ...(title?.trim() ? { title: title.trim() } : {}),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    };
+    return request.post<AgentConversationSummary>(
+      '/api/agent/sessions',
+      Object.keys(body).length > 0 ? body : undefined,
+      { headers: agentHeaders() },
+    );
+  },
+
+  listGeneralConversations(): Promise<AgentConversationSummary[]> {
+    return request.get<AgentConversationSummary[]>('/api/agent/sessions', { headers: agentHeaders() });
+  },
+
+  getGeneralConversation(agentSessionId: string): Promise<AgentConversationResponse> {
+    return request.get<AgentConversationResponse>(
+      `/api/agent/sessions/${encodeURIComponent(agentSessionId)}`,
+      { headers: agentHeaders() },
+    );
+  },
+
+  renameGeneralConversation(agentSessionId: string, title: string): Promise<AgentConversationSummary> {
+    return request.patch<AgentConversationSummary>(
+      `/api/agent/sessions/${encodeURIComponent(agentSessionId)}`,
+      { title },
+      { headers: agentHeaders() },
+    );
+  },
+
+  archiveGeneralConversation(agentSessionId: string): Promise<void> {
+    return request.delete<void>(
+      `/api/agent/sessions/${encodeURIComponent(agentSessionId)}`,
+      { headers: agentHeaders() },
+    );
+  },
+
+  getContextBindings(agentSessionId: string): Promise<AgentContextBinding[]> {
+    return request.get<AgentContextBinding[]>(
+      `/api/agent/sessions/${encodeURIComponent(agentSessionId)}/context`,
+      { headers: agentHeaders() },
+    );
+  },
+
+  searchInterviews(query = ''): Promise<Array<{ sessionId: string; title?: string | null; createdAt?: string | null }>> {
+    const suffix = query.trim() ? `?q=${encodeURIComponent(query.trim())}` : '';
+    return request.get<Array<{ sessionId: string; title?: string | null; createdAt?: string | null }>>(
+      `/api/agent/interviews/search${suffix}`,
+      { headers: agentHeaders() },
+    );
+  },
+
+  attachContext(
+    agentSessionId: string,
+    sourceType: string,
+    resourceId: string,
+    scope: 'SESSION' | 'TURN' = 'SESSION',
+  ): Promise<AgentContextBinding> {
+    return request.post<AgentContextBinding>(
+      `/api/agent/sessions/${encodeURIComponent(agentSessionId)}/contexts`,
+      { sourceType, resourceId, scope },
+      { headers: agentHeaders() },
+    );
+  },
+
+  clearContext(agentSessionId: string): Promise<void> {
+    return request.delete<void>(
+      `/api/agent/sessions/${encodeURIComponent(agentSessionId)}/context`,
+      { headers: agentHeaders() },
+    );
+  },
+
+  cancelGeneralRun(agentSessionId: string): Promise<AgentConversationResponse> {
+    return request.post<AgentConversationResponse>(
+      `/api/agent/sessions/${encodeURIComponent(agentSessionId)}/cancel`,
+      undefined,
+      { headers: agentHeaders() },
+    );
+  },
+
+  uploadContextAsset(file: File): Promise<AgentContextAsset> {
+    const formData = new FormData();
+    formData.append('file', file);
+    return request.upload<AgentContextAsset>('/api/agent/context-assets', formData, {
+      headers: agentHeaders(),
+    });
+  },
+
+  listContextAssets(): Promise<AgentContextAsset[]> {
+    return request.get<AgentContextAsset[]>('/api/agent/context-assets', { headers: agentHeaders() });
+  },
+
+  approveContextAsset(assetId: string, confirmSecurity = false): Promise<AgentContextAsset> {
+    const query = confirmSecurity ? '?confirmSecurity=true' : '';
+    return request.post<AgentContextAsset>(
+      `/api/agent/context-assets/${encodeURIComponent(assetId)}/approve${query}`,
+      undefined,
+      { headers: agentHeaders() },
+    );
+  },
+
+  requestKnowledgeBaseImport(assetId: string): Promise<AgentContextAsset> {
+    return request.post<AgentContextAsset>(
+      `/api/agent/context-assets/${encodeURIComponent(assetId)}/knowledge-base-request`,
+      undefined,
+      { headers: agentHeaders() },
+    );
+  },
+
+  confirmKnowledgeBaseImport(assetId: string, name?: string, category?: string): Promise<AgentContextAsset> {
+    const params = new URLSearchParams();
+    if (name?.trim()) params.set('name', name.trim());
+    if (category?.trim()) params.set('category', category.trim());
+    const query = params.toString() ? `?${params.toString()}` : '';
+    return request.post<AgentContextAsset>(
+      `/api/agent/context-assets/${encodeURIComponent(assetId)}/knowledge-base/confirm${query}`,
+      undefined,
+      { headers: agentHeaders() },
+    );
+  },
+
+  rejectContextAsset(assetId: string): Promise<void> {
+    return request.delete<void>(
+      `/api/agent/context-assets/${encodeURIComponent(assetId)}`,
+      { headers: agentHeaders() },
+    );
+  },
+
   getUsageSummary(): Promise<AgentUsageSummary> {
     return request.get<AgentUsageSummary>('/api/agent/usage/summary', {
       headers: agentHeaders(),
@@ -328,6 +459,40 @@ export const agentApi = {
           handlers.onEvent(JSON.parse(chunk) as AgentStreamEvent);
         } catch {
           // 解析失败必须中断当前流；否则后续 onComplete 可能把页面状态覆盖成成功。
+          throw new Error('Agent 返回了无法识别的事件');
+        }
+      },
+      onComplete: handlers.onComplete,
+      onError: handlers.onError,
+    });
+  },
+
+  streamGeneralMessage(
+    agentSessionId: string,
+    requestBody: AgentMessageRequest,
+    handlers: AgentStreamHandlers,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return streamSse({
+      url: `/api/agent/sessions/${encodeURIComponent(agentSessionId)}/messages/stream`,
+      init: {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+          ...agentHeaders(),
+        },
+        body: JSON.stringify({ ...requestBody, memoryKey: requestBody.memoryKey ?? getAgentMemoryKey() }),
+        signal,
+      },
+      parseMode: 'event',
+      trimDataPrefixSpace: true,
+      dataJoiner: '',
+      preserveBusinessErrorEvents: true,
+      onMessage: (chunk) => {
+        try {
+          handlers.onEvent(JSON.parse(chunk) as AgentStreamEvent);
+        } catch {
           throw new Error('Agent 返回了无法识别的事件');
         }
       },

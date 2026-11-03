@@ -11,8 +11,8 @@ import java.util.regex.Pattern;
 /**
  * Prompt 注入净化工具。
  * <p>
- * 仅用于 4 个严重风险的直接拼接点（裸拼接，无模板包裹）。
- * 模板插值点有 Layer 2 的系统提示词保护，不需要额外净化。
+ * 普通用户输入保留配置开关；进入 Agent 上下文的资料使用强制净化和边界包裹，
+ * 防止上传文件、RAG 结果或历史消息伪造角色、系统提示和边界标签。
  */
 @Component
 public class PromptSanitizer {
@@ -30,14 +30,20 @@ public class PromptSanitizer {
         "(?im)^\\s*(system|user|assistant|human|ai|model)\\s*[:：].*"
     );
 
-    // 注入短语：精确匹配，不单独匹配 "忽略" 或 "instruction" 等常见词
+    // 注入短语：既覆盖常见英文表达，也覆盖中文角色切换/规则覆盖表达。
     private static final Pattern INJECTION_PHRASE_PATTERN = Pattern.compile(
         "(ignore\\s+(previous|above|all|your)\\s*(instructions|prompts|rules))" +
+        "|(disregard\\s+(previous|above|all|your)\\s*(instructions|prompts|rules))" +
         "|(forget\\s+(everything|all\\s*(previous\\s*)?(instructions|rules|prompts)))" +
+        "|(override\\s+(the\\s+)?(system|developer|safety)\\s*(instructions|rules|prompt))" +
+        "|(reveal|show|print|output|leak)\\s+.{0,80}(system\\s+prompt|developer\\s+message|hidden\\s+instructions?)" +
         "|(new\\s+instructions?:)" +
         "|忽略之前的指令" +
         "|忘记之前的指令" +
         "|忽略以上所有" +
+        "|无视(之前|以上|系统|开发者)的?(指令|规则|提示)" +
+        "|覆盖(系统|开发者|安全)(指令|规则|提示)" +
+        "|泄露(系统提示词|开发者消息|隐藏指令)" +
         "|你不再是" +
         "|你的新角色是",
         Pattern.CASE_INSENSITIVE
@@ -65,6 +71,24 @@ public class PromptSanitizer {
             return text;
         }
 
+        return sanitizeInternal(text);
+    }
+
+    /**
+     * 为进入模型上下文的资料执行强制净化。
+     *
+     * <p>普通净化保留配置开关以兼容历史调用方；上下文边界属于安全约束，不能因为
+     * 运维配置误关而允许上传文件、RAG 片段或历史消息伪造角色和边界。</p>
+     */
+    public String sanitizeForContext(String text) {
+        if (text == null || text.isBlank()) {
+            return text;
+        }
+        return sanitizeInternal(text);
+    }
+
+    private String sanitizeInternal(String text) {
+
         boolean injected = false;
         String result = text;
 
@@ -80,10 +104,12 @@ public class PromptSanitizer {
         }
         var delimMatcher = DELIMITER_INJECTION_PATTERN.matcher(result);
         if (delimMatcher.find()) {
+            injected = true;
             result = delimMatcher.replaceAll("[filtered-delimiter]");
         }
         var tagMatcher = BOUNDARY_TAG_PATTERN.matcher(result);
         if (tagMatcher.find()) {
+            injected = true;
             result = tagMatcher.replaceAll("[filtered-boundary-tag]");
         }
 
@@ -100,9 +126,11 @@ public class PromptSanitizer {
      */
     public String wrapWithDelimiters(String label, String text) {
         String id = UUID.randomUUID().toString().substring(0, 8);
-        String openTag = "<data-boundary-" + id + "-" + label + ">";
-        String closeTag = "</data-boundary-" + id + "-" + label + ">";
-        return openTag + "\n" + text + "\n" + closeTag;
+        String safeLabel = safeLabel(label);
+        String openTag = "<data-boundary-" + id + "-" + safeLabel + ">";
+        String closeTag = "</data-boundary-" + id + "-" + safeLabel + ">";
+        String safeText = sanitizeForContext(text);
+        return openTag + "\n" + (safeText == null ? "" : safeText) + "\n" + closeTag;
     }
 
     /**
@@ -116,7 +144,7 @@ public class PromptSanitizer {
         String safeLabel = label == null || label.isBlank()
             ? "data"
             : label.replaceAll("[^a-zA-Z0-9_-]", "-");
-        String safeText = sanitize(text);
+        String safeText = sanitizeForContext(text);
         String openTag = "<data-boundary-" + safeLabel + ">";
         String closeTag = "</data-boundary-" + safeLabel + ">";
         return openTag + "\n" + (safeText == null ? "" : safeText) + "\n" + closeTag;
@@ -130,7 +158,16 @@ public class PromptSanitizer {
             return false;
         }
         return ROLE_INJECTION_PATTERN.matcher(text).find()
-            || INJECTION_PHRASE_PATTERN.matcher(text).find();
+            || INJECTION_PHRASE_PATTERN.matcher(text).find()
+            || DELIMITER_INJECTION_PATTERN.matcher(text).find()
+            || BOUNDARY_TAG_PATTERN.matcher(text).find();
+    }
+
+    private String safeLabel(String label) {
+        if (label == null || label.isBlank()) {
+            return "data";
+        }
+        return label.replaceAll("[^a-zA-Z0-9_-]", "-");
     }
 
     private boolean isSanitizerEnabled() {

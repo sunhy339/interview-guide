@@ -20,6 +20,11 @@ import interview.guide.modules.agent.model.AgentTrainingTaskResponse;
 import interview.guide.modules.agent.model.AgentTrainingTaskStatus;
 import interview.guide.modules.agent.model.AgentUsageSummaryResponse;
 import interview.guide.modules.agent.model.AgentUsageRunResponse;
+import interview.guide.modules.agent.model.AgentContextBindingResponse;
+import interview.guide.modules.agent.model.AttachAgentContextRequest;
+import interview.guide.modules.agent.model.AgentInterviewSearchResult;
+import interview.guide.modules.agent.model.AgentContextAssetResponse;
+import interview.guide.modules.agent.model.AttachAgentResourceRequest;
 import interview.guide.modules.agent.model.UpdateAgentTrainingTaskRequest;
 import interview.guide.modules.agent.service.AgentConversationService;
 import interview.guide.modules.agent.service.AgentActionService;
@@ -28,6 +33,8 @@ import interview.guide.modules.agent.service.AgentAuditService;
 import interview.guide.modules.agent.service.InterviewAgentService;
 import interview.guide.modules.agent.service.AgentTrainingTaskService;
 import interview.guide.modules.agent.service.AgentUsageService;
+import interview.guide.modules.agent.service.AgentContextAssetService;
+import interview.guide.modules.agent.service.AgentContextBindingService;
 import interview.guide.modules.interview.service.InterviewHistoryService;
 import interview.guide.modules.auth.AuthIdentityService;
 import interview.guide.common.result.Result;
@@ -50,6 +57,7 @@ import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -57,6 +65,7 @@ import org.springframework.web.bind.support.WebExchangeBindException;
 import reactor.core.publisher.Flux;
 
 import java.util.List;
+import java.util.Collections;
 import java.util.stream.Collectors;
 
 /**
@@ -77,6 +86,250 @@ public class AgentController {
     private final InterviewHistoryService interviewHistoryService;
     private final AuthIdentityService authIdentityService;
     private final ObjectMapper objectMapper;
+    private final interview.guide.modules.agent.service.AgentInterviewContextService interviewContextService;
+    private final AgentContextAssetService contextAssetService;
+    private final AgentContextBindingService contextBindingService;
+
+    /** 创建不绑定面试报告的通用 Agent 会话。 */
+    @PostMapping("/api/agent/sessions")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 10)
+    public Result<AgentConversationSummary> createGeneralConversation(
+        @Valid @RequestBody(required = false) CreateAgentConversationRequest request,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        String identity = authIdentityService.requireIdentity(ownerKey);
+        return Result.success(conversationService.createGeneralConversation(
+            request == null ? null : request.title(),
+            identity,
+            request == null ? null : request.idempotencyKey()
+        ));
+    }
+
+    /** 搜索当前用户自己的面试元数据，供 Agent 选择上下文时消歧。 */
+    @GetMapping("/api/agent/interviews/search")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
+    public Result<List<AgentInterviewSearchResult>> searchInterviewsForAgent(
+        @RequestParam(value = "q", required = false) String query,
+        @RequestParam(value = "limit", defaultValue = "8") int limit,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        return Result.success(interviewContextService.search(
+            authIdentityService.requireIdentity(ownerKey), query, limit
+        ));
+    }
+
+    /** 查询当前用户未归档的通用 Agent 会话。 */
+    @GetMapping("/api/agent/sessions")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
+    public Result<List<AgentConversationSummary>> listGeneralConversations(
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        return Result.success(conversationService.listGeneralConversations(
+            authIdentityService.requireIdentity(ownerKey)
+        ));
+    }
+
+    /** 上传 Agent 私有素材；只做技术检查和解析，默认停留在待审核状态。 */
+    @PostMapping(value = "/api/agent/context-assets", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 5)
+    @RateLimit(dimension = RateLimit.Dimension.IP, count = 5)
+    public Result<AgentContextAssetResponse> uploadContextAsset(
+        @RequestPart("file") org.springframework.web.multipart.MultipartFile file,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        return Result.success(contextAssetService.upload(
+            file, authIdentityService.requireIdentity(ownerKey)
+        ));
+    }
+
+    /** 查询当前用户的 Agent 私有素材审核列表。 */
+    @GetMapping("/api/agent/context-assets")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
+    public Result<List<AgentContextAssetResponse>> listContextAssets(
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        return Result.success(contextAssetService.list(authIdentityService.requireIdentity(ownerKey)));
+    }
+
+    @GetMapping("/api/agent/context-assets/{assetId}")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
+    public Result<AgentContextAssetResponse> getContextAsset(
+        @PathVariable String assetId,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        return Result.success(contextAssetService.get(
+            assetId, authIdentityService.requireIdentity(ownerKey)
+        ));
+    }
+
+    /** 用户明确审核通过后，素材才可以绑定到 Agent 会话。 */
+    @PostMapping("/api/agent/context-assets/{assetId}/approve")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 20)
+    public Result<AgentContextAssetResponse> approveContextAsset(
+        @PathVariable String assetId,
+        @RequestParam(value = "confirmSecurity", defaultValue = "false") boolean confirmSecurity,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        return Result.success(contextAssetService.approve(
+            assetId, authIdentityService.requireIdentity(ownerKey), confirmSecurity
+        ));
+    }
+
+    /** 用户明确提出将素材纳入 RAG 的意图；真正导入仍由后续确认流程执行。 */
+    @PostMapping("/api/agent/context-assets/{assetId}/knowledge-base-request")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 20)
+    public Result<AgentContextAssetResponse> requestKnowledgeBaseImport(
+        @PathVariable String assetId,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        return Result.success(contextAssetService.requestKnowledgeBaseImport(
+            assetId, authIdentityService.requireIdentity(ownerKey)
+        ));
+    }
+
+    /** 用户再次确认后，才把 Agent 素材写入现有知识库并开始异步向量化。 */
+    @PostMapping("/api/agent/context-assets/{assetId}/knowledge-base/confirm")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 10)
+    public Result<AgentContextAssetResponse> confirmKnowledgeBaseImport(
+        @PathVariable String assetId,
+        @RequestParam(value = "name", required = false) String name,
+        @RequestParam(value = "category", required = false) String category,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        return Result.success(contextAssetService.confirmKnowledgeBaseImport(
+            assetId, authIdentityService.requireIdentity(ownerKey), name, category
+        ));
+    }
+
+    /** 拒绝并删除尚未进入知识库的 Agent 私有素材。 */
+    @DeleteMapping("/api/agent/context-assets/{assetId}")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 20)
+    public Result<Void> rejectContextAsset(
+        @PathVariable String assetId,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        contextAssetService.reject(assetId, authIdentityService.requireIdentity(ownerKey));
+        return Result.success(null);
+    }
+
+    /** 读取通用 Agent 会话。 */
+    @GetMapping("/api/agent/sessions/{agentSessionId}")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
+    public Result<AgentConversationResponse> getGeneralConversation(
+        @PathVariable String agentSessionId,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        return Result.success(conversationService.getGeneralConversation(
+            agentSessionId, authIdentityService.requireIdentity(ownerKey)
+        ));
+    }
+
+    @PatchMapping("/api/agent/sessions/{agentSessionId}")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 10)
+    public Result<AgentConversationSummary> renameGeneralConversation(
+        @PathVariable String agentSessionId,
+        @Valid @RequestBody RenameAgentConversationRequest request,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        return Result.success(conversationService.renameConversation(
+            null, agentSessionId, request.title(), authIdentityService.requireIdentity(ownerKey)
+        ));
+    }
+
+    @DeleteMapping("/api/agent/sessions/{agentSessionId}")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 10)
+    public Result<Void> archiveGeneralConversation(
+        @PathVariable String agentSessionId,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        conversationService.archiveConversation(
+            null, agentSessionId, authIdentityService.requireIdentity(ownerKey)
+        );
+        return Result.success(null);
+    }
+
+    @PostMapping("/api/agent/sessions/{agentSessionId}/cancel")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 10)
+    public Result<AgentConversationResponse> cancelGeneralRun(
+        @PathVariable String agentSessionId,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        String identity = authIdentityService.requireIdentity(ownerKey);
+        conversationService.assertAccess(null, agentSessionId, identity);
+        agentService.cancel(agentSessionId);
+        conversationService.cancelRun(null, agentSessionId, identity);
+        return Result.success(conversationService.getConversation(null, agentSessionId, identity));
+    }
+
+    /** 查询通用 Agent 会话当前绑定的面试上下文。 */
+    @GetMapping("/api/agent/sessions/{agentSessionId}/context")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
+    public Result<List<AgentContextBindingResponse>> getGeneralContext(
+        @PathVariable String agentSessionId,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        return Result.success(contextBindingService.list(
+            agentSessionId, authIdentityService.requireIdentity(ownerKey)
+        ));
+    }
+
+    /** 将用户明确选择的面试报告绑定到通用 Agent 会话。 */
+    @PostMapping("/api/agent/sessions/{agentSessionId}/context/interview")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 20)
+    public Result<AgentContextBindingResponse> attachGeneralInterviewContext(
+        @PathVariable String agentSessionId,
+        @Valid @RequestBody AttachAgentContextRequest request,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        String identity = authIdentityService.requireIdentity(ownerKey);
+        return Result.success(AgentContextBindingResponse.from(
+            conversationService.attachInterviewContext(
+                agentSessionId, request.interviewSessionId(), identity, request.sourceMessageIdAsLong()
+            )
+        ));
+    }
+
+    /** 将已审核的简历、面试报告、上传文件或知识库绑定到 Agent 会话。 */
+    @PostMapping("/api/agent/sessions/{agentSessionId}/contexts")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 20)
+    public Result<AgentContextBindingResponse> attachGeneralResourceContext(
+        @PathVariable String agentSessionId,
+        @Valid @RequestBody AttachAgentResourceRequest request,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        return Result.success(contextBindingService.attach(
+            agentSessionId, request, authIdentityService.requireIdentity(ownerKey)
+        ));
+    }
+
+    /** 解绑通用 Agent 会话的当前面试上下文。 */
+    @DeleteMapping("/api/agent/sessions/{agentSessionId}/context")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 20)
+    public Result<Void> clearGeneralContext(
+        @PathVariable String agentSessionId,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        contextBindingService.clear(agentSessionId, authIdentityService.requireIdentity(ownerKey));
+        return Result.success(null);
+    }
+
+    /** 通用 Agent 会话流式消息入口；路径中的线程 ID优先于请求体。 */
+    @PostMapping(value = "/api/agent/sessions/{agentSessionId}/messages/stream",
+        produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 5)
+    @RateLimit(dimension = RateLimit.Dimension.IP, count = 5)
+    public Flux<ServerSentEvent<AgentStreamEvent>> streamGeneralMessage(
+        @PathVariable String agentSessionId,
+        @Valid @RequestBody AgentMessageRequest request,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        String identity = authIdentityService.requireIdentity(ownerKey);
+        return agentService.stream(null, request.withAgentSessionId(agentSessionId), identity)
+            .map(event -> ServerSentEvent.<AgentStreamEvent>builder()
+                .event("agent-" + event.type())
+                .data(event)
+                .build());
+    }
 
     /** 查询当前登录用户跨 Agent 对话的累计 Token、耗时和费用。 */
     @GetMapping("/api/agent/usage/summary")

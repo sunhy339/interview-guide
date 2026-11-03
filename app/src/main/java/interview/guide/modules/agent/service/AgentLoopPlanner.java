@@ -2,6 +2,7 @@ package interview.guide.modules.agent.service;
 
 import interview.guide.common.ai.LlmProviderRegistry;
 import interview.guide.common.ai.PromptSanitizer;
+import interview.guide.common.ai.PromptSecurityConstants;
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.metrics.AgentRunBudgetExceededException;
 import interview.guide.modules.agent.model.AgentHistoryMessage;
@@ -96,10 +97,10 @@ public class AgentLoopPlanner {
             可用 Skill：%s
             可用知识库摘要：%s
             """.formatted(
-            promptSanitizer.sanitize(request.goal()),
-            promptSanitizer.sanitize(message),
-            promptSanitizer.sanitize(context.skillId()),
-            promptSanitizer.sanitize(context.retrievalQuery())
+            promptSanitizer.wrapWithDelimiters("planner-goal", request.goal()),
+            promptSanitizer.wrapWithDelimiters("planner-request", message),
+            promptSanitizer.wrapWithDelimiters("planner-skill", context.skillId()),
+            promptSanitizer.wrapWithDelimiters("planner-retrieval", context.retrievalQuery())
         );
         for (String providerId : providerRegistry.resolveChatProviderCandidates(request.providerId())) {
             AgentMetrics.ModelCallTracker modelCall = null;
@@ -109,7 +110,8 @@ public class AgentLoopPlanner {
                 }
                 ChatClient client = providerRegistry.getAgentChatClient(providerId);
                 var promptSpec = client.prompt()
-                    .system("你是一个严格受控的 Agent Loop planner，只返回执行计划，不要编造资料。");
+                    .system("你是一个严格受控的 Agent Loop planner，只返回执行计划，不要编造资料。"
+                        + PromptSecurityConstants.ANTI_INJECTION_INSTRUCTION);
                 if (runTracker != null) {
                     promptSpec = promptSpec.toolContext(Map.of(
                         AgentMetrics.RUN_TRACKER_TOOL_CONTEXT_KEY, runTracker

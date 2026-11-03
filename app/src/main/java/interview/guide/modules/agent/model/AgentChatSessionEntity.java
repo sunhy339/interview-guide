@@ -35,7 +35,8 @@ public class AgentChatSessionEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "interview_session_id", nullable = false, length = 36)
+    /** 为空表示通用 Agent 会话；旧面试绑定会话仍继续使用该字段。 */
+    @Column(name = "interview_session_id", length = 36)
     private String interviewSessionId;
 
     @Column(name = "agent_session_id", nullable = false, unique = true, length = 36)
@@ -107,6 +108,21 @@ public class AgentChatSessionEntity {
     /** 结构化 Loop 轨迹 JSON；不保存模型隐藏推理或原始上下文。 */
     @Column(name = "loop_trace", columnDefinition = "TEXT")
     private String loopTraceJson;
+
+    /** 会话级滚动摘要；原始消息仍保留在 agent_chat_messages。 */
+    @Column(name = "context_summary", columnDefinition = "TEXT")
+    private String contextSummary;
+
+    @Column(name = "context_summary_until_sequence", nullable = false)
+    @Builder.Default
+    private int contextSummaryUntilSequence = 0;
+
+    @Column(name = "context_summary_version", nullable = false)
+    @Builder.Default
+    private int contextSummaryVersion = 0;
+
+    @Column(name = "context_summary_updated_at")
+    private LocalDateTime contextSummaryUpdatedAt;
 
     @Column(name = "run_prompt_tokens")
     private Integer runPromptTokens;

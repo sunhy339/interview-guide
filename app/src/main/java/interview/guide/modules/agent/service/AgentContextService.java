@@ -10,6 +10,15 @@ import interview.guide.modules.interview.service.InterviewHistoryService;
 import interview.guide.modules.interview.skill.InterviewSkillService;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseQueryService;
 import interview.guide.modules.knowledgebase.service.RagQueryExecution;
+import interview.guide.modules.agent.model.AgentContextAssetEntity;
+import interview.guide.modules.agent.model.AgentContextAssetStatus;
+import interview.guide.modules.agent.model.AgentSessionContextEntity;
+import interview.guide.modules.agent.repository.AgentContextAssetRepository;
+import interview.guide.modules.agent.repository.AgentSessionContextRepository;
+import interview.guide.modules.knowledgebase.repository.KnowledgeBaseRepository;
+import interview.guide.modules.resume.model.ResumeEntity;
+import interview.guide.modules.resume.repository.ResumeRepository;
+import interview.guide.modules.auth.AuthUserContext;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -48,6 +57,10 @@ public class AgentContextService {
     private final PromptSanitizer promptSanitizer;
     private final ObjectMapper objectMapper;
     private final AgentMemoryService agentMemoryService;
+    private final AgentSessionContextRepository sessionContextRepository;
+    private final AgentContextAssetRepository contextAssetRepository;
+    private final ResumeRepository resumeRepository;
+    private final KnowledgeBaseRepository knowledgeBaseRepository;
 
     public AgentContextService(
         InterviewHistoryService interviewHistoryService,
@@ -58,7 +71,7 @@ public class AgentContextService {
     ) {
         this(
             interviewHistoryService, interviewSkillService, knowledgeBaseQueryService,
-            promptSanitizer, objectMapper, null
+            promptSanitizer, objectMapper, null, null, null, null, null
         );
     }
 
@@ -69,7 +82,11 @@ public class AgentContextService {
         KnowledgeBaseQueryService knowledgeBaseQueryService,
         PromptSanitizer promptSanitizer,
         ObjectMapper objectMapper,
-        AgentMemoryService agentMemoryService
+        AgentMemoryService agentMemoryService,
+        AgentSessionContextRepository sessionContextRepository,
+        AgentContextAssetRepository contextAssetRepository,
+        ResumeRepository resumeRepository,
+        KnowledgeBaseRepository knowledgeBaseRepository
     ) {
         this.interviewHistoryService = interviewHistoryService;
         this.interviewSkillService = interviewSkillService;
@@ -77,6 +94,25 @@ public class AgentContextService {
         this.promptSanitizer = promptSanitizer;
         this.objectMapper = objectMapper;
         this.agentMemoryService = agentMemoryService;
+        this.sessionContextRepository = sessionContextRepository;
+        this.contextAssetRepository = contextAssetRepository;
+        this.resumeRepository = resumeRepository;
+        this.knowledgeBaseRepository = knowledgeBaseRepository;
+    }
+
+    /** 兼容当前单元测试和迁移期内部调用方。 */
+    public AgentContextService(
+        InterviewHistoryService interviewHistoryService,
+        InterviewSkillService interviewSkillService,
+        KnowledgeBaseQueryService knowledgeBaseQueryService,
+        PromptSanitizer promptSanitizer,
+        ObjectMapper objectMapper,
+        AgentMemoryService agentMemoryService
+    ) {
+        this(
+            interviewHistoryService, interviewSkillService, knowledgeBaseQueryService,
+            promptSanitizer, objectMapper, agentMemoryService, null, null, null, null
+        );
     }
 
     public AgentContext build(
@@ -84,9 +120,20 @@ public class AgentContextService {
         AgentMessageRequest request,
         List<AgentHistoryMessage> effectiveHistory
     ) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return buildGeneralContext(request, effectiveHistory);
+        }
         InterviewDetailDTO detail = interviewHistoryService.getInterviewDetail(sessionId);
         String report = serializeReport(detail);
         List<AgentSource> sources = new ArrayList<>();
+
+        // 旧的“从面试详情进入 Agent”链路继续以报告为主，但允许输入区追加已审核的简历/文件资料。
+        String attachedSupplement = loadAttachedContext(
+            request, buildGeneralRetrievalQuery(request, effectiveHistory), effectiveHistory, sources, false
+        );
+        if (!attachedSupplement.isBlank()) {
+            report = truncate(report + "\n\n" + attachedSupplement, MAX_REPORT_CHARS);
+        }
 
         String skillReference = loadSkillReference(detail, sources);
         String retrievalQuery = buildRetrievalQuery(detail, request);
@@ -105,16 +152,188 @@ public class AgentContextService {
         );
     }
 
+    /**
+     * 通用 Agent 不自动加载任何面试报告；面试上下文由后续的 attach 工具按需提供。
+     */
+    private AgentContext buildGeneralContext(
+        AgentMessageRequest request, List<AgentHistoryMessage> effectiveHistory
+    ) {
+        AgentMemorySnapshot memory = loadAndUpdateMemory(null, request);
+        String retrievalQuery = buildGeneralRetrievalQuery(request, effectiveHistory);
+        List<AgentSource> sources = new ArrayList<>();
+        String report = loadAttachedContext(request, retrievalQuery, effectiveHistory, sources, true);
+        return new AgentContext(
+            report,
+            "",
+            "暂无匹配的 Skill references",
+            "暂无知识库检索上下文",
+            retrievalQuery,
+            List.copyOf(sources),
+            memory.toPrompt(null),
+            List.of()
+        );
+    }
+
+    /**
+     * 读取会话已审核的上下文资源。每类资源都只作为资料，不提升为指令；资源本身的
+     * prompt 注入风险会在最终 Prompt 的固定边界和 PromptSanitizer 中再次处理。
+     */
+    private String loadAttachedContext(
+        AgentMessageRequest request,
+        String retrievalQuery,
+        List<AgentHistoryMessage> effectiveHistory,
+        List<AgentSource> sources,
+        boolean includeInterviewReport
+    ) {
+        String agentSessionId = request == null ? null : request.agentSessionId();
+        if (sessionContextRepository == null || agentSessionId == null || agentSessionId.isBlank()) {
+            return includeInterviewReport
+                ? "当前 Agent 会话未绑定任何资料。不要推断未提供的经历、面试表现或知识库结论。"
+                : "";
+        }
+        List<AgentSessionContextEntity> contexts = sessionContextRepository
+            .findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc(agentSessionId);
+        if (contexts.isEmpty()) {
+            return includeInterviewReport
+                ? "当前 Agent 会话未绑定任何资料。不要推断未提供的经历、面试表现或知识库结论。"
+                : "";
+        }
+        StringBuilder report = new StringBuilder();
+        for (AgentSessionContextEntity binding : contexts) {
+            String type = binding.getContextType();
+            if (!includeInterviewReport && "INTERVIEW_REPORT".equals(type)) continue;
+            String resourceId = binding.getResourceId();
+            if ((resourceId == null || resourceId.isBlank()) && "INTERVIEW_REPORT".equals(type)) {
+                resourceId = binding.getInterviewSessionId();
+            }
+            if (resourceId == null || resourceId.isBlank()) continue;
+            switch (type) {
+                case "INTERVIEW_REPORT" -> appendInterviewContext(report, resourceId, sources);
+                case "RESUME" -> appendResumeContext(report, resourceId, request, sources);
+                case "FILE" -> appendFileContext(report, resourceId, request, sources);
+                case "KNOWLEDGE_BASE" -> appendKnowledgeContext(
+                    report, resourceId, retrievalQuery, effectiveHistory, sources
+                );
+                default -> log.warn("忽略未知 Agent 上下文类型: type={}, resourceId={}", type, resourceId);
+            }
+        }
+        if (report.isEmpty()) {
+            return includeInterviewReport
+                ? "已绑定资料但没有读取到可用内容。不要补写未提供的事实。"
+                : "";
+        }
+        return truncate(report.toString(), MAX_REPORT_CHARS);
+    }
+
+    private void appendInterviewContext(StringBuilder report, String sessionId, List<AgentSource> sources) {
+        try {
+            InterviewDetailDTO detail = interviewHistoryService.getInterviewDetail(sessionId);
+            report.append("\n[面试报告：").append(sessionId).append("]\n")
+                .append(serializeReport(detail)).append('\n');
+            sources.add(new AgentSource("interview", "面试报告 " + sessionId, null, "INTERVIEW"));
+        } catch (RuntimeException error) {
+            log.warn("通用 Agent 读取面试报告失败: sessionId={}", sessionId, error);
+        }
+    }
+
+    private void appendResumeContext(
+        StringBuilder report, String resourceId, AgentMessageRequest request, List<AgentSource> sources
+    ) {
+        if (resumeRepository == null) return;
+        parseLong(resourceId).flatMap(id -> resumeRepository.findByIdAndOwnerId(id, ownerKey(request)))
+            .ifPresent(resume -> {
+                report.append("\n[简历：").append(resume.getOriginalFilename()).append("]\n")
+                    .append(resume.getResumeText() == null ? "" : resume.getResumeText()).append('\n');
+                sources.add(new AgentSource("resume", resume.getOriginalFilename(), null, "RESUME-" + resourceId));
+            });
+    }
+
+    private void appendFileContext(
+        StringBuilder report, String resourceId, AgentMessageRequest request, List<AgentSource> sources
+    ) {
+        if (contextAssetRepository == null) return;
+        contextAssetRepository.findByAssetIdAndOwnerId(resourceId, ownerKey(request))
+            .filter(asset -> asset.getReviewStatus() == AgentContextAssetStatus.APPROVED_FOR_CONTEXT
+                || asset.getReviewStatus() == AgentContextAssetStatus.KB_IMPORT_COMPLETED)
+            .ifPresent(asset -> {
+                report.append("\n[已审核文件：").append(asset.getOriginalFilename()).append("]\n")
+                    .append(asset.getExtractedText() == null ? "" : asset.getExtractedText()).append('\n');
+                sources.add(new AgentSource("file", asset.getOriginalFilename(), null, "FILE-" + resourceId));
+            });
+    }
+
+    private void appendKnowledgeContext(
+        StringBuilder report,
+        String resourceId,
+        String retrievalQuery,
+        List<AgentHistoryMessage> effectiveHistory,
+        List<AgentSource> sources
+    ) {
+        if (knowledgeBaseRepository == null || retrievalQuery.isBlank()) return;
+        parseLong(resourceId).flatMap(knowledgeBaseRepository::findById).ifPresent(kb -> {
+            try {
+                RagQueryExecution execution = knowledgeBaseQueryService.retrieveOnly(
+                    List.of(kb.getId()), retrievalQuery, buildRetrievalHistory(effectiveHistory)
+                );
+                appendRetrievedDocs(report, execution, sources);
+            } catch (RuntimeException error) {
+                log.warn("通用 Agent 读取知识库失败: kbId={}", resourceId, error);
+            }
+        });
+    }
+
+    private void appendRetrievedDocs(
+        StringBuilder report, RagQueryExecution execution, List<AgentSource> sources
+    ) {
+        if (execution == null || execution.retrievedDocs().isEmpty()) return;
+        int index = 0;
+        for (RagQueryExecution.RetrievedDoc document : execution.retrievedDocs()) {
+            if (report.length() >= MAX_RAG_CONTEXT_CHARS) break;
+            index++;
+            String reference = "R" + index;
+            String title = describe(document.metadata());
+            String text = document.text() == null ? "" : document.text();
+            int remaining = MAX_RAG_CONTEXT_CHARS - report.length();
+            int budget = Math.max(0, remaining - title.length() - reference.length() - 24);
+            if (budget <= 0) break;
+            report.append("\n[").append(reference).append(" 来源：").append(title).append("]\n")
+                .append(text, 0, Math.min(text.length(), budget)).append('\n');
+            sources.add(new AgentSource("rag", title, document.score(), reference));
+        }
+    }
+
+    private java.util.Optional<Long> parseLong(String value) {
+        try {
+            return java.util.Optional.of(Long.parseLong(value));
+        } catch (NumberFormatException ignored) {
+            return java.util.Optional.empty();
+        }
+    }
+
+    private String ownerKey(AgentMessageRequest request) {
+        return AuthUserContext.currentUserId()
+            .orElse(request == null ? null : request.memoryKey());
+    }
+
     private AgentMemorySnapshot loadAndUpdateMemory(InterviewDetailDTO detail, AgentMessageRequest request) {
         if (agentMemoryService == null) {
             return AgentMemorySnapshot.empty(request.memoryKey());
         }
         return agentMemoryService.remember(
             request.memoryKey(),
-            detail.skillId(),
-            extractWeaknesses(detail),
+            detail == null ? null : detail.skillId(),
+            detail == null ? List.of() : extractWeaknesses(detail),
             request.goal()
         );
+    }
+
+    private String buildGeneralRetrievalQuery(
+        AgentMessageRequest request, List<AgentHistoryMessage> effectiveHistory
+    ) {
+        StringBuilder query = new StringBuilder();
+        query.append("目标：").append(promptSanitizer.sanitizeForContext(request.goal())).append('\n');
+        query.append("用户问题：").append(promptSanitizer.sanitizeForContext(request.message())).append('\n');
+        return truncate(query.toString(), MAX_RETRIEVAL_QUERY_CHARS);
     }
 
     private List<String> extractWeaknesses(InterviewDetailDTO detail) {
@@ -123,14 +342,14 @@ public class AgentContextService {
             detail.improvements().stream()
                 .filter(item -> item != null && !item.isBlank())
                 .limit(MAX_WEAK_ANSWERS)
-                .forEach(item -> weaknesses.add(promptSanitizer.sanitize(item)));
+                .forEach(item -> weaknesses.add(promptSanitizer.sanitizeForContext(item)));
         }
         if (detail.answers() != null) {
             detail.answers().stream()
                 .filter(answer -> answer.score() != null && answer.score() < WEAK_SCORE_THRESHOLD)
                 .limit(MAX_WEAK_ANSWERS)
                 .forEach(answer -> weaknesses.add(
-                    promptSanitizer.sanitize(answer.category() + "：" + answer.question())
+                    promptSanitizer.sanitizeForContext(answer.category() + "：" + answer.question())
                 ));
         }
         return weaknesses.stream().filter(item -> item != null && !item.isBlank()).distinct().limit(8).toList();
@@ -224,7 +443,7 @@ public class AgentContextService {
             if (item == null || item.role() == null || item.content() == null) {
                 continue;
             }
-            String content = promptSanitizer.sanitize(item.content().trim());
+            String content = promptSanitizer.sanitizeForContext(item.content().trim());
             if (content.isBlank()) {
                 continue;
             }
@@ -242,14 +461,14 @@ public class AgentContextService {
 
     private String buildRetrievalQuery(InterviewDetailDTO detail, AgentMessageRequest request) {
         StringBuilder query = new StringBuilder();
-        query.append("目标：").append(promptSanitizer.sanitize(request.goal())).append('\n');
-        query.append("用户问题：").append(promptSanitizer.sanitize(request.message())).append('\n');
+        query.append("目标：").append(promptSanitizer.sanitizeForContext(request.goal())).append('\n');
+        query.append("用户问题：").append(promptSanitizer.sanitizeForContext(request.message())).append('\n');
 
         if (detail.improvements() != null && !detail.improvements().isEmpty()) {
             query.append("报告改进项：");
             detail.improvements().stream()
                 .limit(MAX_WEAK_ANSWERS)
-                .forEach(item -> query.append(promptSanitizer.sanitize(item)).append("；"));
+                .forEach(item -> query.append(promptSanitizer.sanitizeForContext(item)).append("；"));
             query.append('\n');
         }
 
@@ -260,7 +479,7 @@ public class AgentContextService {
                 .forEach(answer -> query.append("薄弱回答（")
                     .append(answer.category()).append("，")
                     .append(answer.score()).append("分）：")
-                    .append(promptSanitizer.sanitize(answer.question())).append('；'));
+                    .append(promptSanitizer.sanitizeForContext(answer.question())).append('；'));
         }
         return truncate(query.toString(), MAX_RETRIEVAL_QUERY_CHARS);
     }

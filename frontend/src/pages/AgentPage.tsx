@@ -43,12 +43,10 @@ import { normalizeAgentMarkdown } from './agentMarkdown';
 import { isNearChatBottom } from './agentChatScroll';
 import { detectAgentActionIntent, type AgentActionIntent } from './agentIntent';
 import {
-  getStoredAgentSessionId,
   getStoredAgentThreadId,
   clearStoredAgentSession,
   rememberAgentSessionId,
   rememberAgentThreadId,
-  resolveAgentSessionId,
   resolveAgentThreadId,
 } from './agentSession';
 import { isAgentReportExportAction, isAgentResumeEditAction, isAgentScheduleAction } from '../types/agent';
@@ -74,6 +72,7 @@ import type { ProviderItem } from '../types/llmProvider';
 import AgentSessionList from '../components/AgentSessionList';
 import AgentNavigation from '../components/AgentNavigation';
 import AgentManagementOverview from '../components/AgentManagementOverview';
+import AgentContextPicker from '../components/AgentContextPicker';
 import { ROUTES } from '../constants/routes';
 import { createRequestId } from '../utils/requestId';
 type RunStatus = 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
@@ -159,7 +158,7 @@ const goalOptions: Array<{ id: AgentGoal; title: string; description: string }> 
 const createWelcomeMessage = (): AgentMessage => ({
   id: 1,
   role: 'assistant',
-  content: '你好，我是你的 AI 面试教练。选择一个目标后，我会基于当前面试上下文帮你整理下一步。',
+  content: '你好，我是你的 AI 面试教练。你可以直接提问，也可以在输入区添加简历、面试报告或上传文件作为本轮资料。',
 });
 
 const createInitialSteps = (): AgentStep[] => [
@@ -350,7 +349,6 @@ interface AgentPageProps {
 
 export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const isWorkspaceView = view === 'workspace';
-  const needsInterviewContext = isWorkspaceView || view === 'actions' || view === 'memory';
   const viewTitle = view === 'memory'
     ? '记忆管理'
     : view === 'actions'
@@ -362,16 +360,15 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const routeSessionId = searchParams.get('sessionId');
   const routeAgentSessionId = searchParams.get('agentSessionId');
-  const storedSessionId = useMemo(() => getStoredAgentSessionId(), []);
   const storedAgentSessionId = useMemo(() => getStoredAgentThreadId(), []);
-  const sessionId = resolveAgentSessionId(routeSessionId, storedSessionId);
-  // 地址带有报告 ID 时不使用上一次报告的线程；无参数进入 /agent 时才从 sessionStorage 恢复。
-  const agentSessionId = resolveAgentThreadId(
-    routeSessionId,
-    routeAgentSessionId,
-    storedSessionId,
-    storedAgentSessionId,
-  );
+  // /agent 默认是通用 Agent；只有链接显式带 sessionId 时才读取面试报告。
+  const sessionId = routeSessionId;
+  const needsInterviewContext = Boolean(sessionId) && (isWorkspaceView || view === 'actions' || view === 'memory');
+  const isGeneralWorkspace = isWorkspaceView && !sessionId;
+  // 地址带有报告 ID 时不使用上一次报告的线程；通用 Agent 使用独立的会话线程。
+  const agentSessionId = routeSessionId
+    ? resolveAgentThreadId(routeSessionId, routeAgentSessionId, null, storedAgentSessionId)
+    : routeAgentSessionId || storedAgentSessionId;
   const [goal, setGoal] = useState<AgentGoal>('review');
   const [providerId, setProviderId] = useState('');
   const [providers, setProviders] = useState<ProviderItem[]>([]);
@@ -461,15 +458,9 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   useEffect(() => {
     if (routeSessionId) {
       rememberAgentSessionId(routeSessionId);
-    } else if (storedSessionId) {
-      // 让地址栏也恢复 sessionId，复制链接或刷新时仍然能打开同一份报告。
-      setSearchParams((current) => {
-        current.set('sessionId', storedSessionId);
-        return current;
-      }, { replace: true });
     }
     if (routeAgentSessionId) rememberAgentThreadId(routeAgentSessionId);
-  }, [routeAgentSessionId, routeSessionId, setSearchParams, storedSessionId]);
+  }, [routeAgentSessionId, routeSessionId]);
 
   const clearReconciliationTimer = useCallback(() => {
     if (reconciliationTimerRef.current !== null) {
@@ -484,7 +475,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       {
         id: 1,
         role: 'assistant',
-        content: '你好，我是你的 AI 面试教练。选择一个目标后，我会基于当前面试上下文帮你整理下一步。',
+        content: createWelcomeMessage().content,
       },
       ...conversation.messages.map((message, index) => ({
         id: index + 2,
@@ -548,7 +539,12 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
 
     const poll = () => {
       attempts += 1;
-      void agentApi.getConversation(currentSessionId, targetAgentSessionId)
+      const readConversation = currentSessionId
+        ? agentApi.getConversation(currentSessionId, targetAgentSessionId)
+        : targetAgentSessionId
+          ? agentApi.getGeneralConversation(targetAgentSessionId)
+          : Promise.reject(new Error('缺少 Agent 会话'));
+      void readConversation
         .then((conversation) => {
           restoreRunProgress(conversation);
           if (conversation.runStatus === 'RUNNING' && attempts < MAX_RECONCILIATION_ATTEMPTS) {
@@ -788,13 +784,46 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   }, [agentSessionId, interview, isWorkspaceView, reconcileConversation, rememberRetryableRequest, restoreConversationMessages, restoreRunProgress, routeAgentSessionId, sessionId, setSearchParams]);
 
   useEffect(() => {
-    if (!isWorkspaceView || !sessionId || !agentSessionId || runStatus !== 'running') return;
+    if (!isGeneralWorkspace || !agentSessionId) return;
+    let cancelled = false;
+    void agentApi.getGeneralConversation(agentSessionId)
+      .then((conversation) => {
+        if (cancelled || !conversation.agentSessionId) return;
+        rememberRetryableRequest(conversation);
+        restoreRunProgress(conversation);
+        if (conversation.goal === 'review' || conversation.goal === 'practice' || conversation.goal === 'plan') {
+          setGoal(conversation.goal);
+        }
+        if (conversation.providerId) setProviderId(conversation.providerId);
+        if (conversation.runStatus === 'RUNNING') {
+          setRunStatus('running');
+          setRunNotice(conversation.runNotice || '服务端仍有一个 Agent 任务正在执行，可等待完成或取消任务。');
+          reconcileConversation('', undefined, agentSessionId);
+        } else if (conversation.runStatus === 'FAILED') {
+          setRunStatus('error');
+          setRunError(conversation.runError || 'Agent 执行失败，请稍后重试');
+        } else if (conversation.runStatus === 'COMPLETED') {
+          setRunStatus('completed');
+        } else if (conversation.runStatus === 'CANCELLED') {
+          setRunStatus('cancelled');
+        }
+        restoreConversationMessages(conversation);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      clearReconciliationTimer();
+    };
+  }, [agentSessionId, clearReconciliationTimer, isGeneralWorkspace, reconcileConversation, rememberRetryableRequest, restoreConversationMessages, restoreRunProgress]);
+
+  useEffect(() => {
+    if (!isWorkspaceView || !agentSessionId || runStatus !== 'running') return;
 
     const reconcileWhenActive = () => {
       if (document.visibilityState === 'hidden') return;
       // 某些代理会保持 TCP 连接但停止转发 SSE；重新获得焦点或网络恢复时，
       // 主动读取持久化状态，避免页面长期停在“执行中”。
-      reconcileConversation(sessionId, undefined, agentSessionId);
+      reconcileConversation(sessionId || '', undefined, agentSessionId);
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') reconcileWhenActive();
@@ -887,15 +916,17 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     content: string,
     options?: { goal?: AgentGoal; providerId?: string; retrying?: boolean; actionIntent?: AgentActionIntent | null },
   ): Promise<void> => {
-    if (!sessionId || !interview || !content || runStatus === 'running') {
-      if (!sessionId || !interview) setRunError('请先从面试详情页进入，并加载一份面试报告');
+    if ((!isGeneralWorkspace && (!sessionId || !interview)) || !content || runStatus === 'running') {
+      if (!isGeneralWorkspace && (!sessionId || !interview)) setRunError('请先加载一份面试报告，或直接使用通用 Agent');
       return;
     }
 
     let targetAgentSessionId = agentSessionId;
     if (!targetAgentSessionId) {
       try {
-        const created = await createAgentConversation();
+        const created = isGeneralWorkspace
+          ? await agentApi.createGeneralConversation(undefined, createRequestId())
+          : await createAgentConversation();
         targetAgentSessionId = created?.agentSessionId || null;
       } catch (error: unknown) {
         setRunError(getErrorMessage(error) || '新建 Agent 对话失败，请稍后重试');
@@ -953,9 +984,103 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     lastRunRequestRef.current = runRequest;
     lastRunMessageIdsRef.current = { userMessageId, assistantMessageId };
 
+    const handleStreamEvent = (event: AgentStreamEvent) => {
+      if (activeAgentSessionIdRef.current !== targetAgentSessionId) return;
+      updateStep(event);
+      if (event.type === 'step' && event.status === 'waiting') {
+        setRunNotice(event.message || '模型服务繁忙，正在等待资源后重试...');
+      } else if (event.type === 'step' && event.status === 'running') {
+        setRunNotice('');
+      }
+      if (event.type === 'sources') setSources(event.sources ?? []);
+      if (event.type === 'delta' && event.content) {
+        setMessages((current) => current.map((message) => message.id === assistantMessageId
+          ? { ...message, content: message.content + event.content }
+          : message));
+      }
+      if (event.type === 'error') {
+        const errorMessage = event.message || 'Agent 执行失败，请稍后重试';
+        setRunNotice('');
+        setRunError(errorMessage);
+        setRunStatus('error');
+        setMessages((current) => current.map((item) => item.id === assistantMessageId
+          ? { ...item, content: item.content.trim() ? `${item.content}\n\n---\n\n**本次任务未完成**：${errorMessage}` : errorMessage }
+          : item));
+      }
+      if (event.type === 'done') {
+        setRunNotice('');
+        setRunStatus((current) => current === 'running' ? 'completed' : current);
+      }
+    };
+
+    const handleStreamComplete = () => {
+      const isCurrentAgentSession = activeAgentSessionIdRef.current === targetAgentSessionId;
+      if (isCurrentAgentSession) setRunStatus((current) => current === 'running' ? 'completed' : current);
+      void loadLongTermMemory();
+      void loadAuditEvents();
+      void loadUsageSummary();
+      if (!isCurrentAgentSession) return;
+      const conversationRequest = isGeneralWorkspace
+        ? agentApi.getGeneralConversation(targetAgentSessionId)
+        : agentApi.getConversation(sessionId!, targetAgentSessionId);
+      void conversationRequest.then((conversation) => {
+        restoreRunProgress(conversation);
+        if (!actionIntent) autoProposeGoalAction(conversation, runGoal);
+        autoProposeActionIntent(conversation, actionIntent);
+        if (actionIntent?.type === 'schedule') {
+          const assistantMessage = [...conversation.messages].reverse()
+            .find((message) => message.role === 'assistant' && message.content.trim());
+          if (assistantMessage && !assistantMessage.content.includes('本次任务未完成')) {
+            openScheduleDraft({ id: Date.now(), role: 'assistant', content: assistantMessage.content }, actionIntent.suggestedTime);
+          }
+        }
+      }).catch(() => undefined);
+    };
+
+    const handleStreamError = (error: unknown) => {
+      if (controller.signal.aborted || activeAgentSessionIdRef.current !== targetAgentSessionId) return;
+      const message = getErrorMessage(error) || '连接暂时中断';
+      if (error instanceof StreamHttpError && error.status < 500) {
+        setRunNotice('本次请求没有提交到后台任务，请根据错误提示调整后重试。');
+        setRunError(message);
+        setRunStatus('error');
+        setMessages((current) => current.map((item) => item.id === assistantMessageId ? { ...item, content: message } : item));
+        return;
+      }
+      setRunError('');
+      setRunStatus('running');
+      setRunNotice(`${message}，正在确认后台任务状态...`);
+      reconcileConversation(sessionId || '', {
+        id: assistantMessageId,
+        role: 'assistant',
+        content: 'Agent 连接暂时中断，正在恢复任务状态...',
+      }, targetAgentSessionId);
+    };
+
+    const stream = isGeneralWorkspace
+      ? agentApi.streamGeneralMessage(targetAgentSessionId, {
+        goal: runGoal, message: content, history, providerId: runProviderId || undefined,
+        agentSessionId: targetAgentSessionId,
+      }, {
+        onEvent: handleStreamEvent,
+        onComplete: handleStreamComplete,
+        onError: handleStreamError,
+      }, controller.signal)
+      : agentApi.streamMessage(
+        sessionId!,
+       { goal: runGoal, message: content, history, providerId: runProviderId || undefined, agentSessionId: targetAgentSessionId },
+        {
+          onEvent: handleStreamEvent,
+          onComplete: handleStreamComplete,
+          onError: handleStreamError,
+        },
+        controller.signal,
+      );
+
+    void stream;
+    /*
     void agentApi.streamMessage(
       sessionId,
-       { goal: runGoal, message: content, history, providerId: runProviderId || undefined, agentSessionId: targetAgentSessionId },
       {
         onEvent: (event) => {
           // 切换到其他 Agent 会话后，旧会话的 SSE 可能仍在后台完成；
@@ -1048,7 +1173,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         },
       },
       controller.signal,
-    );
+    ); */
   };
 
   const loadLongTermMemory = useCallback(() => {
@@ -1667,11 +1792,14 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   };
 
   const cancelRun = () => {
-    if (!sessionId || runStatus !== 'running') return;
+    if ((!sessionId && !isGeneralWorkspace) || !agentSessionId || runStatus !== 'running') return;
     clearReconciliationTimer();
     abortRef.current?.abort();
     setRunNotice('正在取消 Agent 任务...');
-    void agentApi.cancelRun(sessionId, agentSessionId)
+    const cancelRequest = isGeneralWorkspace
+      ? agentApi.cancelGeneralRun(agentSessionId)
+      : agentApi.cancelRun(sessionId!, agentSessionId);
+    void cancelRequest
       .then((conversation) => {
         if (conversation.runStatus === 'COMPLETED') {
           restoreConversationMessages(conversation);
@@ -1716,26 +1844,30 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   };
 
   const selectAgentConversation = (nextAgentSessionId: string) => {
-    if (!sessionId || nextAgentSessionId === agentSessionId) return;
+    if (nextAgentSessionId === agentSessionId) return;
     rememberAgentThreadId(nextAgentSessionId);
-    setSearchParams({ sessionId, agentSessionId: nextAgentSessionId });
+    setSearchParams(sessionId
+      ? { sessionId, agentSessionId: nextAgentSessionId }
+      : { agentSessionId: nextAgentSessionId });
   };
 
   const clearAgentConversation = () => {
-    if (!sessionId) return;
     rememberAgentThreadId(null);
-    setSearchParams({ sessionId });
+    setSearchParams(sessionId ? { sessionId } : {});
   };
 
   const createAgentConversation = async (): Promise<AgentConversationSummary | void> => {
-    if (!sessionId || !interview) return;
+    if (!isGeneralWorkspace && (!sessionId || !interview)) return;
     const current = createConversationRequestRef.current;
-    if (current?.sessionId === sessionId && current.promise) return current.promise;
+    const requestScope = sessionId || 'general';
+    if (current?.sessionId === requestScope && current.promise) return current.promise;
 
-    const pending = current?.sessionId === sessionId
+    const pending = current?.sessionId === requestScope
       ? { sessionId: current.sessionId, key: current.key }
-      : { sessionId, key: createRequestId() };
-    const request = agentApi.createConversation(sessionId, undefined, pending.key);
+      : { sessionId: requestScope, key: createRequestId() };
+    const request = isGeneralWorkspace
+      ? agentApi.createGeneralConversation(undefined, pending.key)
+      : agentApi.createConversation(sessionId!, undefined, pending.key);
     let handledRequest: Promise<AgentConversationSummary>;
     handledRequest = request
       .then((conversation) => {
@@ -1743,7 +1875,9 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
           createConversationRequestRef.current = null;
         }
         rememberAgentThreadId(conversation.agentSessionId);
-        setSearchParams({ sessionId, agentSessionId: conversation.agentSessionId });
+        setSearchParams(sessionId
+          ? { sessionId, agentSessionId: conversation.agentSessionId }
+          : { agentSessionId: conversation.agentSessionId });
         return conversation;
       })
       .catch((error: unknown) => {
@@ -2220,6 +2354,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
 
       {view === 'workspace' || view === 'actions' ? <div className={`grid grid-cols-1 ${isWorkspaceView ? 'xl:grid-cols-[260px_minmax(0,1fr)]' : ''} gap-6 items-start`}>
         {isWorkspaceView ? <AgentSessionList
+          generalMode={isGeneralWorkspace}
           selectedSessionId={sessionId}
           onSelect={selectAgentSession}
           onCreate={() => navigate('/interviews')}
@@ -2228,7 +2363,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
           onCreateAgentConversation={createAgentConversation}
           onClearAgentConversation={clearAgentConversation}
           // 当前线程执行时仍禁止重复提交，但不阻塞创建/切换其他线程。
-          agentConversationDisabled={!interview}
+          agentConversationDisabled={!isGeneralWorkspace && !interview}
         /> : null}
 
         <div className={`grid grid-cols-1 ${isWorkspaceView ? 'xl:grid-cols-[minmax(0,1.08fr)_minmax(360px,0.92fr)]' : ''} gap-6 items-start min-w-0`}>
@@ -2409,7 +2544,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
             <div className="flex flex-wrap items-center gap-3 pt-2">
               <button
                 onClick={startRun}
-                disabled={!sessionId || !interview || runStatus === 'running'}
+                disabled={(!isGeneralWorkspace && (!sessionId || !interview)) || runStatus === 'running'}
                 className="btn-primary inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {runStatus === 'running' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
@@ -2709,13 +2844,22 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
               />
               <button
                 onClick={sendMessage}
-                disabled={!input.trim() || !sessionId || !interview || runStatus === 'running'}
+                disabled={!input.trim() || ((!isGeneralWorkspace && (!sessionId || !interview))) || runStatus === 'running'}
                 className="absolute right-3 bottom-3 p-2 rounded-lg text-primary-600 dark:text-primary-300 hover:bg-primary-50 dark:hover:bg-primary-900/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 aria-label="发送消息"
               >
                 <Send className="w-4 h-4" />
               </button>
             </div>
+            <AgentContextPicker
+              agentSessionId={agentSessionId}
+              disabled={runStatus === 'running'}
+              ensureSession={async () => {
+                if (agentSessionId) return agentSessionId;
+                const created = await createAgentConversation();
+                return created?.agentSessionId || null;
+              }}
+            />
             <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-2">
               Enter 发送，Shift + Enter 换行 · 单条最多 {MAX_AGENT_MESSAGE_CHARS} 字符 · 已输入 {input.length}/{MAX_AGENT_MESSAGE_CHARS}
             </p>

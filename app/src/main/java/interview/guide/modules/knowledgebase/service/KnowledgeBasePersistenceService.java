@@ -135,6 +135,41 @@ public class KnowledgeBasePersistenceService {
     }
 
     /**
+     * 从已落盘的 Agent 审核素材创建知识库实体，避免再次上传文件或伪造 MultipartFile。
+     * 调用方负责在保存成功后投递向量化任务。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public KnowledgeBaseEntity saveKnowledgeBaseFromStoredAsset(
+        String name,
+        String category,
+        String originalFilename,
+        Long fileSize,
+        String contentType,
+        String storageKey,
+        String storageUrl,
+        String fileHash,
+        String ownerId
+    ) {
+        try {
+            KnowledgeBaseEntity kb = new KnowledgeBaseEntity();
+            kb.setFileHash(fileHash);
+            kb.setOwnerId(ownerId);
+            kb.setName(name != null && !name.trim().isEmpty() ? name.trim() : extractNameFromFilename(originalFilename));
+            kb.setCategory(category != null && !category.trim().isEmpty() ? category.trim() : null);
+            kb.setOriginalFilename(originalFilename);
+            kb.setFileSize(fileSize);
+            kb.setContentType(contentType);
+            kb.setStorageKey(storageKey);
+            kb.setStorageUrl(storageUrl);
+            kb.setVectorUpdatedAt(java.time.LocalDateTime.now());
+            return knowledgeBaseRepository.save(kb);
+        } catch (Exception e) {
+            log.error("从 Agent 审核素材保存知识库失败: {}", e.getMessage(), e);
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "保存知识库失败");
+        }
+    }
+
+    /**
      * 更新知识库向量化状态为 PENDING
      */
     @Transactional(rollbackFor = Exception.class)

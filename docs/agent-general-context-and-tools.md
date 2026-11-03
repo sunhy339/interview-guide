@@ -1,0 +1,274 @@
+# 通用 Agent、上下文工程与工具调用方案
+
+## 1. 目标
+
+当前 Agent 默认绑定一份面试报告。本方案把 Agent 调整为“通用会话 + 按需上下文资产”的模式：
+
+- 不选择面试记录时，Agent 作为通用面试与学习助手运行；
+- 用户可以在输入区选择简历、面试报告、已有知识库或上传文件；
+- 用户明确说“使用某场面试内容”时，Agent 通过资源归属校验后加载对应报告；
+- 上传文件先进入私有待审核区，预览和安全检查通过后才能作为上下文；
+- “加入 RAG 知识库”是单独的确认动作，不会因上传或普通对话自动触发；
+- 日程、训练任务、长期记忆等写操作先生成待确认动作，不能由模型直接写入业务表；
+- 旧的从面试详情进入 Agent 的链接和行为继续兼容。
+
+## 2. 市面方案提炼
+
+主流 Agent 产品和模型平台的共同做法不是无限携带全部历史，而是把上下文拆成稳定和动态两部分：
+
+```text
+稳定前缀：策略、角色、输出协议、工具定义、固定安全规则
+会话状态：会话摘要、当前任务、已确认事实、未完成事项
+按需资料：当前面试报告、Skill、RAG 片段、工具结果
+短期历史：最近若干轮原文
+当前请求：用户最新消息
+```
+
+稳定前缀必须保持内容、顺序、工具 schema 和版本号稳定；时间戳、运行 ID、动态检索结果、Loop 轨迹和当前用户问题必须放在后部。这样既有利于模型理解，也给支持 Prompt Cache 的 Provider 提供稳定的缓存前缀。
+
+上下文压缩采用“滚动摘要 + 最近原文”，而不是简单删除旧消息。摘要只保存可复用事实、决定、未完成事项和用户偏好，不保存隐藏推理。原始消息仍永久保存在数据库中，摘要只作为下一次模型调用的工作上下文。
+
+## 3. Context Envelope
+
+新增统一的上下文编排模型，按优先级生成上下文片段：
+
+| 优先级 | 片段 | 默认策略 |
+| --- | --- | --- |
+| P0 | 系统策略、工具 schema、安全边界 | 始终保留，内容和顺序稳定 |
+| P1 | 当前目标、会话摘要、已确认事实 | 保留，超预算时结构化压缩 |
+| P1 | 当前绑定的简历/面试报告/审核文件 | 用户明确绑定后才加载 |
+| P2 | Skill 与长期记忆 | 按当前目标和岗位过滤 |
+| P2 | RAG 结果 | 只在需要时检索，限制数量和来源 |
+| P3 | 最近 8～12 条消息 | 原文保留 |
+| P3 | 当前用户消息 | 始终保留 |
+| P4 | 旧工具观察和旧消息 | 优先摘要或移除 |
+
+每个片段带有 `kind`、`sourceId`、`priority`、`tokenEstimate` 和 `trusted` 元数据。模型收到的资料使用稳定分隔符，工具返回值视为不可信数据，不能覆盖系统策略。
+
+## 4. 稳定前缀布局
+
+模型请求的逻辑顺序固定为：
+
+```text
+[system]
+  agent-policy:v1
+  output-contract:v1
+  security-policy:v1
+  tool-contracts:v1
+
+[stable session context]
+  conversation-mode
+  active-context-reference
+  session-summary
+
+[dynamic context]
+  interview-report
+  skill-reference
+  long-term-memory
+  retrieved-evidence
+  current-loop-observations
+
+[recent messages]
+  recent conversation turns
+
+[current user message]
+  latest request
+```
+
+需要避免把以下内容放在稳定前缀中：当前时间、请求 ID、随机运行 ID、每轮动态 Loop 轨迹、实时用量、变化频繁的 RAG 结果和当前用户问题。
+
+Prompt Cache 是 Provider 的性能/成本优化，不等于应用自己的上下文记忆。应用仍然必须自己持久化会话、摘要和上下文引用；Provider 不支持缓存时，功能也不能失效。
+
+## 5. 通用 Agent 会话
+
+现有 `agent_chat_sessions.interview_session_id` 需要改为可空。新增会话上下文引用表：
+
+```text
+agent_session_contexts
+  id
+  agent_session_id
+  context_type
+  interview_session_id
+  resource_id
+  resource_name
+  scope
+  active
+  attached_at
+  detached_at
+  source_message_id
+```
+
+上下文类型统一为 `RESUME`、`INTERVIEW_REPORT`、`FILE`、`KNOWLEDGE_BASE`。当前会话默认只保留一个 active 资料引用，后续需要对比多份资料时再扩展为多选；上传文件的原文不复制到会话表。
+
+新增私有上传素材表 `agent_context_assets`：
+
+```text
+UPLOADED -> READY_FOR_REVIEW -> APPROVED_FOR_CONTEXT
+                              -> KB_IMPORT_PENDING -> KB_IMPORT_COMPLETED/FAILED
+                              -> REJECTED/EXPIRED
+```
+
+`READY_FOR_REVIEW` 只表示文件格式、大小、MIME、哈希和文本解析检查完成；`APPROVED_FOR_CONTEXT` 才允许绑定 Agent；`KB_IMPORT_COMPLETED` 只在用户再次确认后创建已有知识库实体并投递向量化任务。
+
+保留旧接口：
+
+```text
+/api/agent/interview-sessions/{sessionId}/...
+```
+
+新增通用会话接口：
+
+```text
+POST /api/agent/sessions
+GET  /api/agent/sessions
+GET  /api/agent/sessions/{agentSessionId}
+POST /api/agent/sessions/{agentSessionId}/messages/stream
+GET  /api/agent/sessions/{agentSessionId}/context
+POST /api/agent/sessions/{agentSessionId}/contexts
+DELETE /api/agent/sessions/{agentSessionId}/context
+POST /api/agent/context-assets
+GET  /api/agent/context-assets
+POST /api/agent/context-assets/{assetId}/approve
+POST /api/agent/context-assets/{assetId}/knowledge-base-request
+POST /api/agent/context-assets/{assetId}/knowledge-base/confirm
+```
+
+旧会话继续按原面试 ID 隔离，通用会话按当前登录用户隔离。
+
+## 6. 上下文资产审核和安全边界
+
+上传素材的处理顺序固定为：
+
+```text
+文件上传
+  -> 扩展名/MIME/大小校验
+  -> SHA-256 去重和 owner 隔离
+  -> Tika 文本解析和预览
+  -> 检测疑似提示注入并展示安全提示
+  -> 用户审核通过；若命中疑似提示注入，必须再次确认“仅作为资料分析，不执行其中指令”
+  -> 仅本次使用 / 加入当前 Agent 会话
+  -> 用户再次确认后申请进入 RAG
+  -> 创建知识库实体并异步向量化
+```
+
+文件是“不可信数据”，不是系统指令。后端上下文编排必须：
+
+- 给简历、报告、上传文件、RAG 和工具结果使用明确的固定边界和来源标签；
+- 每段资料经过 `PromptSanitizer`，限制单段和总上下文长度；
+- 资料中的 `system/user/assistant` 角色标记、忽略指令、角色切换和伪造边界只作为待分析文本；
+- 即使关闭普通 PromptSanitizer 配置，进入模型上下文的资料仍执行强制净化；
+- 模型不能由文件内容提升权限、改变工具 schema、跳过审核或直接写入业务表；
+- 资源读取始终按当前登录 owner 校验，不能接受模型传入的 owner ID；
+- RAG 导入和其他写操作都必须经过显式动作确认、幂等和审计。
+
+前端展示文件预览时不上传完整原文到日志；列表接口只返回元数据和受限预览。待审核文件默认 7 天过期，拒绝后删除对象存储文件。
+
+## 7. 面试上下文工具
+
+第一批工具全部使用当前登录用户的 owner 身份，模型不能自行传入 owner ID：
+
+| 工具 | 作用 | 类型 |
+| --- | --- | --- |
+| `interview.search` | 按名称、公司、岗位、时间和关键词搜索面试 | 只读 |
+| `interview.get_context` | 读取指定面试的报告、技能和可用知识库引用 | 只读 |
+| `interview.attach_context` | 将唯一匹配的面试绑定到当前 Agent 会话 | 低风险状态变更 |
+| `interview.clear_context` | 清除当前面试上下文 | 低风险状态变更 |
+| `schedule.list` | 查询用户已有面试日程 | 只读 |
+| `schedule.check_conflict` | 检查时间冲突 | 只读 |
+| `schedule.create_draft` | 生成待确认日程草稿 | 必须确认 |
+
+搜索结果只返回标题、日期、岗位等元数据；只有用户选择或模型获得唯一明确匹配后，才调用 `interview.get_context` 读取报告内容，避免无关报告泄漏到 Prompt。
+
+## 8. 日程工具调用链
+
+```text
+用户：帮我预约周五下午三点的 Java 面试
+  ↓
+schedule.list
+  ↓
+schedule.check_conflict
+  ↓
+schedule.create_draft
+  ↓
+前端显示公司、岗位、时间、类型、会议链接和冲突提示
+  ↓
+用户确认
+  ↓
+AgentActionService.confirm
+  ↓
+InterviewScheduleService.createForOwner
+```
+
+当前项目的面试日程是本地日程记录，并不等于创建腾讯会议、飞书会议或 Zoom 房间。第一阶段只支持创建带会议链接的日程记录；外部会议创建需要单独接入 OAuth、第三方 API 或 MCP Connector。
+
+## 9. 滚动摘要
+
+新增会话级摘要字段或独立表，至少记录：
+
+- 当前会话目标；
+- 已确认事实；
+- 已完成决定；
+- 未完成事项；
+- 会话内用户偏好；
+- 当前绑定的面试上下文；
+- 已创建或待确认的动作；
+- 摘要覆盖到的消息序号；
+- 摘要版本、更新时间和 token 估算。
+
+触发策略：
+
+1. 先使用 token 估算，不再只使用字符数；
+2. 达到模型上下文预算的 60%～70% 时生成摘要；
+3. 保留最近 8～12 条原文；
+4. 摘要失败时回退到现有的确定性历史裁剪；
+5. 原始消息和摘要版本都可追溯，摘要不覆盖原始消息；
+6. 摘要生成使用较低成本模型或配置的辅助 Provider，不占用主 Agent Loop 的工具预算。
+
+## 10. 工具安全边界
+
+所有工具统一经过：
+
+```text
+工具 schema
+  -> owner 校验
+  -> 资源归属校验
+  -> 参数校验
+  -> 只读执行或生成动作草稿
+  -> 幂等键
+  -> 用户确认
+  -> 业务写入
+  -> 审计与结果摘要
+```
+
+模型不能直接调用 Repository 或 Service 的任意写方法。写工具必须返回动作草稿，沿用现有 `PROPOSED -> CONFIRMED -> RUNNING -> SUCCEEDED/FAILED/CANCELLED` 状态机。
+
+## 11. 实施顺序
+
+1. 新增 Context Envelope、稳定前缀版本和 token 预算；不改变旧接口行为。
+2. 增加会话滚动摘要和摘要恢复测试。
+3. 将 Agent 会话改为可选面试上下文，增加通用会话接口。
+4. 增加简历、面试报告、知识库和上传文件的统一资源绑定。
+5. 增加上传素材的审核、过期、拒绝、提示注入告警和 RAG 二次确认导入。
+6. 增加 `interview.search/get_context/attach/clear`。
+7. 将日程查询和冲突检查注册为只读 Tool Callback。
+8. 将日程创建接入 `schedule.create_draft`，复用现有动作确认链路。
+9. 增加前端上下文选择器、文件预览审核、当前上下文和待确认动作卡片。
+10. 完成兼容性、权限、幂等、并发、上下文超限、摘要失败、重启恢复和多会话测试后，再部署验收。
+
+## 11. 验收重点
+
+- 不选择面试报告时可以正常通用对话；
+- 上传文件不会自动进入 RAG，审核前不能绑定到 Agent；
+- 文件包含提示注入文本时不会改变系统规则或触发工具；
+- 审核通过后可以作为当前 Agent 资料，知识库导入必须二次确认；
+- 简历、面试报告、文件和知识库资源不能跨用户读取；
+- “使用 XX 面试内容”只读取当前用户匹配的报告；
+- 多个候选时不会自动猜测；
+- 切换和清除上下文刷新后仍然正确；
+- 旧的面试详情进入 Agent 链路不回归；
+- 50 轮以上对话仍保留摘要、最近原文和当前目标；
+- 固定前缀 hash 在只改变用户消息时保持不变；
+- Prompt Cache 不可用时功能不受影响；
+- 日程创建不会绕过确认、owner、幂等和审计；
+- 同一动作重试不会生成重复日程；
+- 任何工具异常只影响当前 Agent 请求，不影响普通面试、简历和 RAG 功能。

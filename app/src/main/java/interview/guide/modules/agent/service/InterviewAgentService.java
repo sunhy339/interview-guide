@@ -194,7 +194,16 @@ public class InterviewAgentService {
                 AgentContextService.AgentContext context;
                 AuthUserContext.set(dataOwnerKey);
                 try {
-                    context = agentContextService.build(sessionId, resolvedRequest, historyMessages);
+                    String contextSessionId = sessionId;
+                    if ((contextSessionId == null || contextSessionId.isBlank())
+                        && resolvedRequest.agentSessionId() != null
+                        && !resolvedRequest.agentSessionId().isBlank()
+                        && dataOwnerKey != null) {
+                        contextSessionId = agentConversationService
+                            .activeInterviewSessionId(resolvedRequest.agentSessionId(), dataOwnerKey)
+                            .orElse(null);
+                    }
+                    context = agentContextService.build(contextSessionId, resolvedRequest, historyMessages);
                 } finally {
                     AuthUserContext.clear();
                 }
@@ -308,8 +317,17 @@ public class InterviewAgentService {
                 AgentContextService.AgentContext context;
                 AuthUserContext.set(recoveredRun.ownerKey());
                 try {
+                    String contextSessionId = recoveredRun.interviewSessionId();
+                    if ((contextSessionId == null || contextSessionId.isBlank())
+                        && recoveredRun.agentSessionId() != null
+                        && !recoveredRun.agentSessionId().isBlank()
+                        && recoveredRun.ownerKey() != null) {
+                        contextSessionId = agentConversationService
+                            .activeInterviewSessionId(recoveredRun.agentSessionId(), recoveredRun.ownerKey())
+                            .orElse(null);
+                    }
                     context = agentContextService.build(
-                        recoveredRun.interviewSessionId(), request, historyMessages
+                        contextSessionId, request, historyMessages
                     );
                 } finally {
                     AuthUserContext.clear();
@@ -1157,7 +1175,7 @@ public class InterviewAgentService {
                 "long-term-memory", memory)
         );
         Map<String, Object> variables = Map.of(
-            "goal", promptSanitizer.sanitize(request.goal()),
+            "goal", promptSanitizer.wrapWithDelimiters("agent-goal", request.goal()),
             "question", promptSanitizer.wrapWithDelimiters("user-message", message),
             "rag", promptSanitizer.wrapWithDelimiters("rag-context", rag),
             "plan", promptSanitizer.wrapWithStableDelimiters(
@@ -1323,7 +1341,7 @@ public class InterviewAgentService {
         }
         List<Message> result = new ArrayList<>();
         for (AgentHistoryMessage message : messages) {
-            String content = promptSanitizer.sanitize(message.content());
+            String content = promptSanitizer.sanitizeForContext(message.content());
             if ("assistant".equals(message.role())) {
                 result.add(new AssistantMessage(content));
             } else {

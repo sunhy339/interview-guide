@@ -15,7 +15,7 @@ export interface AgentMessageRequest {
 }
 
 export interface AgentConversationResponse {
-  interviewSessionId: string;
+  interviewSessionId: string | null;
   agentSessionId?: string | null;
   title?: string | null;
   goal?: AgentGoal | string | null;
@@ -81,7 +81,7 @@ export interface AgentUsageSummary {
 
 export interface AgentUsageRun {
   runId: string;
-  interviewSessionId: string;
+  interviewSessionId: string | null;
   interviewTitle?: string | null;
   skillId?: string | null;
   agentSessionId: string;
@@ -169,11 +169,47 @@ export function isAgentScheduleAction(action: AgentAction): boolean {
 
 export interface AgentConversationSummary {
   agentSessionId: string;
-  interviewSessionId: string;
+  interviewSessionId: string | null;
   title?: string | null;
   runStatus?: 'IDLE' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+}
+
+export type AgentContextSourceType = 'RESUME' | 'INTERVIEW_REPORT' | 'FILE' | 'KNOWLEDGE_BASE';
+
+export interface AgentContextBinding {
+  contextType: AgentContextSourceType | string;
+  interviewSessionId?: string | null;
+  resourceId?: string | null;
+  resourceName?: string | null;
+  scope?: 'SESSION' | 'TURN' | string | null;
+  active: boolean;
+  attachedAt?: string | null;
+}
+
+export type AgentContextAssetStatus =
+  | 'READY_FOR_REVIEW'
+  | 'APPROVED_FOR_CONTEXT'
+  | 'KB_IMPORT_PENDING'
+  | 'KB_IMPORT_COMPLETED'
+  | 'KB_IMPORT_FAILED'
+  | 'REJECTED'
+  | 'EXPIRED';
+
+export interface AgentContextAsset {
+  assetId: string;
+  originalFilename: string;
+  fileSize: number;
+  contentType?: string | null;
+  reviewStatus: AgentContextAssetStatus | string;
+  securityFlagged: boolean;
+  securityNotice?: string | null;
+  previewText?: string | null;
+  knowledgeBaseId?: number | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  expiresAt?: string | null;
 }
 
 export interface AgentMemoryResponse {

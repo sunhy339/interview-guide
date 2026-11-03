@@ -6,6 +6,7 @@ import { getErrorMessage } from '../api/request';
 import type { AgentConversationSummary } from '../types/agent';
 
 interface AgentSessionListProps {
+  generalMode?: boolean;
   selectedSessionId: string | null;
   disabled?: boolean;
   agentConversationDisabled?: boolean;
@@ -47,6 +48,7 @@ function getStatusClass(session: TextSessionMeta) {
 }
 
 export default function AgentSessionList({
+  generalMode = false,
   selectedSessionId,
   disabled = false,
   agentConversationDisabled = false,
@@ -75,6 +77,7 @@ export default function AgentSessionList({
     setError('');
 
     try {
+      if (generalMode) return;
       const loaded = await interviewApi.listSessions();
       loaded.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       setSessions(loaded);
@@ -84,7 +87,7 @@ export default function AgentSessionList({
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [generalMode]);
 
   useEffect(() => {
     void loadSessions();
@@ -95,13 +98,13 @@ export default function AgentSessionList({
     // 列表加载完成后自动选择当前账号最近的报告，或从失效绑定切换到
     // 第一份可见报告，避免用户直接打开 /agent 时没有上下文、也看不到
     // “新建 Agent 对话”入口。明确选择过的有效报告不会被覆盖。
-    if (loading || error || disabled || sessions.length === 0) return;
+    if (generalMode || loading || error || disabled || sessions.length === 0) return;
     if (selectedSessionId && sessions.some((session) => session.sessionId === selectedSessionId)) return;
     onSelect(sessions[0].sessionId);
-  }, [disabled, error, loading, onSelect, selectedSessionId, sessions]);
+  }, [disabled, error, generalMode, loading, onSelect, selectedSessionId, sessions]);
 
   useEffect(() => {
-    if (!selectedSessionId || agentConversationDisabled) {
+    if ((!generalMode && !selectedSessionId) || agentConversationDisabled) {
       setConversations([]);
       setConversationLoading(false);
       setConversationError('');
@@ -111,7 +114,7 @@ export default function AgentSessionList({
     setConversations([]);
     setConversationLoading(true);
     setConversationError('');
-    agentApi.listConversations(selectedSessionId)
+    (generalMode ? agentApi.listGeneralConversations() : agentApi.listConversations(selectedSessionId!))
       .then((loaded) => {
         if (!cancelled) setConversations(loaded);
       })
@@ -127,7 +130,7 @@ export default function AgentSessionList({
     return () => {
       cancelled = true;
     };
-  }, [agentConversationDisabled, conversationReloadToken, selectedSessionId]);
+  }, [agentConversationDisabled, conversationReloadToken, generalMode, selectedSessionId]);
 
   const createAgentConversation = async () => {
     if (!onCreateAgentConversation || creatingConversationRef.current) return;
@@ -155,11 +158,11 @@ export default function AgentSessionList({
     const nextTitle = window.prompt('请输入 Agent 会话名称', currentTitle)?.trim();
     if (!nextTitle || nextTitle === currentTitle) return;
     try {
-      const updated = await agentApi.renameConversation(
-        conversation.interviewSessionId,
-        conversation.agentSessionId,
-        nextTitle,
-      );
+      const updated = generalMode
+        ? await agentApi.renameGeneralConversation(conversation.agentSessionId, nextTitle)
+        : await agentApi.renameConversation(
+          conversation.interviewSessionId!, conversation.agentSessionId, nextTitle,
+        );
       setConversations((current) => current.map((item) => (
         item.agentSessionId === updated.agentSessionId ? updated : item
       )));
@@ -171,7 +174,11 @@ export default function AgentSessionList({
   const archiveConversation = async (conversation: AgentConversationSummary) => {
     if (!window.confirm(`确定归档“${conversation.title?.trim() || '新 Agent 对话'}”吗？归档后不会删除历史数据。`)) return;
     try {
-      await agentApi.archiveConversation(conversation.interviewSessionId, conversation.agentSessionId);
+      if (generalMode) {
+        await agentApi.archiveGeneralConversation(conversation.agentSessionId);
+      } else {
+        await agentApi.archiveConversation(conversation.interviewSessionId!, conversation.agentSessionId);
+      }
       setConversations((current) => current.filter((item) => item.agentSessionId !== conversation.agentSessionId));
       if (conversation.agentSessionId === selectedAgentSessionId) {
         const next = conversations.find((item) => item.agentSessionId !== conversation.agentSessionId);
@@ -189,11 +196,11 @@ export default function AgentSessionList({
         <div>
           <div className="flex items-center gap-2">
             <p className="text-xs font-semibold text-primary-500 uppercase tracking-wider">Sessions</p>
-            <span className="min-w-5 h-5 px-1.5 rounded-full bg-primary-50 dark:bg-primary-900/30 text-primary-600 dark:text-primary-300 text-[11px] font-semibold inline-flex items-center justify-center">
-              {sessions.length}
+          <span className="min-w-5 h-5 px-1.5 rounded-full bg-primary-50 dark:bg-primary-900/30 text-primary-600 dark:text-primary-300 text-[11px] font-semibold inline-flex items-center justify-center">
+              {generalMode ? conversations.length : sessions.length}
             </span>
           </div>
-          <h2 className="text-base font-semibold dark-text mt-1">面试报告与对话</h2>
+          <h2 className="text-base font-semibold dark-text mt-1">{generalMode ? 'Agent 对话' : '面试报告与对话'}</h2>
         </div>
         <button
           type="button"
@@ -207,7 +214,9 @@ export default function AgentSessionList({
         </button>
       </div>
       <p className="text-xs dark-text-muted mt-2 leading-relaxed">
-        先选择面试报告，再在同一份报告下切换多个 Agent 对话；每个对话都有独立历史和运行状态。
+        {generalMode
+          ? '默认使用通用 Agent；需要时再从输入区添加简历、面试报告或上传文件。'
+          : '先选择面试报告，再在同一份报告下切换多个 Agent 对话；每个对话都有独立历史和运行状态。'}
       </p>
 
       <button
@@ -216,17 +225,17 @@ export default function AgentSessionList({
         className="btn-primary w-full mt-4 inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-sm"
       >
         <Plus className="w-4 h-4" />
-        从面试记录新建
+        {generalMode ? '选择面试报告' : '从面试记录新建'}
       </button>
 
-      {selectedSessionId && onCreateAgentConversation && (
+      {(generalMode || selectedSessionId) && onCreateAgentConversation && (
         <button
           type="button"
           onClick={() => void createAgentConversation()}
           // 新建线程不属于当前线程的执行操作；当前线程运行时也必须允许用户创建并切换其他线程。
           disabled={agentConversationDisabled || creatingConversation}
           className="btn-secondary w-full mt-2 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-sm disabled:opacity-50"
-          title={agentConversationDisabled && !disabled ? '请先选择一份有效的面试报告' : undefined}
+          title={agentConversationDisabled && !disabled && !generalMode ? '请先选择一份有效的面试报告' : undefined}
         >
           {creatingConversation ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageSquare className="w-4 h-4" />}
           {creatingConversation ? '创建中...' : '新建 Agent 对话'}
@@ -250,7 +259,7 @@ export default function AgentSessionList({
               重新加载
             </button>
           </div>
-        ) : sessions.length === 0 ? (
+        ) : !generalMode && sessions.length === 0 ? (
           <div className="py-7 text-center border border-dashed border-slate-200 dark:border-slate-700 rounded-xl">
             <FileText className="w-5 h-5 mx-auto text-slate-400" />
             <p className="text-sm dark-text mt-2">暂无可用会话</p>
@@ -258,7 +267,7 @@ export default function AgentSessionList({
           </div>
         ) : (
           <>
-          {sessions.map((session) => {
+          {!generalMode && sessions.map((session) => {
             const active = session.sessionId === selectedSessionId;
             return (
               <button
@@ -291,7 +300,7 @@ export default function AgentSessionList({
               </button>
             );
           })}
-          {selectedSessionId && (
+          {(generalMode || selectedSessionId) && (
             <div className="pt-3 mt-3 border-t border-slate-100 dark:border-slate-700">
               <div className="flex items-center justify-between gap-2 px-1 mb-2">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-primary-500">Agent 对话</p>

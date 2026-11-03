@@ -79,6 +79,18 @@ public class FileStorageService {
     }
 
     /**
+     * 上传 Agent 待审核上下文素材。该目录与简历、知识库隔离，审核通过前不会进入 RAG。
+     */
+    public String uploadAgentContextAsset(MultipartFile file) {
+        return uploadFile(file, "agent-context-assets");
+    }
+
+    /** 删除 Agent 待审核上下文素材。 */
+    public void deleteAgentContextAsset(String fileKey) {
+        deleteFile(fileKey);
+    }
+
+    /**
      * 下载文件（通用方法）
      *
      * @param fileKey 文件存储键
