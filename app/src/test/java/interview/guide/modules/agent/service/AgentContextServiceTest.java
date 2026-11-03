@@ -16,7 +16,10 @@ import interview.guide.modules.interview.service.InterviewHistoryService;
 import interview.guide.modules.interview.skill.InterviewSkillService;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseQueryService;
 import interview.guide.modules.knowledgebase.service.RagQueryExecution;
+import interview.guide.modules.auth.AuthUserContext;
 import org.springframework.ai.chat.messages.Message;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
@@ -32,6 +35,16 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verify;
 
 class AgentContextServiceTest {
+
+    @BeforeEach
+    void setAuthenticatedOwner() {
+        AuthUserContext.set("owner-1");
+    }
+
+    @AfterEach
+    void clearAuthenticatedOwner() {
+        AuthUserContext.clear();
+    }
 
     @Test
     void shouldLoadSkillReferenceForNormalInterview() throws Exception {
@@ -228,6 +241,32 @@ class AgentContextServiceTest {
 
         assertThat(context.interviewReport()).contains("已绑定资料但没有读取到可用内容");
         verify(history, never()).getInterviewDetail("other-interview");
+    }
+
+    @Test
+    void doesNotUseRequestMemoryKeyAsOwnerWhenAuthenticationIsMissing() throws Exception {
+        AuthUserContext.clear();
+        InterviewHistoryService history = mock(InterviewHistoryService.class);
+        InterviewSkillService skills = mock(InterviewSkillService.class);
+        KnowledgeBaseQueryService rag = mock(KnowledgeBaseQueryService.class);
+        PromptSanitizer sanitizer = mock(PromptSanitizer.class);
+        ObjectMapper objectMapper = mock(ObjectMapper.class);
+        AgentMemoryService memory = mock(AgentMemoryService.class);
+
+        AgentContextService service = new AgentContextService(
+            history, skills, rag, sanitizer, objectMapper, memory
+        );
+
+        AgentContextService.AgentContext context = service.build(
+            "private-interview",
+            new AgentMessageRequest("review", "请分析", List.of(), null, "forged-owner"),
+            List.of()
+        );
+
+        assertThat(context.interviewReport())
+            .contains("当前 Agent 会话未绑定任何资料");
+        verify(history, never()).getInterviewDetail(anyString());
+        verify(memory, never()).remember(anyString(), any(), any(), any());
     }
 
     @Test

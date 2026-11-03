@@ -127,6 +127,12 @@ public class AgentContextService {
         AgentMessageRequest request,
         List<AgentHistoryMessage> effectiveHistory
     ) {
+        String trustedOwner = ownerKey(request);
+        if (trustedOwner == null || trustedOwner.isBlank()) {
+            // memoryKey 属于请求体，不是认证凭证，不能作为跨用户资源的归属依据。
+            // HTTP 入口会在进入上下文编排前写入 AuthUserContext；缺少身份时只能运行无私有资料的通用模式。
+            return buildGeneralContext(request, effectiveHistory);
+        }
         if (sessionId == null || sessionId.isBlank()) {
             return buildGeneralContext(request, effectiveHistory);
         }
@@ -195,7 +201,8 @@ public class AgentContextService {
         boolean includeInterviewReport
     ) {
         String agentSessionId = request == null ? null : request.agentSessionId();
-        if (sessionContextRepository == null || agentSessionId == null || agentSessionId.isBlank()) {
+        if (ownerKey(request) == null || ownerKey(request).isBlank()
+            || sessionContextRepository == null || agentSessionId == null || agentSessionId.isBlank()) {
             return includeInterviewReport
                 ? "当前 Agent 会话未绑定任何资料。不要推断未提供的经历、面试表现或知识库结论。"
                 : "";
@@ -343,8 +350,7 @@ public class AgentContextService {
     }
 
     private String ownerKey(AgentMessageRequest request) {
-        return AuthUserContext.currentUserId()
-            .orElse(request == null ? null : request.memoryKey());
+        return AuthUserContext.currentUserId().orElse(null);
     }
 
     private String loadSessionSummary(AgentMessageRequest request) {
@@ -357,11 +363,12 @@ public class AgentContextService {
     }
 
     private AgentMemorySnapshot loadAndUpdateMemory(InterviewDetailDTO detail, AgentMessageRequest request) {
-        if (agentMemoryService == null) {
-            return AgentMemorySnapshot.empty(request.memoryKey());
+        String trustedOwner = ownerKey(request);
+        if (agentMemoryService == null || trustedOwner == null || trustedOwner.isBlank()) {
+            return AgentMemorySnapshot.empty(null);
         }
         return agentMemoryService.remember(
-            request.memoryKey(),
+            trustedOwner,
             detail == null ? null : detail.skillId(),
             detail == null ? List.of() : extractWeaknesses(detail),
             request.goal()

@@ -11,15 +11,12 @@ import interview.guide.modules.agent.model.AgentContextAssetResponse;
 import interview.guide.modules.agent.model.AgentContextAssetStatus;
 import interview.guide.modules.agent.repository.AgentContextAssetRepository;
 import interview.guide.modules.knowledgebase.listener.VectorizeStreamProducer;
-import interview.guide.modules.knowledgebase.repository.KnowledgeBaseRepository;
-import interview.guide.modules.knowledgebase.service.KnowledgeBasePersistenceService;
-import interview.guide.modules.knowledgebase.model.KnowledgeBaseEntity;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -31,7 +28,6 @@ import org.springframework.web.multipart.MultipartFile;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class AgentContextAssetService {
 
     private static final long MAX_FILE_SIZE = 50 * 1024 * 1024L;
@@ -44,11 +40,30 @@ public class AgentContextAssetService {
     private final FileStorageService storageService;
     private final interview.guide.modules.knowledgebase.service.KnowledgeBaseParseService parseService;
     private final PromptSanitizer promptSanitizer;
-    private final KnowledgeBaseRepository knowledgeBaseRepository;
-    private final KnowledgeBasePersistenceService knowledgeBasePersistenceService;
+    private final AgentContextAssetPersistenceService persistenceService;
     private final VectorizeStreamProducer vectorizeStreamProducer;
 
-    @Transactional
+    @Autowired
+    public AgentContextAssetService(
+        AgentContextAssetRepository repository,
+        FileValidationService fileValidationService,
+        FileHashService fileHashService,
+        FileStorageService storageService,
+        interview.guide.modules.knowledgebase.service.KnowledgeBaseParseService parseService,
+        PromptSanitizer promptSanitizer,
+        AgentContextAssetPersistenceService persistenceService,
+        VectorizeStreamProducer vectorizeStreamProducer
+    ) {
+        this.repository = repository;
+        this.fileValidationService = fileValidationService;
+        this.fileHashService = fileHashService;
+        this.storageService = storageService;
+        this.parseService = parseService;
+        this.promptSanitizer = promptSanitizer;
+        this.persistenceService = persistenceService;
+        this.vectorizeStreamProducer = vectorizeStreamProducer;
+    }
+
     public AgentContextAssetResponse upload(MultipartFile file, String ownerId) {
         String owner = requireOwner(ownerId);
         fileValidationService.validateFile(file, MAX_FILE_SIZE, "Agent 上下文");
@@ -136,6 +151,7 @@ public class AgentContextAssetService {
         return approve(assetId, ownerId, false);
     }
 
+    @Transactional
     public AgentContextAssetResponse approve(String assetId, String ownerId, boolean confirmSecurity) {
         AgentContextAssetEntity asset = find(assetId, ownerId);
         if (asset.getReviewStatus() == AgentContextAssetStatus.REJECTED
@@ -169,76 +185,40 @@ public class AgentContextAssetService {
      * 用户明确确认后才真正创建知识库并投递向量化任务。失败时保留素材和状态，便于重试，
      * 不会删除原始上传文件。
      */
-    @Transactional
     public AgentContextAssetResponse confirmKnowledgeBaseImport(
         String assetId, String ownerId, String name, String category
     ) {
-        AgentContextAssetEntity asset = find(assetId, ownerId);
-        if (asset.getKnowledgeBaseId() != null
-            && asset.getReviewStatus() == AgentContextAssetStatus.KB_IMPORT_COMPLETED) {
-            return AgentContextAssetResponse.from(asset);
+        AgentContextAssetPersistenceService.KnowledgeBaseImportPreparation preparation =
+            persistenceService.prepareKnowledgeBaseImport(assetId, ownerId, name, category);
+        if (!preparation.vectorizationRequired()) {
+            return preparation.asset();
         }
-        if (asset.getReviewStatus() != AgentContextAssetStatus.KB_IMPORT_PENDING) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "请先审核素材并申请加入知识库");
-        }
-        if (asset.getKnowledgeBaseId() != null) {
-            return retryVectorization(asset);
-        }
-        var duplicate = knowledgeBaseRepository.findByFileHashAndOwnerId(asset.getFileHash(), ownerId);
-        KnowledgeBaseEntity kb = duplicate.orElseGet(() ->
-            knowledgeBasePersistenceService.saveKnowledgeBaseFromStoredAsset(
-                name, category, asset.getOriginalFilename(), asset.getFileSize(), asset.getContentType(),
-                asset.getStorageKey(), asset.getStorageUrl(), asset.getFileHash(), ownerId
-            )
-        );
-        asset.setKnowledgeBaseId(kb.getId());
-        asset.setReviewStatus(AgentContextAssetStatus.KB_IMPORT_COMPLETED);
-        asset.setReviewedAt(LocalDateTime.now());
-        AgentContextAssetEntity saved = repository.save(asset);
-        if (duplicate.isEmpty()) {
-            boolean queued;
-            try {
-                queued = vectorizeStreamProducer.sendVectorizeTask(kb.getId());
-            } catch (RuntimeException error) {
-                log.warn("Agent 素材知识库向量化任务投递异常: assetId={}, kbId={}", assetId, kb.getId(), error);
-                queued = false;
-            }
-            if (!queued) {
-                saved.setReviewStatus(AgentContextAssetStatus.KB_IMPORT_FAILED);
-                saved.setSecurityNotice("知识库已创建，但向量化任务暂未投递成功，可稍后重试");
-                repository.save(saved);
-            }
-        }
-        return AgentContextAssetResponse.from(saved);
-    }
-
-    private AgentContextAssetResponse retryVectorization(AgentContextAssetEntity asset) {
         boolean queued;
         try {
-            queued = vectorizeStreamProducer.sendVectorizeTask(asset.getKnowledgeBaseId());
+            queued = vectorizeStreamProducer.sendVectorizeTask(preparation.asset().knowledgeBaseId());
         } catch (RuntimeException error) {
-            log.warn("Agent 素材知识库向量化重试异常: assetId={}, kbId={}",
-                asset.getAssetId(), asset.getKnowledgeBaseId(), error);
+            log.warn("Agent 素材知识库向量化任务投递异常: assetId={}, kbId={}",
+                assetId, preparation.asset().knowledgeBaseId(), error);
             queued = false;
         }
-        asset.setReviewStatus(queued
-            ? AgentContextAssetStatus.KB_IMPORT_COMPLETED
-            : AgentContextAssetStatus.KB_IMPORT_FAILED);
         if (!queued) {
-            asset.setSecurityNotice("知识库已创建，但向量化任务暂未投递成功，可稍后重试");
+            return persistenceService.markVectorizationEnqueueFailed(
+                assetId, ownerId, "知识库已创建，但向量化任务暂未投递成功，可稍后重试"
+            );
         }
-        return AgentContextAssetResponse.from(repository.save(asset));
+        return preparation.asset();
     }
 
-    @Transactional
     public void reject(String assetId, String ownerId) {
         AgentContextAssetEntity asset = find(assetId, ownerId);
-        if (asset.getKnowledgeBaseId() != null) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "已进入知识库的素材不能从 Agent 待审核区删除");
+        persistenceService.reject(assetId, ownerId);
+        try {
+            storageService.deleteAgentContextAsset(asset.getStorageKey());
+        } catch (RuntimeException error) {
+            log.warn("Agent 素材已标记拒绝但对象存储清理失败: assetId={}, key={}", assetId,
+                asset.getStorageKey(), error);
+            throw error;
         }
-        asset.setReviewStatus(AgentContextAssetStatus.REJECTED);
-        repository.save(asset);
-        storageService.deleteAgentContextAsset(asset.getStorageKey());
     }
 
     private AgentContextAssetEntity find(String assetId, String ownerId) {

@@ -5,12 +5,11 @@ import interview.guide.infrastructure.file.FileHashService;
 import interview.guide.infrastructure.file.FileStorageService;
 import interview.guide.infrastructure.file.FileValidationService;
 import interview.guide.modules.agent.model.AgentContextAssetEntity;
+import interview.guide.modules.agent.model.AgentContextAssetResponse;
 import interview.guide.modules.agent.model.AgentContextAssetStatus;
 import interview.guide.modules.agent.repository.AgentContextAssetRepository;
 import interview.guide.modules.knowledgebase.listener.VectorizeStreamProducer;
-import interview.guide.modules.knowledgebase.repository.KnowledgeBaseRepository;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseParseService;
-import interview.guide.modules.knowledgebase.service.KnowledgeBasePersistenceService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -20,6 +19,7 @@ import org.springframework.mock.web.MockMultipartFile;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -33,8 +33,7 @@ class AgentContextAssetServiceTest {
     @Mock private FileStorageService storageService;
     @Mock private KnowledgeBaseParseService parseService;
     @Mock private PromptSanitizer promptSanitizer;
-    @Mock private KnowledgeBaseRepository knowledgeBaseRepository;
-    @Mock private KnowledgeBasePersistenceService knowledgeBasePersistenceService;
+    @Mock private AgentContextAssetPersistenceService persistenceService;
     @Mock private VectorizeStreamProducer vectorizeStreamProducer;
 
     @Test
@@ -53,7 +52,7 @@ class AgentContextAssetServiceTest {
 
         AgentContextAssetService service = new AgentContextAssetService(
             repository, validationService, hashService, storageService, parseService,
-            promptSanitizer, knowledgeBaseRepository, knowledgeBasePersistenceService, vectorizeStreamProducer
+            promptSanitizer, persistenceService, vectorizeStreamProducer
         );
 
         var result = service.upload(file, "user-1");
@@ -62,9 +61,6 @@ class AgentContextAssetServiceTest {
         assertThat(result.securityFlagged()).isTrue();
         assertThat(result.previewText()).contains("Redis notes");
         verify(vectorizeStreamProducer, never()).sendVectorizeTask(any());
-        verify(knowledgeBasePersistenceService, never()).saveKnowledgeBaseFromStoredAsset(
-            any(), any(), any(), any(), any(), any(), any(), any(), any()
-        );
     }
 
     @Test
@@ -80,15 +76,12 @@ class AgentContextAssetServiceTest {
 
         AgentContextAssetService service = new AgentContextAssetService(
             repository, validationService, hashService, storageService, parseService,
-            promptSanitizer, knowledgeBaseRepository, knowledgeBasePersistenceService, vectorizeStreamProducer
+            promptSanitizer, persistenceService, vectorizeStreamProducer
         );
 
         var result = service.approve("asset-1", "user-1");
 
         assertThat(result.reviewStatus()).isEqualTo(AgentContextAssetStatus.APPROVED_FOR_CONTEXT);
-        verify(knowledgeBasePersistenceService, never()).saveKnowledgeBaseFromStoredAsset(
-            any(), any(), any(), any(), any(), any(), any(), any(), any()
-        );
     }
 
     @Test
@@ -106,7 +99,7 @@ class AgentContextAssetServiceTest {
 
         AgentContextAssetService service = new AgentContextAssetService(
             repository, validationService, hashService, storageService, parseService,
-            promptSanitizer, knowledgeBaseRepository, knowledgeBasePersistenceService, vectorizeStreamProducer
+            promptSanitizer, persistenceService, vectorizeStreamProducer
         );
 
         org.assertj.core.api.Assertions.assertThatThrownBy(
@@ -116,5 +109,68 @@ class AgentContextAssetServiceTest {
 
         var result = service.approve("asset-flagged", "user-1", true);
         assertThat(result.reviewStatus()).isEqualTo(AgentContextAssetStatus.APPROVED_FOR_CONTEXT);
+    }
+
+    @Test
+    void queuesVectorizationOnlyAfterDatabasePreparationReturns() {
+        AgentContextAssetResponse prepared = new AgentContextAssetResponse(
+            "asset-1", "notes.md", 20L, "text/markdown", AgentContextAssetStatus.KB_IMPORT_COMPLETED,
+            false, null, null, 42L, null, null, null
+        );
+        when(persistenceService.prepareKnowledgeBaseImport(
+            "asset-1", "user-1", "notes", "agent-upload"
+        )).thenReturn(new AgentContextAssetPersistenceService.KnowledgeBaseImportPreparation(
+            prepared, true
+        ));
+        when(vectorizeStreamProducer.sendVectorizeTask(42L)).thenReturn(true);
+
+        AgentContextAssetService service = new AgentContextAssetService(
+            repository, validationService, hashService, storageService, parseService,
+            promptSanitizer, persistenceService, vectorizeStreamProducer
+        );
+
+        assertThat(service.confirmKnowledgeBaseImport(
+            "asset-1", "user-1", "notes", "agent-upload"
+        )).isEqualTo(prepared);
+        verify(persistenceService).prepareKnowledgeBaseImport(
+            "asset-1", "user-1", "notes", "agent-upload"
+        );
+        verify(vectorizeStreamProducer).sendVectorizeTask(42L);
+        verify(persistenceService, never()).markVectorizationEnqueueFailed(
+            any(), any(), any()
+        );
+    }
+
+    @Test
+    void recordsEnqueueFailureAfterDatabasePreparationWithoutRevertingImport() {
+        AgentContextAssetResponse prepared = new AgentContextAssetResponse(
+            "asset-1", "notes.md", 20L, "text/markdown", AgentContextAssetStatus.KB_IMPORT_COMPLETED,
+            false, null, null, 42L, null, null, null
+        );
+        AgentContextAssetResponse failed = new AgentContextAssetResponse(
+            "asset-1", "notes.md", 20L, "text/markdown", AgentContextAssetStatus.KB_IMPORT_FAILED,
+            false, "向量化任务暂未投递成功", null, 42L, null, null, null
+        );
+        when(persistenceService.prepareKnowledgeBaseImport(
+            "asset-1", "user-1", "notes", "agent-upload"
+        )).thenReturn(new AgentContextAssetPersistenceService.KnowledgeBaseImportPreparation(
+            prepared, true
+        ));
+        when(vectorizeStreamProducer.sendVectorizeTask(42L)).thenReturn(false);
+        when(persistenceService.markVectorizationEnqueueFailed(
+            eq("asset-1"), eq("user-1"), any()
+        )).thenReturn(failed);
+
+        AgentContextAssetService service = new AgentContextAssetService(
+            repository, validationService, hashService, storageService, parseService,
+            promptSanitizer, persistenceService, vectorizeStreamProducer
+        );
+
+        assertThat(service.confirmKnowledgeBaseImport(
+            "asset-1", "user-1", "notes", "agent-upload"
+        )).isEqualTo(failed);
+        verify(persistenceService).markVectorizationEnqueueFailed(
+            eq("asset-1"), eq("user-1"), any()
+        );
     }
 }
