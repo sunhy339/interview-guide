@@ -404,7 +404,7 @@ public class AgentContextService {
             String reference = interviewSkillService.buildEvaluationReferenceSectionSafe(detail.skillId());
             if (reference != null && !reference.isBlank() && !"未配置 references。".equals(reference)) {
                 sources.add(new AgentSource("skill", "Skill: " + detail.skillId(), null, "skill-reference"));
-                return truncate(reference, 8_000);
+                return truncate(promptSanitizer.sanitizeForContext(reference), 8_000);
             }
         } catch (Exception error) {
             log.warn("Agent 加载 Skill references 失败: skillId={}, error={}", detail.skillId(),
@@ -520,7 +520,7 @@ public class AgentContextService {
                 .filter(answer -> answer.score() != null && answer.score() < WEAK_SCORE_THRESHOLD)
                 .limit(MAX_WEAK_ANSWERS)
                 .forEach(answer -> query.append("薄弱回答（")
-                    .append(answer.category()).append("，")
+                    .append(promptSanitizer.sanitizeForContext(answer.category())).append("，")
                     .append(answer.score()).append("分）：")
                     .append(promptSanitizer.sanitizeForContext(answer.question())).append('；'));
         }

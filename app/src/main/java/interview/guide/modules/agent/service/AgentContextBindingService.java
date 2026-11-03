@@ -17,6 +17,7 @@ import interview.guide.modules.resume.repository.ResumeRepository;
 import java.time.LocalDateTime;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -92,9 +93,8 @@ public class AgentContextBindingService {
             throw new BusinessException(ErrorCode.UNAUTHORIZED, "用户身份不能为空");
         }
         return knowledgeBaseRepository.findAccessibleByOwnerAndVectorStatus(
-                ownerId, VectorStatus.COMPLETED
+                ownerId, VectorStatus.COMPLETED, PageRequest.of(0, 50)
             ).stream()
-            .limit(50)
             .map(AgentKnowledgeBaseOption::from)
             .toList();
     }

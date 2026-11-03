@@ -43,7 +43,8 @@ public interface KnowledgeBaseRepository extends JpaRepository<KnowledgeBaseEnti
         + "(k.ownerId IS NULL OR k.ownerId = :ownerId) "
         + "AND k.vectorStatus = :status ORDER BY k.uploadedAt DESC")
     List<KnowledgeBaseEntity> findAccessibleByOwnerAndVectorStatus(
-        @Param("ownerId") String ownerId, @Param("status") VectorStatus status
+        @Param("ownerId") String ownerId, @Param("status") VectorStatus status,
+        Pageable pageable
     );
 
     /**

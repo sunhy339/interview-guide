@@ -319,7 +319,7 @@ public class AgentMetrics {
         private final AtomicReference<String> provider = new AtomicReference<>();
         private final AtomicReference<String> model = new AtomicReference<>();
         /** 当前运行最近一次面试搜索的候选 ID；只用于服务端消歧，不进入模型指标。 */
-        private final AtomicReference<List<String>> interviewSearchCandidateIds =
+        private final AtomicReference<List<InterviewSearchCandidate>> interviewSearchCandidates =
             new AtomicReference<>(List.of());
         private volatile AuditContext auditContext = AuditContext.empty();
 
@@ -354,12 +354,12 @@ public class AgentMetrics {
             return auditContext;
         }
 
-        public void rememberInterviewSearchCandidates(List<String> candidateIds) {
-            interviewSearchCandidateIds.set(candidateIds == null ? List.of() : List.copyOf(candidateIds));
+        public void rememberInterviewSearchCandidates(List<InterviewSearchCandidate> candidates) {
+            interviewSearchCandidates.set(candidates == null ? List.of() : List.copyOf(candidates));
         }
 
-        public List<String> interviewSearchCandidateIds() {
-            return interviewSearchCandidateIds.get();
+        public List<InterviewSearchCandidate> interviewSearchCandidates() {
+            return interviewSearchCandidates.get();
         }
 
         private void record(
@@ -409,5 +409,9 @@ public class AgentMetrics {
         public static AuditContext empty() {
             return new AuditContext(null, null, null, null);
         }
+    }
+
+    /** 面试搜索的低敏消歧信息，只在本次运行内存活，不写入指标或审计。 */
+    public record InterviewSearchCandidate(String sessionId, String title) {
     }
 }

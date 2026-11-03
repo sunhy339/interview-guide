@@ -14,6 +14,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
+import org.springframework.data.domain.Pageable;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.verify;
@@ -39,7 +40,7 @@ class AgentContextBindingServiceTest {
         knowledgeBase.setOriginalFilename("java.md");
         knowledgeBase.setVectorStatus(VectorStatus.COMPLETED);
         when(knowledgeBaseRepository.findAccessibleByOwnerAndVectorStatus(
-            "owner-1", VectorStatus.COMPLETED
+            "owner-1", VectorStatus.COMPLETED, Pageable.ofSize(50)
         )).thenReturn(List.of(knowledgeBase));
 
         AgentContextBindingService service = new AgentContextBindingService(
@@ -53,7 +54,7 @@ class AgentContextBindingServiceTest {
             7L, "Java 面试资料", "Java", "java.md", "COMPLETED"
         ));
         verify(knowledgeBaseRepository).findAccessibleByOwnerAndVectorStatus(
-            eq("owner-1"), eq(VectorStatus.COMPLETED)
+            eq("owner-1"), eq(VectorStatus.COMPLETED), eq(Pageable.ofSize(50))
         );
     }
 }

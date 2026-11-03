@@ -5,6 +5,7 @@ import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.model.AgentContextAssetResponse;
+import interview.guide.modules.agent.model.AgentContextAssetStatus;
 import interview.guide.modules.agent.model.AgentContextBindingResponse;
 import interview.guide.modules.agent.model.AgentInterviewSearchResult;
 import interview.guide.modules.agent.model.AgentActionResponse;
@@ -43,6 +44,8 @@ public class AgentContextToolCallbackFactory {
     private static final String SCHEDULE_LIST = "schedule.list";
     private static final String SCHEDULE_CONFLICT = "schedule.check_conflict";
     private static final String SCHEDULE_DRAFT = "schedule.create_draft";
+    private static final int MAX_TOOL_ASSETS = 20;
+    private static final int MAX_TOOL_ASSET_PREVIEW_CHARS = 320;
 
     private static final String SEARCH_SCHEMA = """
         {"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":10}},"additionalProperties":false}
@@ -135,7 +138,7 @@ public class AgentContextToolCallbackFactory {
             .description(description)
             .inputSchema(schema)
             .build();
-        return new Callback(definition, objectMapper, handler);
+        return new Callback(definition, objectMapper, promptSanitizer, handler);
     }
 
     private String searchInterviews(JsonNode input, ToolContext toolContext) {
@@ -145,15 +148,20 @@ public class AgentContextToolCallbackFactory {
             context.ownerKey(), safeContextText(text(input, "query")), integer(input, "limit", 8)
         );
         context.tracker().rememberInterviewSearchCandidates(
-            results.stream().map(AgentInterviewSearchResult::sessionId).filter(java.util.Objects::nonNull).toList()
+            results.stream()
+                .filter(result -> result.sessionId() != null && !result.sessionId().isBlank())
+                .map(result -> new AgentMetrics.InterviewSearchCandidate(
+                    result.sessionId(), result.title()
+                ))
+                .toList()
         );
         return emit(results);
     }
 
     private String attachInterview(JsonNode input, ToolContext toolContext) {
         ToolContextData context = context(toolContext);
-        requireUserIntent(context.userMessage(), "使用", "根据", "基于", "绑定", "选中");
-        requireUserIntent(context.userMessage(), "面试", "报告");
+        requireMutationIntent(context.userMessage(), "使用", "根据", "基于", "绑定", "选中");
+        requireMutationIntent(context.userMessage(), "面试", "报告");
         String interviewSessionId = required(input, "interviewSessionId", "面试编号不能为空");
         if (!isExplicitInterviewSelection(context, interviewSessionId)) {
             return emit(Map.of(
@@ -178,13 +186,22 @@ public class AgentContextToolCallbackFactory {
         if (context.userMessage().contains(interviewSessionId)) {
             return true;
         }
-        List<String> candidates = context.tracker().interviewSearchCandidateIds();
-        return candidates.size() == 1 && interviewSessionId.equals(candidates.getFirst());
+        List<AgentMetrics.InterviewSearchCandidate> candidates = context.tracker().interviewSearchCandidates();
+        if (candidates.size() == 1 && interviewSessionId.equals(candidates.getFirst().sessionId())) {
+            return true;
+        }
+        return candidates.stream()
+            .filter(candidate -> candidate.title() != null && !candidate.title().isBlank())
+            .filter(candidate -> context.userMessage().contains(candidate.title()))
+            .filter(candidate -> candidates.stream()
+                .filter(other -> candidate.title().equals(other.title()))
+                .count() == 1)
+            .anyMatch(candidate -> interviewSessionId.equals(candidate.sessionId()));
     }
 
     private String clearContext(JsonNode ignored, ToolContext toolContext) {
         ToolContextData context = context(toolContext);
-        requireUserIntent(context.userMessage(), "清除", "清空", "取消绑定", "移除");
+        requireClearIntent(context.userMessage());
         contextBindingService.clear(context.agentSessionId(), context.ownerKey());
         return emit(Map.of("status", "CLEARED", "message", "当前 Agent 会话的资料绑定已清除"));
     }
@@ -196,8 +213,20 @@ public class AgentContextToolCallbackFactory {
         );
         return emit(new ContextListResult(
             contextBindingService.list(context.agentSessionId(), context.ownerKey()),
-            contextAssetService.list(context.ownerKey())
+            contextAssetService.list(context.ownerKey()).stream()
+                .limit(MAX_TOOL_ASSETS)
+                .map(this::toToolAsset)
+                .toList()
         ));
+    }
+
+    private ContextAssetToolSummary toToolAsset(AgentContextAssetResponse asset) {
+        return new ContextAssetToolSummary(
+            asset.assetId(), asset.originalFilename(), asset.reviewStatus(),
+            asset.securityFlagged(), asset.securityNotice(),
+            truncate(asset.previewText(), MAX_TOOL_ASSET_PREVIEW_CHARS),
+            asset.knowledgeBaseId(), asset.expiresAt()
+        );
     }
 
     private String assetAction(JsonNode input, ToolContext toolContext) {
@@ -215,7 +244,7 @@ public class AgentContextToolCallbackFactory {
     }
 
     private String reviewAsset(AgentContextAssetResponse asset, ToolContextData context) {
-        requireUserIntent(context.userMessage(), "审核", "确认");
+        requireMutationIntent(context.userMessage(), "审核", "确认");
         if (asset.securityFlagged()
             && !containsAny(context.userMessage(), "仅作为资料", "不执行", "不运行", "不当作指令")) {
             return emit(Map.of(
@@ -229,8 +258,8 @@ public class AgentContextToolCallbackFactory {
     }
 
     private String attachAsset(AgentContextAssetResponse asset, ToolContextData context) {
-        requireUserIntent(context.userMessage(), "使用", "绑定", "附加", "引用", "选中");
-        requireUserIntent(context.userMessage(), "文件", "资料", "附件", "上传");
+        requireMutationIntent(context.userMessage(), "使用", "绑定", "附加", "引用", "选中");
+        requireMutationIntent(context.userMessage(), "文件", "资料", "附件", "上传");
         AgentContextBindingResponse binding = contextBindingService.attach(
             context.agentSessionId(),
             new AttachAgentResourceRequest("FILE", asset.assetId(), "SESSION", null),
@@ -240,13 +269,12 @@ public class AgentContextToolCallbackFactory {
     }
 
     private String requestKnowledgeBase(AgentContextAssetResponse asset, ToolContextData context) {
-        requireUserIntent(context.userMessage(), "加入知识库", "导入知识库", "添加到知识库");
+        requireMutationIntent(context.userMessage(), "加入知识库", "导入知识库", "添加到知识库");
         return emit(contextAssetService.requestKnowledgeBaseImport(asset.assetId(), context.ownerKey()));
     }
 
     private String confirmKnowledgeBase(AgentContextAssetResponse asset, ToolContextData context) {
-        if (!containsAny(context.userMessage(), "确认", "确定")
-            || !containsAny(context.userMessage(), "加入知识库", "导入知识库", "添加到知识库")) {
+        if (!isExplicitKnowledgeBaseConfirmation(context.userMessage())) {
             return emit(Map.of(
                 "status", "USER_CONFIRMATION_REQUIRED",
                 "message", "请明确回复“确认加入知识库”，系统才会创建知识库并开始向量化。"
@@ -300,7 +328,7 @@ public class AgentContextToolCallbackFactory {
 
     private String scheduleDraft(JsonNode input, ToolContext toolContext) {
         ToolContextData context = context(toolContext);
-        requireUserIntent(context.userMessage(), "预约", "安排", "创建面试", "添加面试", "日程");
+        requireMutationIntent(context.userMessage(), "预约", "安排", "创建面试", "添加面试", "日程");
         rejectInjectedToolArguments(
             input, "companyName", "position", "interviewType", "meetingLink", "interviewer", "notes"
         );
@@ -376,6 +404,65 @@ public class AgentContextToolCallbackFactory {
         }
     }
 
+    /** 变更型工具必须来自用户的正向、直接请求，不能从否定句或资料转述中推断授权。 */
+    private void requireMutationIntent(String message, String... phrases) {
+        requireUserIntent(message, phrases);
+        if (containsNegativeOrIndirectIntent(message)
+            || containsAny(
+                message, "取消绑定", "取消使用", "取消加入知识库", "取消导入知识库",
+                "取消预约", "取消面试", "取消日程"
+            )) {
+            throw new BusinessException(
+                ErrorCode.BAD_REQUEST,
+                "需要用户明确、直接确认该操作，未执行任何 Agent 操作"
+            );
+        }
+    }
+
+    private void requireClearIntent(String message) {
+        requireUserIntent(message, "清除", "清空", "取消绑定", "移除");
+        if (containsAny(
+            message, "不要", "别", "勿", "无需", "不用", "不需要", "暂不", "先不要",
+            "不想", "不必", "是否", "要不要", "能不能", "可不可以", "如果", "考虑一下", "建议我"
+        )) {
+            throw new BusinessException(
+                ErrorCode.BAD_REQUEST,
+                "需要用户明确、直接确认清除操作，未执行任何 Agent 操作"
+            );
+        }
+    }
+
+    private boolean isExplicitKnowledgeBaseConfirmation(String message) {
+        if (message == null || message.isBlank()
+            || promptSanitizer.detectInjectionAttempt(message)
+            || containsNegativeOrIndirectIntent(message)
+            || containsIndirectConfirmationIntent(message)) {
+            return false;
+        }
+        return containsAny(
+            message,
+            "确认加入知识库", "确定加入知识库", "我确认加入知识库",
+            "确认导入知识库", "确定导入知识库", "我确认导入知识库",
+            "确认添加到知识库", "确定添加到知识库", "我确认添加到知识库"
+        );
+    }
+
+    private boolean containsNegativeOrIndirectIntent(String message) {
+        if (message == null || message.isBlank()) {
+            return true;
+        }
+        return containsAny(
+            message,
+            "不要", "别", "勿", "无需", "不用", "不需要", "取消", "暂不", "先不要",
+            "不想", "不必", "是否", "要不要", "能不能", "可不可以", "如果", "考虑一下",
+            "建议我"
+        );
+    }
+
+    private boolean containsIndirectConfirmationIntent(String message) {
+        return containsAny(message, "资料中", "文件中", "报告中", "内容中", "写着", "提到", "显示");
+    }
+
     private boolean containsAny(String value, String... phrases) {
         if (value == null) return false;
         for (String phrase : phrases) {
@@ -410,6 +497,13 @@ public class AgentContextToolCallbackFactory {
     private String text(JsonNode input, String field) {
         if (input == null || input.get(field) == null || input.get(field).isNull()) return "";
         return input.get(field).asText().trim();
+    }
+
+    private String truncate(String value, int maxChars) {
+        if (value == null || value.length() <= maxChars) {
+            return value;
+        }
+        return value.substring(0, maxChars) + "…";
     }
 
     private int integer(JsonNode input, String field, int fallback) {
@@ -453,7 +547,19 @@ public class AgentContextToolCallbackFactory {
 
     private record ContextListResult(
         List<AgentContextBindingResponse> bindings,
-        List<AgentContextAssetResponse> assets
+        List<ContextAssetToolSummary> assets
+    ) {
+    }
+
+    private record ContextAssetToolSummary(
+        String assetId,
+        String originalFilename,
+        AgentContextAssetStatus reviewStatus,
+        boolean securityFlagged,
+        String securityNotice,
+        String previewText,
+        Long knowledgeBaseId,
+        java.time.LocalDateTime expiresAt
     ) {
     }
 
@@ -476,15 +582,18 @@ public class AgentContextToolCallbackFactory {
     private static final class Callback implements ToolCallback {
         private final ToolDefinition definition;
         private final ObjectMapper objectMapper;
+        private final PromptSanitizer promptSanitizer;
         private final BiFunction<JsonNode, ToolContext, String> handler;
 
         private Callback(
             ToolDefinition definition,
             ObjectMapper objectMapper,
+            PromptSanitizer promptSanitizer,
             BiFunction<JsonNode, ToolContext, String> handler
         ) {
             this.definition = definition;
             this.objectMapper = objectMapper;
+            this.promptSanitizer = promptSanitizer;
             this.handler = handler;
         }
 
@@ -505,12 +614,18 @@ public class AgentContextToolCallbackFactory {
                     ? objectMapper.createObjectNode() : objectMapper.readTree(toolInput);
                 return handler.apply(input, toolContext);
             } catch (BusinessException error) {
-                return "<agent-tool-error>" + error.getMessage() + "</agent-tool-error>";
+                return safeError(error.getMessage());
             } catch (JacksonException error) {
-                return "<agent-tool-error>工具参数不是合法 JSON</agent-tool-error>";
+                return safeError("工具参数不是合法 JSON");
             } catch (RuntimeException error) {
-                return "<agent-tool-error>工具执行失败，请稍后重试</agent-tool-error>";
+                return safeError("工具执行失败，请稍后重试");
             }
+        }
+
+        private String safeError(String message) {
+            return promptSanitizer.wrapWithDelimiters(
+                "agent-tool-error", message == null ? "工具执行失败，请稍后重试" : message
+            );
         }
     }
 }
