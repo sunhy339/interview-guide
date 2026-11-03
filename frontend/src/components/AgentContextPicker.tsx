@@ -148,6 +148,21 @@ export default function AgentContextPicker({
     }
   };
 
+  const clear = async () => {
+    if (!agentSessionId || bindings.length === 0) return;
+    setBusy('clear');
+    setNotice('');
+    try {
+      await agentApi.clearContext(agentSessionId);
+      setBindings([]);
+      setNotice('已清除当前 Agent 上下文，下一轮对话将按通用模式处理');
+    } catch (error: unknown) {
+      setNotice(getErrorMessage(error) || '清除上下文失败，请稍后重试');
+    } finally {
+      setBusy('');
+    }
+  };
+
   return (
     <div className="relative mt-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -167,6 +182,17 @@ export default function AgentContextPicker({
             {sourceLabel[binding.contextType] || binding.contextType}：{binding.resourceName || binding.resourceId}
           </span>
         ))}
+        {bindings.length > 0 ? (
+          <button
+            type="button"
+            disabled={disabled || busy === 'clear'}
+            onClick={() => void clear()}
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:border-rose-300 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-400 dark:hover:border-rose-700 dark:hover:text-rose-300"
+          >
+            {busy === 'clear' ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
+            清除上下文
+          </button>
+        ) : null}
       </div>
       {notice ? <p className="mt-2 text-[11px] text-primary-700 dark:text-primary-300">{notice}</p> : null}
       {open ? (

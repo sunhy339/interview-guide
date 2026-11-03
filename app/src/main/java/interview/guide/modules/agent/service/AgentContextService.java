@@ -260,11 +260,16 @@ public class AgentContextService {
         if (resumeRepository == null) return;
         parseLong(resourceId).flatMap(id -> resumeRepository.findByIdAndOwnerId(id, ownerKey(request)))
             .ifPresent(resume -> {
-                report.append("\n[简历：").append(resume.getOriginalFilename()).append("]\n")
+                report.append("\n[简历：")
+                    .append(promptSanitizer.sanitizeForContext(resume.getOriginalFilename()))
+                    .append("]\n")
                     .append(promptSanitizer.sanitizeForContext(
                         resume.getResumeText() == null ? "" : resume.getResumeText()
                     )).append('\n');
-                sources.add(new AgentSource("resume", resume.getOriginalFilename(), null, "RESUME-" + resourceId));
+                sources.add(new AgentSource(
+                    "resume", promptSanitizer.sanitizeForContext(resume.getOriginalFilename()),
+                    null, "RESUME-" + resourceId
+                ));
             });
     }
 
@@ -276,11 +281,12 @@ public class AgentContextService {
             .filter(asset -> asset.getReviewStatus() == AgentContextAssetStatus.APPROVED_FOR_CONTEXT
                 || asset.getReviewStatus() == AgentContextAssetStatus.KB_IMPORT_COMPLETED)
             .ifPresent(asset -> {
-                report.append("\n[已审核文件：").append(asset.getOriginalFilename()).append("]\n")
+                String safeFilename = promptSanitizer.sanitizeForContext(asset.getOriginalFilename());
+                report.append("\n[已审核文件：").append(safeFilename).append("]\n")
                     .append(promptSanitizer.sanitizeForContext(
                         asset.getExtractedText() == null ? "" : asset.getExtractedText()
                     )).append('\n');
-                sources.add(new AgentSource("file", asset.getOriginalFilename(), null, "FILE-" + resourceId));
+                sources.add(new AgentSource("file", safeFilename, null, "FILE-" + resourceId));
             });
     }
 

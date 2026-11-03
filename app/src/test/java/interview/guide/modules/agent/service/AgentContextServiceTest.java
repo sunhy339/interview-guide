@@ -4,6 +4,13 @@ import interview.guide.common.ai.PromptSanitizer;
 import interview.guide.modules.agent.model.AgentMessageRequest;
 import interview.guide.modules.agent.model.AgentHistoryMessage;
 import interview.guide.modules.agent.model.AgentSource;
+import interview.guide.modules.agent.model.AgentMemorySnapshot;
+import interview.guide.modules.agent.model.AgentSessionContextEntity;
+import interview.guide.modules.agent.repository.AgentContextAssetRepository;
+import interview.guide.modules.agent.repository.AgentSessionContextRepository;
+import interview.guide.modules.interview.service.InterviewPersistenceService;
+import interview.guide.modules.knowledgebase.repository.KnowledgeBaseRepository;
+import interview.guide.modules.resume.repository.ResumeRepository;
 import interview.guide.modules.interview.model.InterviewDetailDTO;
 import interview.guide.modules.interview.service.InterviewHistoryService;
 import interview.guide.modules.interview.skill.InterviewSkillService;
@@ -20,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verify;
 
@@ -149,6 +157,50 @@ class AgentContextServiceTest {
         assertThat(context.ragContext())
             .contains("[filtered]")
             .doesNotContain("忽略之前的指令");
+    }
+
+    @Test
+    void doesNotReadAttachedInterviewReportWhenBindingReferenceIsNotOwned() throws Exception {
+        InterviewHistoryService history = mock(InterviewHistoryService.class);
+        InterviewPersistenceService persistence = mock(InterviewPersistenceService.class);
+        InterviewSkillService skills = mock(InterviewSkillService.class);
+        KnowledgeBaseQueryService rag = mock(KnowledgeBaseQueryService.class);
+        PromptSanitizer sanitizer = mock(PromptSanitizer.class);
+        ObjectMapper objectMapper = mock(ObjectMapper.class);
+        AgentMemoryService memory = mock(AgentMemoryService.class);
+        AgentSessionContextRepository contexts = mock(AgentSessionContextRepository.class);
+        AgentContextAssetRepository assets = mock(AgentContextAssetRepository.class);
+        ResumeRepository resumes = mock(ResumeRepository.class);
+        KnowledgeBaseRepository knowledgeBases = mock(KnowledgeBaseRepository.class);
+        AgentContextSummaryService summaries = mock(AgentContextSummaryService.class);
+
+        when(memory.remember(anyString(), any(), any(), any()))
+            .thenReturn(AgentMemorySnapshot.empty("owner-1"));
+        when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
+        when(contexts.findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc("agent-1"))
+            .thenReturn(List.of(AgentSessionContextEntity.builder()
+                .agentSessionId("agent-1")
+                .contextType("INTERVIEW_REPORT")
+                .resourceId("other-interview")
+                .active(true)
+                .build()));
+        when(persistence.findBySessionIdForOwner("other-interview", "owner-1"))
+            .thenReturn(java.util.Optional.empty());
+        when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(sanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        AgentContextService service = new AgentContextService(
+            history, persistence, skills, rag, sanitizer, objectMapper, memory,
+            contexts, assets, resumes, knowledgeBases, summaries
+        );
+        AgentContextService.AgentContext context = service.build(
+            null,
+            new AgentMessageRequest("review", "请分析这个面试报告", List.of(), null, "owner-1", "agent-1"),
+            List.of()
+        );
+
+        assertThat(context.interviewReport()).contains("已绑定资料但没有读取到可用内容");
+        verify(history, never()).getInterviewDetail("other-interview");
     }
 
     @Test

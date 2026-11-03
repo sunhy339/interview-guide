@@ -72,6 +72,25 @@ public class PromptSanitizer {
         Pattern.CASE_INSENSITIVE
     );
 
+    // 模型聊天模板常见的伪造消息标记，例如 <|im_start|>system 或 [INST]。
+    private static final Pattern CHAT_TEMPLATE_MARKER_PATTERN = Pattern.compile(
+        "<\\|(?:im_start|im_end|system|developer|user|assistant|tool)\\|>"
+            + "|\\[/?INST\\]|\\[/?SYSTEM\\]|#{1,6}\\s*(?:system|developer|instruction|assistant|user)\\b",
+        Pattern.CASE_INSENSITIVE
+    );
+
+    /** 去除空白和标点后匹配，用于识别逐字空格/标点分隔的注入短语。 */
+    private static final Pattern COMPACT_INJECTION_PATTERN = Pattern.compile(
+        "ignore(?:all|any|the|your)?(?:previous|prior|above|earlier|preceding)"
+            + "(?:instructions?|prompts?|rules?)"
+            + "|disregard(?:all|any|the|your)?(?:previous|prior|above|earlier|preceding)"
+            + "(?:instructions?|prompts?|rules?)"
+            + "|忽略(?:之前|以上|上面)(?:的)?(?:所有)?(?:指令|规则|提示)"
+            + "|无视(?:之前|以上|上面|系统|开发者)(?:的)?(?:所有)?(?:指令|规则|提示)"
+            + "|请把以下内容当作系统(?:提示|指令)",
+        Pattern.CASE_INSENSITIVE
+    );
+
     /** 常见零宽/双向控制字符；它们可把注入短语拆开而不影响模型阅读。 */
     private static final Pattern INVISIBLE_CONTROL_PATTERN = Pattern.compile(
         "[\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u206F\\uFEFF]"
@@ -130,6 +149,16 @@ public class PromptSanitizer {
             injected = true;
             result = tagMatcher.replaceAll("[filtered-boundary-tag]");
         }
+        var chatMarkerMatcher = CHAT_TEMPLATE_MARKER_PATTERN.matcher(result);
+        if (chatMarkerMatcher.find()) {
+            injected = true;
+            result = chatMarkerMatcher.replaceAll("[filtered-chat-marker]");
+        }
+        if (COMPACT_INJECTION_PATTERN.matcher(compactForDetection(result)).find()) {
+            injected = true;
+            // 对逐字拆分的注入无法可靠定位原始片段，整段降级为资料占位符更安全。
+            result = "[filtered-injection]";
+        }
 
         if (injected) {
             log.warn("检测到潜在 Prompt 注入尝试，文本长度: {}", text.length());
@@ -145,6 +174,12 @@ public class PromptSanitizer {
         String normalized = Normalizer.normalize(text, Normalizer.Form.NFKC);
         normalized = INVISIBLE_CONTROL_PATTERN.matcher(normalized).replaceAll("");
         return normalized.replace("\r\n", "\n").replace('\r', '\n');
+    }
+
+    private String compactForDetection(String text) {
+        return text == null ? "" : text
+            .toLowerCase(java.util.Locale.ROOT)
+            .replaceAll("[\\s\\p{Punct}，。！？：；、（）【】《》]+", "");
     }
 
     /**
@@ -189,7 +224,9 @@ public class PromptSanitizer {
         return ROLE_INJECTION_PATTERN.matcher(normalized).find()
             || INJECTION_PHRASE_PATTERN.matcher(normalized).find()
             || DELIMITER_INJECTION_PATTERN.matcher(normalized).find()
-            || BOUNDARY_TAG_PATTERN.matcher(normalized).find();
+            || BOUNDARY_TAG_PATTERN.matcher(normalized).find()
+            || CHAT_TEMPLATE_MARKER_PATTERN.matcher(normalized).find()
+            || COMPACT_INJECTION_PATTERN.matcher(compactForDetection(normalized)).find();
     }
 
     private String safeLabel(String label) {
