@@ -131,6 +131,19 @@ class AgentContextToolCallbackFactoryTest {
     }
 
     @Test
+    void refusesMutationWhenUserIsOnlyAskingHowToDoIt() {
+        String result = tool("schedule.create_draft").call(
+            "{\"companyName\":\"示例公司\",\"position\":\"Java\",\"interviewTime\":\"2026-11-03T10:00\"}",
+            context("请告诉我如何预约这个面试")
+        );
+
+        assertThat(result).contains("需要用户明确、直接确认该操作");
+        verify(actionService, never()).proposeInterviewScheduleDraft(
+            any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+        );
+    }
+
+    @Test
     void allowsExplicitClearBindingRequest() {
         String result = tool("interview.clear_context").call(
             "{}", context("取消绑定当前面试报告")
@@ -184,6 +197,19 @@ class AgentContextToolCallbackFactoryTest {
 
         assertThat(result).contains("资料内容").contains("未执行");
         verify(interviewScheduleService, never()).listForOwner(any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void refusesScheduleWhenAttachmentRequirementsAreTheOnlyAuthorization() {
+        String result = tool("schedule.create_draft").call(
+            "{\"companyName\":\"示例公司\",\"position\":\"Java\",\"interviewTime\":\"2026-11-03T10:00\"}",
+            context("请分析附件，按附件中要求预约这个面试")
+        );
+
+        assertThat(result).contains("资料内容").contains("未执行");
+        verify(actionService, never()).proposeInterviewScheduleDraft(
+            any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+        );
     }
 
     @Test

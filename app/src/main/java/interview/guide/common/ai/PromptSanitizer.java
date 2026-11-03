@@ -29,7 +29,7 @@ public class PromptSanitizer {
     // 行首角色标记：兼容 Markdown 引用、代码块和 developer/tool 等角色，避免资料伪造消息层级。
     private static final Pattern ROLE_INJECTION_PATTERN = Pattern.compile(
         "(?im)^\\s*(?:[#>*`~\\-]+\\s*)*"
-            + "(system|developer|user|assistant|human|ai|model|tool)"
+            + "(system|developer|user|assistant|human|ai|model|tool|系统|开发者|用户|助手|工具)"
             + "(?:\\s+(?:message|prompt|instruction|content|role))?\\s*[:：].*"
     );
 
@@ -49,12 +49,18 @@ public class PromptSanitizer {
         + "|(?:do\\s+not|don't)\\s+follow\\s+(?:the\\s+)?(?:above|previous|system|developer)"
         + "|act\\s+as\\s+(?:a\\s+)?(?:system|developer|assistant|admin|root)"
         + "|you\\s+are\\s+now\\s+(?:a\\s+)?(?:system|developer|admin|root)"
+        + "|(?:show|print|tell|output|give\\s+me)\\s+.{0,80}"
+            + "(?:system\\s+prompt|system\\s+instructions?|developer\\s+message|hidden\\s+instructions?)"
         + "|jailbreak"
         + "|忽略(?:之前|以上|上面)(?:的)?(?:所有)?(?:指令|规则|提示)"
         + "|忘记(?:之前|以上|上面)(?:的)?(?:所有)?(?:指令|规则|提示)"
         + "|无视(?:之前|以上|上面|系统|开发者)(?:的)?(?:所有)?(?:指令|规则|提示)"
         + "|覆盖(?:系统|开发者|安全)(?:的)?(?:指令|规则|提示)"
         + "|泄露(?:系统提示词|系统指令|开发者消息|隐藏指令)"
+        + "|(?:输出|显示|打印|告诉我|给我看).{0,80}(?:系统提示词|系统指令|开发者消息|隐藏指令)"
+        + "|(?:不要|别|勿)(?:遵循|执行)(?:以上|之前|系统|开发者)(?:的)?(?:指令|规则|提示)"
+        + "|(?:从现在开始|从现在起).{0,30}(?:你是|扮演|不再是)"
+        + "|(?:把自己|请你)(?:当作|视为)(?:系统|开发者|管理员|根用户)"
         + "|(?:请)?(?:把|将)(?:以下|这段)(?:内容)?当作(?:系统|开发者)(?:提示|指令)"
         + "|你不再是"
         + "|你的新(?:身份|角色)是",
@@ -87,6 +93,10 @@ public class PromptSanitizer {
             + "(?:instructions?|prompts?|rules?)"
             + "|忽略(?:之前|以上|上面)(?:的)?(?:所有)?(?:指令|规则|提示)"
             + "|无视(?:之前|以上|上面|系统|开发者)(?:的)?(?:所有)?(?:指令|规则|提示)"
+            + "|(?:输出|显示|打印|告诉我|给我看)(?:系统提示词|系统指令|开发者消息|隐藏指令)"
+            + "|(?:不要|别|勿)(?:遵循|执行)(?:以上|之前|系统|开发者)(?:的)?(?:指令|规则|提示)"
+            + "|(?:从现在开始|从现在起)(?:你是|扮演|不再是)"
+            + "|(?:把自己|请你)(?:当作|视为)(?:系统|开发者|管理员|根用户)"
             + "|请把以下内容当作系统(?:提示|指令)",
         Pattern.CASE_INSENSITIVE
     );

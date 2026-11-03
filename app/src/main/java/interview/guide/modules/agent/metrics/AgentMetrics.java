@@ -25,7 +25,7 @@ public class AgentMetrics {
 
     /** Spring AI ToolContext 中传递当前 Agent 运行预算的内部键，不含用户数据。 */
     public static final String RUN_TRACKER_TOOL_CONTEXT_KEY = "agent.runTracker";
-    /** Spring AI ToolContext 中传递当前用户消息的内部键，仅供工具判断用户确认意图。 */
+    /** Spring AI ToolContext 中传递原始当前用户消息的内部键，仅供服务端判断直接授权意图。 */
     public static final String USER_MESSAGE_TOOL_CONTEXT_KEY = "agent.user.message";
 
     public static final String RUNS = "app.agent.runs";
