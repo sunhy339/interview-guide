@@ -120,7 +120,13 @@ final class AgentObservedToolCallback implements ToolCallback {
 
     /** SkillsTool 等外部资料工具没有自己的上下文包装，统一在 Agent 边界再净化一次。 */
     private String sanitizeResult(String result) {
-        return promptSanitizer == null || result == null
-            ? result : promptSanitizer.sanitizeForContext(result);
+        if (promptSanitizer == null || result == null) {
+            return result;
+        }
+        // 工具返回值本身也是不可信资料。先去掉伪造的边界/角色标记，再用新的
+        // 服务端边界重新包裹；不能直接返回净化文本，否则模型可能看不到“工具数据”
+        // 的结构边界，也不能继续信任工具结果中的任何指令。
+        String safe = promptSanitizer.sanitizeForContext(result);
+        return promptSanitizer.wrapWithDelimiters("agent-observed-tool-result", safe);
     }
 }

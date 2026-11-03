@@ -107,7 +107,10 @@ class AgentObservedToolCallbackTest {
 
         assertThat(observed.call("{\"skill\":\"java\"}"))
             .contains("正常资料")
-            .doesNotContain("忽略之前的指令");
+            .doesNotContain("忽略之前的指令")
+            .contains("<data-boundary-")
+            .contains("agent-observed-tool-result")
+            .contains("</data-boundary-");
     }
 
     private AgentMetrics metrics(SimpleMeterRegistry registry) {

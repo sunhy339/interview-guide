@@ -189,7 +189,11 @@ public class InterviewAgentService {
             AtomicReference<String> activeAgentSessionKeyRef = new AtomicReference<>(activeKey);
             AtomicReference<String> preparedRunIdRef = new AtomicReference<>();
             try {
-                String message = promptSanitizer.sanitize(resolvedRequest.message());
+                // 模型上下文使用净化后的消息；工具授权必须保留原始用户意图，
+                // 否则“忽略指令后预约……”中的危险片段可能先被删除，
+                // 工具只看到“预约”而误把请求当成安全授权。
+                String userIntentMessage = resolvedRequest.message();
+                String message = promptSanitizer.sanitize(userIntentMessage);
                 List<AgentHistoryMessage> persistedHistory = dataOwnerKey == null || dataOwnerKey.isBlank()
                     ? resolvedRequest.agentSessionId() == null || resolvedRequest.agentSessionId().isBlank()
                         ? agentConversationService.loadHistory(sessionId)
@@ -218,7 +222,7 @@ public class InterviewAgentService {
                 }
 
                 AgentConversationService.PreparedMessage preparedMessage = prepareMessage(
-                    sessionId, resolvedRequest, message, dataOwnerKey
+                    sessionId, resolvedRequest, userIntentMessage, dataOwnerKey
                 );
                 preparedAssistantMessageId = preparedMessage.assistantMessageId();
                 preparedRunIdRef.set(preparedMessage.runId());
@@ -239,8 +243,8 @@ public class InterviewAgentService {
                 );
 
                 Flux<AgentStreamEvent> workflow = buildWorkflow(
-                    sessionId, resolvedAgentSessionId, resolvedRequest, message, historyMessages, context, preparedMessage,
-                    cancellationSignal, taskHandle, runTracker, null
+                    sessionId, resolvedAgentSessionId, resolvedRequest, message, userIntentMessage,
+                    historyMessages, context, preparedMessage, cancellationSignal, taskHandle, runTracker, null
                 );
                 // SSE 断开后不缓存全部 token；最终答案由 AgentConversationService 持久化。
                 return Flux.create(emitter -> {
@@ -311,7 +315,9 @@ public class InterviewAgentService {
             );
             activeTasks.put(activeKey, taskHandle);
             try {
-                String message = promptSanitizer.sanitize(recoveredRun.userContent());
+                // 恢复时同样区分“送给模型的净化文本”和“工具授权校验的原始用户意图”。
+                String userIntentMessage = recoveredRun.userContent();
+                String message = promptSanitizer.sanitize(userIntentMessage);
                 List<AgentHistoryMessage> historyMessages = AgentHistoryPolicy.normalize(
                     removeCurrentUser(agentConversationService.loadHistory(
                         recoveredRun.interviewSessionId(), recoveredRun.agentSessionId(), recoveredRun.ownerKey()
@@ -349,8 +355,8 @@ public class InterviewAgentService {
                     recoveredRun.runId()
                 );
                 Flux<AgentStreamEvent> workflow = buildWorkflow(
-                    recoveredRun.interviewSessionId(), activeKey, request, message, historyMessages, context,
-                    prepared, cancellationSignal, taskHandle, runTracker,
+                    recoveredRun.interviewSessionId(), activeKey, request, message, userIntentMessage,
+                    historyMessages, context, prepared, cancellationSignal, taskHandle, runTracker,
                     new LoopResumeState(
                         recoveredRun.loopPlan(),
                         recoveredRun.loopNextStep(),
@@ -380,6 +386,7 @@ public class InterviewAgentService {
         String agentSessionId,
         AgentMessageRequest request,
         String message,
+        String userIntentMessage,
         List<AgentHistoryMessage> historyMessages,
         AgentContextService.AgentContext context,
         AgentConversationService.PreparedMessage preparedMessage,
@@ -501,7 +508,9 @@ public class InterviewAgentService {
                                         promptSpec = promptSpec.messages(prompt.history());
                                     }
                                     if (runTracker != null) {
-                                        promptSpec = promptSpec.toolContext(agentToolContext(runTracker, message));
+                                        promptSpec = promptSpec.toolContext(
+                                            agentToolContext(runTracker, userIntentMessage)
+                                        );
                                     }
                                     var streamSpec = promptSpec.user(prompt.userPrompt()).stream();
                                     Flux<ChatResponse> chatResponses = streamSpec.chatResponse();
