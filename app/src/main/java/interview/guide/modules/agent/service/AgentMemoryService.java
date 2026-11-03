@@ -3,6 +3,8 @@ package interview.guide.modules.agent.service;
 import interview.guide.modules.agent.model.AgentMemorySnapshot;
 import interview.guide.modules.agent.model.AgentMemoryItem;
 import interview.guide.modules.agent.model.AgentUserMemoryEntity;
+import interview.guide.common.ai.PromptSanitizer;
+import interview.guide.common.config.LlmProviderProperties;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.agent.repository.AgentUserMemoryRepository;
@@ -39,13 +41,15 @@ public class AgentMemoryService {
     private final ObjectMapper objectMapper;
     private final AgentMemoryProperties properties;
     private final AgentAuditService auditService;
+    private final PromptSanitizer promptSanitizer;
 
     /** 保留无 Spring 容器调用方式，便于单元测试和兼容旧调用方。 */
     public AgentMemoryService(
         AgentUserMemoryRepository repository,
         ObjectMapper objectMapper
     ) {
-        this(repository, objectMapper, new AgentMemoryProperties(), null);
+        this(repository, objectMapper, new AgentMemoryProperties(), null,
+            new PromptSanitizer(new LlmProviderProperties()));
     }
 
     public AgentMemoryService(
@@ -53,7 +57,19 @@ public class AgentMemoryService {
         ObjectMapper objectMapper,
         AgentMemoryProperties properties
     ) {
-        this(repository, objectMapper, properties, null);
+        this(repository, objectMapper, properties, null,
+            new PromptSanitizer(new LlmProviderProperties()));
+    }
+
+    /** 兼容测试和迁移期内部调用方；安全净化默认仍然启用。 */
+    public AgentMemoryService(
+        AgentUserMemoryRepository repository,
+        ObjectMapper objectMapper,
+        AgentMemoryProperties properties,
+        AgentAuditService auditService
+    ) {
+        this(repository, objectMapper, properties, auditService,
+            new PromptSanitizer(new LlmProviderProperties()));
     }
 
     @Autowired
@@ -61,12 +77,15 @@ public class AgentMemoryService {
         AgentUserMemoryRepository repository,
         ObjectMapper objectMapper,
         AgentMemoryProperties properties,
-        AgentAuditService auditService
+        AgentAuditService auditService,
+        PromptSanitizer promptSanitizer
     ) {
         this.repository = repository;
         this.objectMapper = objectMapper;
         this.properties = properties == null ? new AgentMemoryProperties() : properties;
         this.auditService = auditService;
+        this.promptSanitizer = promptSanitizer == null
+            ? new PromptSanitizer(new LlmProviderProperties()) : promptSanitizer;
     }
 
     public String normalizeKey(String value) {
@@ -123,7 +142,7 @@ public class AgentMemoryService {
         if (normalizedCategory == null) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "记忆分类不合法");
         }
-        String normalizedContent = clean(content, MAX_ITEM_CHARS);
+        String normalizedContent = cleanContent(content);
         if (normalizedContent == null) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "记忆内容不能为空");
         }
@@ -145,7 +164,7 @@ public class AgentMemoryService {
     ) {
         String key = normalizeKey(memoryKey);
         String normalizedId = clean(itemId, 64);
-        String normalizedContent = clean(content, MAX_ITEM_CHARS);
+        String normalizedContent = cleanContent(content);
         if (normalizedId == null || normalizedContent == null) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "记忆标识和内容不能为空");
         }
@@ -245,7 +264,7 @@ public class AgentMemoryService {
         }
         if (newValues != null) {
             newValues.forEach(value -> {
-                String normalized = clean(value, MAX_ITEM_CHARS);
+                String normalized = cleanContent(value);
                 if (normalized == null || categoryItems.stream().anyMatch(
                     item -> normalized.equals(item.content())
                 )) {
@@ -274,7 +293,7 @@ public class AgentMemoryService {
                 if (item == null) {
                     continue;
                 }
-                String content = clean(item.content(), MAX_ITEM_CHARS);
+                String content = cleanContent(item.content());
                 String category = normalizeCategory(item.category());
                 if (content == null || category == null || result.size() >= MAX_WEAKNESSES + MAX_GOALS) {
                     continue;
@@ -321,7 +340,7 @@ public class AgentMemoryService {
         return items == null ? List.of() : items.stream()
             .filter(item -> item != null && category.equals(item.category()))
             .map(AgentMemoryItem::content)
-            .map(value -> clean(value, MAX_ITEM_CHARS))
+            .map(this::cleanContent)
             .filter(value -> value != null)
             .distinct()
             .limit(max)
@@ -377,7 +396,7 @@ public class AgentMemoryService {
     }
 
     private void addIfPresent(LinkedHashSet<String> values, String value) {
-        String clean = clean(value, MAX_ITEM_CHARS);
+        String clean = cleanContent(value);
         if (clean != null) {
             values.add(clean);
         }
@@ -387,7 +406,7 @@ public class AgentMemoryService {
         List<String> result = new ArrayList<>();
         if (values != null) {
             values.forEach(value -> {
-                String clean = clean(value, MAX_ITEM_CHARS);
+                String clean = cleanContent(value);
                 if (clean != null && !result.contains(clean) && result.size() < max) {
                     result.add(clean);
                 }
@@ -405,6 +424,14 @@ public class AgentMemoryService {
             return null;
         }
         return clean.substring(0, Math.min(max, clean.length()));
+    }
+
+    /** 记忆是跨轮复用的用户数据，不能把提示注入原样持久化后再送回模型。 */
+    private String cleanContent(String value) {
+        if (value == null) {
+            return null;
+        }
+        return clean(promptSanitizer.sanitizeForContext(value), MAX_ITEM_CHARS);
     }
 
     private record MemoryPayload(

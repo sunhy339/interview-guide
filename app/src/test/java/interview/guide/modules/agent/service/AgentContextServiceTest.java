@@ -270,6 +270,44 @@ class AgentContextServiceTest {
     }
 
     @Test
+    void usesExplicitOwnerScopedInterviewReadInProductionConstructor() throws Exception {
+        InterviewHistoryService history = mock(InterviewHistoryService.class);
+        InterviewPersistenceService persistence = mock(InterviewPersistenceService.class);
+        InterviewSkillService skills = mock(InterviewSkillService.class);
+        KnowledgeBaseQueryService rag = mock(KnowledgeBaseQueryService.class);
+        PromptSanitizer sanitizer = mock(PromptSanitizer.class);
+        ObjectMapper objectMapper = mock(ObjectMapper.class);
+        AgentMemoryService memory = mock(AgentMemoryService.class);
+        AgentSessionContextRepository contexts = mock(AgentSessionContextRepository.class);
+        AgentContextSummaryService summaries = mock(AgentContextSummaryService.class);
+        InterviewDetailDTO detail = detail("java-backend", null);
+
+        when(history.getInterviewDetailForOwner("owned-session", "owner-1")).thenReturn(detail);
+        when(objectMapper.writeValueAsString(detail)).thenReturn("{report}");
+        when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(sanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(memory.remember(anyString(), any(), any(), any()))
+            .thenReturn(AgentMemorySnapshot.empty("owner-1"));
+        when(contexts.findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc("agent-1"))
+            .thenReturn(List.of());
+        when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
+        when(skills.buildEvaluationReferenceSectionSafe("java-backend"))
+            .thenReturn("JVM references");
+
+        AgentContextService service = new AgentContextService(
+            history, persistence, skills, rag, sanitizer, objectMapper, memory,
+            contexts, null, null, null, summaries
+        );
+
+        service.build("owned-session", new AgentMessageRequest(
+            "review", "请分析这场面试", List.of(), null, null, "agent-1"
+        ), List.of());
+
+        verify(history).getInterviewDetailForOwner("owned-session", "owner-1");
+        verify(history, never()).getInterviewDetail("owned-session");
+    }
+
+    @Test
     void passesSanitizedRecentHistoryToRagRewrite() throws Exception {
         InterviewHistoryService history = mock(InterviewHistoryService.class);
         InterviewSkillService skills = mock(InterviewSkillService.class);

@@ -1,6 +1,7 @@
 package interview.guide.modules.knowledgebase.service;
 
 import interview.guide.common.ai.LlmProviderRegistry;
+import interview.guide.common.ai.PromptSanitizer;
 import interview.guide.common.ai.PromptSecurityConstants;
 import interview.guide.common.log.ErrorLogSanitizer;
 import interview.guide.modules.knowledgebase.metrics.RagMetrics;
@@ -59,10 +60,12 @@ public class KnowledgeBaseQueryService {
     private final int topkLong;
     private final double minScoreShort;
     private final double minScoreDefault;
+    private final PromptSanitizer promptSanitizer;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private KnowledgeBaseAccessService accessService;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public KnowledgeBaseQueryService(
             LlmProviderRegistry llmProviderRegistry,
             RagMetrics ragMetrics,
@@ -70,7 +73,8 @@ public class KnowledgeBaseQueryService {
             KnowledgeBaseListService listService,
             KnowledgeBaseCountService countService,
             KnowledgeBaseQueryProperties queryProperties,
-            ResourceLoader resourceLoader) throws IOException {
+            ResourceLoader resourceLoader,
+            PromptSanitizer promptSanitizer) throws IOException {
         this.llmProviderRegistry = llmProviderRegistry;
         this.ragMetrics = ragMetrics;
         this.vectorService = vectorService;
@@ -96,6 +100,20 @@ public class KnowledgeBaseQueryService {
         this.topkLong = queryProperties.getSearch().getTopkLong();
         this.minScoreShort = queryProperties.getSearch().getMinScoreShort();
         this.minScoreDefault = queryProperties.getSearch().getMinScoreDefault();
+        this.promptSanitizer = promptSanitizer;
+    }
+
+    /** 兼容不使用 Spring 容器的检索单元测试和迁移期内部调用方。 */
+    public KnowledgeBaseQueryService(
+            LlmProviderRegistry llmProviderRegistry,
+            RagMetrics ragMetrics,
+            KnowledgeBaseVectorService vectorService,
+            KnowledgeBaseListService listService,
+            KnowledgeBaseCountService countService,
+            KnowledgeBaseQueryProperties queryProperties,
+            ResourceLoader resourceLoader) throws IOException {
+        this(llmProviderRegistry, ragMetrics, vectorService, listService, countService,
+            queryProperties, resourceLoader, new PromptSanitizer(new interview.guide.common.config.LlmProviderProperties()));
     }
 
     private ChatClient getChatClient() {
@@ -208,8 +226,8 @@ public class KnowledgeBaseQueryService {
      */
     private String buildUserPrompt(String context, String question) {
         Map<String, Object> variables = new HashMap<>();
-        variables.put("context", context);
-        variables.put("question", question);
+        variables.put("context", promptSanitizer.sanitizeForContext(context));
+        variables.put("question", promptSanitizer.sanitizeForContext(question));
         return userPromptTemplate.render(variables);
     }
 
@@ -494,7 +512,15 @@ public class KnowledgeBaseQueryService {
         if (history == null || history.isEmpty()) {
             return List.of();
         }
-        return history;
+        return history.stream()
+            .filter(message -> message != null && message.getText() != null)
+            .map(message -> {
+                String safeText = promptSanitizer.sanitizeForContext(message.getText());
+                return (Message) (message instanceof AssistantMessage
+                    ? new AssistantMessage(safeText)
+                    : new UserMessage(safeText));
+            })
+            .toList();
     }
 
 //       清洗
@@ -636,7 +662,7 @@ public class KnowledgeBaseQueryService {
         }
         try {
             Map<String, Object> variables = new HashMap<>();
-            variables.put("question", question);
+            variables.put("question", promptSanitizer.sanitizeForContext(question));
             variables.put("history", formatHistoryForRewrite(history));
             String rewritePrompt = rewritePromptTemplate.render(variables);
             String rewritten = getChatClient().prompt()
@@ -672,10 +698,10 @@ public class KnowledgeBaseQueryService {
         StringBuilder sb = new StringBuilder();
         for (Message msg : history) {
             if (msg instanceof UserMessage) {
-                sb.append("用户: ").append(msg.getText()).append("\n");
+                sb.append("用户: ").append(promptSanitizer.sanitizeForContext(msg.getText())).append("\n");
             } else if (msg instanceof AssistantMessage) {
                 // 截断过长的助手回复，避免 rewrite prompt 过长
-                String text = msg.getText();
+                String text = promptSanitizer.sanitizeForContext(msg.getText());
                 if (text.length() > MAX_REWRITE_HISTORY_CHAR) {
                     text = text.substring(0, MAX_REWRITE_HISTORY_CHAR) + "...";
                 }

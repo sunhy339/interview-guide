@@ -136,7 +136,7 @@ public class AgentContextService {
         if (sessionId == null || sessionId.isBlank()) {
             return buildGeneralContext(request, effectiveHistory);
         }
-        InterviewDetailDTO detail = interviewHistoryService.getInterviewDetail(sessionId);
+        InterviewDetailDTO detail = loadInterviewDetailForOwner(sessionId, trustedOwner);
         String report = promptSanitizer.sanitizeForContext(serializeReport(detail));
         List<AgentSource> sources = new ArrayList<>();
 
@@ -252,7 +252,7 @@ public class AgentContextService {
                 || interviewPersistenceService.findBySessionIdForOwner(sessionId, ownerId).isEmpty()) {
                 return;
             }
-            InterviewDetailDTO detail = interviewHistoryService.getInterviewDetail(sessionId);
+            InterviewDetailDTO detail = loadInterviewDetailForOwner(sessionId, ownerId);
             report.append("\n[面试报告：").append(sessionId).append("]\n")
                 .append(promptSanitizer.sanitizeForContext(serializeReport(detail))).append('\n');
             sources.add(new AgentSource("interview", "面试报告 " + sessionId, null, "INTERVIEW"));
@@ -351,6 +351,20 @@ public class AgentContextService {
 
     private String ownerKey(AgentMessageRequest request) {
         return AuthUserContext.currentUserId().orElse(null);
+    }
+
+    /**
+     * Agent 上下文读取必须显式携带服务端 owner。简化构造器只供迁移期单元测试和旧内部
+     * 调用方使用，生产 Bean 始终注入 persistence service 并走严格归属查询。
+     */
+    private InterviewDetailDTO loadInterviewDetailForOwner(String sessionId, String ownerId) {
+        if (interviewPersistenceService == null) {
+            if (ownerId == null || !ownerId.equals(AuthUserContext.currentUserId().orElse(null))) {
+                throw new SecurityException("Agent 报告读取缺少可信用户身份");
+            }
+            return interviewHistoryService.getInterviewDetail(sessionId);
+        }
+        return interviewHistoryService.getInterviewDetailForOwner(sessionId, ownerId);
     }
 
     private String loadSessionSummary(AgentMessageRequest request) {

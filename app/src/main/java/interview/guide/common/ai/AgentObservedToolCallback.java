@@ -19,6 +19,7 @@ final class AgentObservedToolCallback implements ToolCallback {
     private final ToolCallback delegate;
     private final AgentMetrics metrics;
     private final AgentAuditService auditService;
+    private final PromptSanitizer promptSanitizer;
 
     AgentObservedToolCallback(ToolCallback delegate, AgentMetrics metrics) {
         this(delegate, metrics, null);
@@ -27,9 +28,19 @@ final class AgentObservedToolCallback implements ToolCallback {
     AgentObservedToolCallback(
         ToolCallback delegate, AgentMetrics metrics, AgentAuditService auditService
     ) {
+        this(delegate, metrics, auditService, null);
+    }
+
+    AgentObservedToolCallback(
+        ToolCallback delegate,
+        AgentMetrics metrics,
+        AgentAuditService auditService,
+        PromptSanitizer promptSanitizer
+    ) {
         this.delegate = delegate;
         this.metrics = metrics;
         this.auditService = auditService;
+        this.promptSanitizer = promptSanitizer;
     }
 
     @Override
@@ -46,7 +57,7 @@ final class AgentObservedToolCallback implements ToolCallback {
     public String call(String toolInput) {
         long startedNanos = System.nanoTime();
         try {
-            String result = delegate.call(toolInput);
+            String result = sanitizeResult(delegate.call(toolInput));
             record("success", startedNanos);
             return result;
         } catch (RuntimeException error) {
@@ -61,7 +72,7 @@ final class AgentObservedToolCallback implements ToolCallback {
         AgentMetrics.RunTracker runTracker = runTracker(toolContext);
         try {
             reserveToolCall(runTracker);
-            String result = delegate.call(toolInput, toolContext);
+            String result = sanitizeResult(delegate.call(toolInput, toolContext));
             record("success", startedNanos);
             audit(runTracker, "success");
             return result;
@@ -105,5 +116,11 @@ final class AgentObservedToolCallback implements ToolCallback {
                 Duration.ofNanos(Math.max(0, System.nanoTime() - startedNanos))
             );
         }
+    }
+
+    /** SkillsTool 等外部资料工具没有自己的上下文包装，统一在 Agent 边界再净化一次。 */
+    private String sanitizeResult(String result) {
+        return promptSanitizer == null || result == null
+            ? result : promptSanitizer.sanitizeForContext(result);
     }
 }

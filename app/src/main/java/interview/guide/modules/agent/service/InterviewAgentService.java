@@ -190,10 +190,13 @@ public class InterviewAgentService {
             AtomicReference<String> preparedRunIdRef = new AtomicReference<>();
             try {
                 String message = promptSanitizer.sanitize(resolvedRequest.message());
-                List<AgentHistoryMessage> persistedHistory = resolvedRequest.agentSessionId() == null
-                    || resolvedRequest.agentSessionId().isBlank()
-                    ? agentConversationService.loadHistory(sessionId)
-                    : agentConversationService.loadHistory(sessionId, resolvedRequest.agentSessionId());
+                List<AgentHistoryMessage> persistedHistory = dataOwnerKey == null || dataOwnerKey.isBlank()
+                    ? resolvedRequest.agentSessionId() == null || resolvedRequest.agentSessionId().isBlank()
+                        ? agentConversationService.loadHistory(sessionId)
+                        : agentConversationService.loadHistory(sessionId, resolvedRequest.agentSessionId())
+                    : agentConversationService.loadHistory(
+                        sessionId, resolvedRequest.agentSessionId(), dataOwnerKey
+                    );
                 List<AgentHistoryMessage> historyMessages = AgentHistoryPolicy.normalize(
                     persistedHistory.isEmpty() ? resolvedRequest.history() : persistedHistory
                 );
@@ -215,7 +218,7 @@ public class InterviewAgentService {
                 }
 
                 AgentConversationService.PreparedMessage preparedMessage = prepareMessage(
-                    sessionId, resolvedRequest, message
+                    sessionId, resolvedRequest, message, dataOwnerKey
                 );
                 preparedAssistantMessageId = preparedMessage.assistantMessageId();
                 preparedRunIdRef.set(preparedMessage.runId());
@@ -311,7 +314,7 @@ public class InterviewAgentService {
                 String message = promptSanitizer.sanitize(recoveredRun.userContent());
                 List<AgentHistoryMessage> historyMessages = AgentHistoryPolicy.normalize(
                     removeCurrentUser(agentConversationService.loadHistory(
-                        recoveredRun.interviewSessionId(), recoveredRun.agentSessionId()
+                        recoveredRun.interviewSessionId(), recoveredRun.agentSessionId(), recoveredRun.ownerKey()
                     ))
                 );
                 AgentMessageRequest request = new AgentMessageRequest(
@@ -616,11 +619,13 @@ public class InterviewAgentService {
     }
 
     private AgentConversationService.PreparedMessage prepareMessage(
-        String sessionId, AgentMessageRequest request, String message
+        String sessionId, AgentMessageRequest request, String message, String trustedOwnerKey
     ) {
         String goal = promptSanitizer.sanitize(request.goal());
-        if (request.memoryKey() == null || request.memoryKey().isBlank()) {
-            // 兼容旧的嵌入式调用方和单元测试；有记忆键时才走新增重载。
+        String owner = trustedOwnerKey == null || trustedOwnerKey.isBlank()
+            ? null : trustedOwnerKey.trim();
+        if (owner == null) {
+            // 兼容旧的嵌入式调用方和单元测试，但不把请求体 memoryKey 当作归属凭证。
             return request.agentSessionId() == null || request.agentSessionId().isBlank()
                 ? agentConversationService.prepareMessage(sessionId, goal, request.providerId(), message)
                 : agentConversationService.prepareMessage(
@@ -628,7 +633,7 @@ public class InterviewAgentService {
                 );
         }
         return agentConversationService.prepareMessage(
-            sessionId, request.agentSessionId(), goal, request.providerId(), message, request.memoryKey()
+            sessionId, request.agentSessionId(), goal, request.providerId(), message, owner
         );
     }
 
@@ -1190,12 +1195,14 @@ public class InterviewAgentService {
             ),
             "summary", promptSanitizer.wrapWithDelimiters("session-summary", sessionSummary)
         );
+        // system prompt 只保留版本化、不会随会话变化的策略和安全边界。
+        // 报告、Skill、记忆等资料即使当前看起来固定，也可能因绑定或记忆更新而变化，
+        // 放在 user 动态段可以让稳定前缀在多轮对话中真正保持一致。
         String systemPrompt = systemPromptTemplate.render()
-            + PromptSecurityConstants.ANTI_INJECTION_INSTRUCTION
+            + PromptSecurityConstants.ANTI_INJECTION_INSTRUCTION;
+        String userPrompt = fixedContextPromptTemplate.render(fixedContextVariables)
             + "\n\n"
-            + fixedContextPromptTemplate.render(fixedContextVariables);
-        // 输出格式规则属于本轮动态请求，放到固定资料之后，避免当前问题变化时破坏稳定前缀。
-        String userPrompt = buildAnswerFormatInstruction(context, request, message)
+            + buildAnswerFormatInstruction(context, request, message)
             + "\n\n"
             + userPromptTemplate.render(variables);
         return new PromptVariant(systemPrompt, userPrompt, history);

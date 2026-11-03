@@ -394,12 +394,14 @@ public class LlmProviderRegistry {
         List<ToolCallback> agentTools = new ArrayList<>();
         if (interviewSkillsToolCallback != null) {
             agentTools.add(new AgentObservedToolCallback(
-                interviewSkillsToolCallback, agentMetrics, agentAuditService
+                interviewSkillsToolCallback, agentMetrics, agentAuditService,
+                new PromptSanitizer(properties)
             ));
         }
         if (agentContextToolCallbackFactory != null) {
             agentContextToolCallbackFactory.callbacks().stream()
-                .map(callback -> new AgentObservedToolCallback(callback, agentMetrics, agentAuditService))
+                .map(callback -> new AgentObservedToolCallback(
+                    callback, agentMetrics, agentAuditService, new PromptSanitizer(properties)))
                 .forEach(agentTools::add);
         }
         if (!agentTools.isEmpty()) {

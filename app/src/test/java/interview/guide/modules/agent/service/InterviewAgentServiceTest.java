@@ -721,6 +721,62 @@ class InterviewAgentServiceTest {
     }
 
     @Test
+    @DisplayName("动态资料和用户问题变化时保持 Agent system 前缀稳定")
+    void keepsSystemPrefixStableWhenDynamicContextChanges() throws Exception {
+        when(resourceLoader.getResource(anyString())).thenAnswer(invocation -> {
+            String path = invocation.getArgument(0);
+            String template = path.contains("system")
+                ? "agent-policy:v1\\noutput-contract:v1"
+                : path.contains("context")
+                    ? "报告 {context}\\nSkill {skill}\\n记忆 {memory}"
+                    : "目标 {goal}\\n问题 {question}\\nRAG {rag}\\n摘要 {summary}";
+            return new ByteArrayResource(template.getBytes(StandardCharsets.UTF_8));
+        });
+        when(promptSanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(promptSanitizer.wrapWithStableDelimiters(anyString(), anyString()))
+            .thenAnswer(invocation -> invocation.getArgument(1));
+        when(promptSanitizer.wrapWithDelimiters(anyString(), anyString()))
+            .thenAnswer(invocation -> invocation.getArgument(1));
+        when(contextService.build(anyString(), any(), any())).thenReturn(
+            new AgentContextService.AgentContext(
+                "报告A", "java", "Skill A", "RAG A", "查询A", List.of(),
+                "记忆A", List.of(), "摘要A"
+            ),
+            new AgentContextService.AgentContext(
+                "报告B", "python", "Skill B", "RAG B", "查询B", List.of(),
+                "记忆B", List.of(), "摘要B"
+            )
+        );
+        when(conversationService.loadHistory(anyString())).thenReturn(List.of());
+        when(conversationService.prepareMessage(anyString(), anyString(), any(), anyString()))
+            .thenReturn(new AgentConversationService.PreparedMessage(10L, 1L, "run-1"));
+        when(providerRegistry.resolveChatProviderCandidates("primary"))
+            .thenReturn(List.of("primary"));
+        ChatClient client = mockStreamClient(Flux.just("回答"));
+        when(providerRegistry.getAgentChatClient("primary")).thenReturn(client);
+
+        InterviewAgentService service = new InterviewAgentService(
+            contextService, conversationService, providerRegistry, promptSanitizer, resourceLoader, agentMetrics,
+            agentProgressWriter, retryProperties
+        );
+
+        service.stream("prefix-session-a", new AgentMessageRequest(
+            "review", "问题A", List.of(), "primary"
+        )).collectList().block(Duration.ofSeconds(5));
+        service.stream("prefix-session-b", new AgentMessageRequest(
+            "practice", "问题B", List.of(), "primary"
+        )).collectList().block(Duration.ofSeconds(5));
+
+        ArgumentCaptor<String> systemPrompts = ArgumentCaptor.forClass(String.class);
+        verify(client.prompt(), org.mockito.Mockito.times(2)).system(systemPrompts.capture());
+        assertThat(systemPrompts.getAllValues()).hasSize(2)
+            .containsOnly(systemPrompts.getAllValues().getFirst());
+        assertThat(systemPrompts.getAllValues().getFirst())
+            .contains("agent-policy:v1")
+            .doesNotContain("报告A", "报告B", "记忆A", "记忆B", "问题A", "问题B");
+    }
+
+    @Test
     @DisplayName("压缩上下文后首选模型仍失败时继续切换备用模型")
     void switchesProviderAfterCompactContextRetryFails() throws Exception {
         when(resourceLoader.getResource(anyString())).thenAnswer(invocation -> {

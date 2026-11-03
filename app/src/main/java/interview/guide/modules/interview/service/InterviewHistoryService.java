@@ -43,7 +43,31 @@ public class InterviewHistoryService {
             throw new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND);
         }
 
-        InterviewSessionEntity session = sessionOpt.get();
+        return toDetailDTO(sessionOpt.get());
+    }
+
+    /**
+     * Agent 和其他异步上下文编排必须使用的显式归属读取入口。
+     *
+     * <p>不能依赖调用线程是否恰好带有 {@code AuthUserContext}：异步恢复、工具回调和
+     * 多实例任务接管都可能运行在没有原请求 ThreadLocal 的线程上。这里直接按 owner 查询，
+     * 查不到时不回退到无归属查询，避免把 sessionId 当成授权凭证。</p>
+     */
+    @Transactional(readOnly = true)
+    public InterviewDetailDTO getInterviewDetailForOwner(String sessionId, String ownerId) {
+        if (sessionId == null || sessionId.isBlank() || ownerId == null || ownerId.isBlank()) {
+            throw new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND);
+        }
+        Optional<InterviewSessionEntity> sessionOpt = interviewPersistenceService
+            .findBySessionIdForOwner(sessionId, ownerId);
+        if (sessionOpt.isEmpty()) {
+            throw new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND);
+        }
+
+        return toDetailDTO(sessionOpt.get());
+    }
+
+    private InterviewDetailDTO toDetailDTO(InterviewSessionEntity session) {
 
         // 解析JSON字段
         List<Object> questions = parseJson(session.getQuestionsJson(), new TypeReference<>() {});
