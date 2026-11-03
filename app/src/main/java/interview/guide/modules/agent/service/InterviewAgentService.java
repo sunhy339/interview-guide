@@ -157,6 +157,12 @@ public class InterviewAgentService {
         if (ownerKey != null && !ownerKey.isBlank()) {
             agentConversationService.assertAccess(sessionId, request.agentSessionId(), ownerKey);
             request = request.withMemoryKey(ownerKey);
+            // 兼容迁移期的 X-User-Id 请求：Controller 已通过 AuthIdentityService 校验
+            // owner，但这类请求不会由 AuthSessionFilter 写入 ThreadLocal。运行身份必须
+            // 继续进入 ToolContext，否则工具会被错误判定为缺少 owner。
+            if (dataOwnerKey == null || dataOwnerKey.isBlank()) {
+                dataOwnerKey = ownerKey.trim();
+            }
         }
         return streamInternal(sessionId, request, dataOwnerKey);
     }
