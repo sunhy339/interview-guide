@@ -60,6 +60,7 @@ public class AgentConversationService {
     private final AgentUsageService usageService;
     private final AgentConversationCreationRequestRepository creationRequestRepository;
     private final AgentSessionContextRepository contextRepository;
+    private final AgentContextSummaryService contextSummaryService;
 
     /** 兼容无 Spring 容器的旧测试和内部调用方。 */
     public AgentConversationService(
@@ -69,7 +70,21 @@ public class AgentConversationService {
         InterviewPersistenceService interviewPersistenceService
     ) {
         this(sessionRepository, messageRepository, objectMapper, interviewPersistenceService,
-            null, null, null, null);
+            null, null, null, null, null);
+    }
+
+    public AgentConversationService(
+        AgentChatSessionRepository sessionRepository,
+        AgentChatMessageRepository messageRepository,
+        ObjectMapper objectMapper,
+        InterviewPersistenceService interviewPersistenceService,
+        AgentAuditService auditService,
+        AgentUsageService usageService,
+        AgentConversationCreationRequestRepository creationRequestRepository,
+        AgentSessionContextRepository contextRepository
+    ) {
+        this(sessionRepository, messageRepository, objectMapper, interviewPersistenceService,
+            auditService, usageService, creationRequestRepository, contextRepository, null);
     }
 
     @Autowired
@@ -81,7 +96,8 @@ public class AgentConversationService {
         AgentAuditService auditService,
         AgentUsageService usageService,
         AgentConversationCreationRequestRepository creationRequestRepository,
-        AgentSessionContextRepository contextRepository
+        AgentSessionContextRepository contextRepository,
+        AgentContextSummaryService contextSummaryService
     ) {
         this.sessionRepository = sessionRepository;
         this.messageRepository = messageRepository;
@@ -91,6 +107,7 @@ public class AgentConversationService {
         this.usageService = usageService;
         this.creationRequestRepository = creationRequestRepository;
         this.contextRepository = contextRepository;
+        this.contextSummaryService = contextSummaryService;
     }
 
     /** 保留旧测试和内部调用方的七参数构造方式。 */
@@ -104,7 +121,7 @@ public class AgentConversationService {
         AgentConversationCreationRequestRepository creationRequestRepository
     ) {
         this(sessionRepository, messageRepository, objectMapper, interviewPersistenceService,
-            auditService, usageService, creationRequestRepository, null);
+            auditService, usageService, creationRequestRepository, null, null);
     }
 
     @Transactional
@@ -516,6 +533,15 @@ public class AgentConversationService {
         }
         updateTerminalMessage(message, content, true, null);
         markRunFinished(message.getSession(), AgentRunStatus.COMPLETED, null);
+        if (contextSummaryService != null) {
+            try {
+                contextSummaryService.refresh(message.getSession());
+            } catch (RuntimeException error) {
+                // 摘要是可恢复的优化数据，不能让摘要故障覆盖已经完成的 Agent 回答。
+                log.warn("Agent 会话摘要刷新失败，保留原始回答: sessionId={}",
+                    message.getSession().getAgentSessionId(), error);
+            }
+        }
     }
 
     @Transactional

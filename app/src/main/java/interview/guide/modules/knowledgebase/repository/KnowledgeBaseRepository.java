@@ -31,6 +31,13 @@ public interface KnowledgeBaseRepository extends JpaRepository<KnowledgeBaseEnti
     /** 按所有者范围去重，NULL owner 通过 IS NULL 语义兼容历史共享库。 */
     Optional<KnowledgeBaseEntity> findByFileHashAndOwnerId(String fileHash, String ownerId);
 
+    /** Agent 上下文绑定使用：允许历史共享库，但不允许读取其他用户的私有库。 */
+    @Query("SELECT k FROM KnowledgeBaseEntity k WHERE k.id = :id "
+        + "AND (k.ownerId IS NULL OR k.ownerId = :ownerId)")
+    Optional<KnowledgeBaseEntity> findAccessibleById(
+        @Param("id") Long id, @Param("ownerId") String ownerId
+    );
+
     /**
      * 锁定知识库行，用于串行化同一知识库的题目生成状态迁移。
      */

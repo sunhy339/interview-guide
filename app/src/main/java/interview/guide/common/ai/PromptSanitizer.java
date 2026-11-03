@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.text.Normalizer;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -25,27 +26,38 @@ public class PromptSanitizer {
         this.properties = properties;
     }
 
-    // 行首角色标记：只匹配行首，避免误杀 "Experience with system design"
+    // 行首角色标记：兼容 Markdown 引用、代码块和 developer/tool 等角色，避免资料伪造消息层级。
     private static final Pattern ROLE_INJECTION_PATTERN = Pattern.compile(
-        "(?im)^\\s*(system|user|assistant|human|ai|model)\\s*[:：].*"
+        "(?im)^\\s*(?:[#>*`~\\-]+\\s*)*"
+            + "(system|developer|user|assistant|human|ai|model|tool)"
+            + "(?:\\s+(?:message|prompt|instruction|content|role))?\\s*[:：].*"
     );
 
-    // 注入短语：既覆盖常见英文表达，也覆盖中文角色切换/规则覆盖表达。
+    // 注入短语：先做 NFKC 和零宽字符归一化，再匹配常见英文/中文变体。
     private static final Pattern INJECTION_PHRASE_PATTERN = Pattern.compile(
-        "(ignore\\s+(previous|above|all|your)\\s*(instructions|prompts|rules))" +
-        "|(disregard\\s+(previous|above|all|your)\\s*(instructions|prompts|rules))" +
-        "|(forget\\s+(everything|all\\s*(previous\\s*)?(instructions|rules|prompts)))" +
-        "|(override\\s+(the\\s+)?(system|developer|safety)\\s*(instructions|rules|prompt))" +
-        "|(reveal|show|print|output|leak)\\s+.{0,80}(system\\s+prompt|developer\\s+message|hidden\\s+instructions?)" +
-        "|(new\\s+instructions?:)" +
-        "|忽略之前的指令" +
-        "|忘记之前的指令" +
-        "|忽略以上所有" +
-        "|无视(之前|以上|系统|开发者)的?(指令|规则|提示)" +
-        "|覆盖(系统|开发者|安全)(指令|规则|提示)" +
-        "|泄露(系统提示词|开发者消息|隐藏指令)" +
-        "|你不再是" +
-        "|你的新角色是",
+        "ignore\\s+(?:(?:all|any|the)\\s+)?(?:previous|prior|above|earlier|preceding)"
+            + "\\s+(?:instructions?|prompts?|rules?)"
+        + "|ignore\\s+(?:all|any|your)\\s+(?:instructions?|prompts?|rules?)"
+        + "|disregard\\s+(?:(?:all|any|the)\\s+)?(?:previous|prior|above|earlier|preceding)"
+            + "\\s+(?:instructions?|prompts?|rules?)"
+        + "|forget\\s+(?:everything|all|previous|prior)\\s*(?:instructions?|prompts?|rules?)?"
+        + "|override\\s+(?:the\\s+)?(?:system|developer|safety)\\s*"
+            + "(?:instructions?|rules?|prompts?)"
+        + "|(?:reveal|show|print|output|leak)\\s+.{0,100}"
+            + "(?:system\\s+prompt|developer\\s+message|hidden\\s+instructions?)"
+        + "|(?:new|additional)\\s+instructions?\\s*:"
+        + "|(?:do\\s+not|don't)\\s+follow\\s+(?:the\\s+)?(?:above|previous|system|developer)"
+        + "|act\\s+as\\s+(?:a\\s+)?(?:system|developer|assistant|admin|root)"
+        + "|you\\s+are\\s+now\\s+(?:a\\s+)?(?:system|developer|admin|root)"
+        + "|jailbreak"
+        + "|忽略(?:之前|以上|上面)(?:的)?(?:所有)?(?:指令|规则|提示)"
+        + "|忘记(?:之前|以上|上面)(?:的)?(?:所有)?(?:指令|规则|提示)"
+        + "|无视(?:之前|以上|上面|系统|开发者)(?:的)?(?:所有)?(?:指令|规则|提示)"
+        + "|覆盖(?:系统|开发者|安全)(?:的)?(?:指令|规则|提示)"
+        + "|泄露(?:系统提示词|系统指令|开发者消息|隐藏指令)"
+        + "|(?:请)?(?:把|将)(?:以下|这段)(?:内容)?当作(?:系统|开发者)(?:提示|指令)"
+        + "|你不再是"
+        + "|你的新(?:身份|角色)是",
         Pattern.CASE_INSENSITIVE
     );
 
@@ -56,7 +68,13 @@ public class PromptSanitizer {
 
     // XML 边界标签伪造：防止攻击者构造 <data-boundary...> 来提前关闭包裹
     private static final Pattern BOUNDARY_TAG_PATTERN = Pattern.compile(
-        "</?data-boundary[^>]*>", Pattern.CASE_INSENSITIVE
+        "</?data-boundary[^>]*>|---\\s*(?:BEGIN|END|START|STOP)\\b[^\\r\\n]*---",
+        Pattern.CASE_INSENSITIVE
+    );
+
+    /** 常见零宽/双向控制字符；它们可把注入短语拆开而不影响模型阅读。 */
+    private static final Pattern INVISIBLE_CONTROL_PATTERN = Pattern.compile(
+        "[\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u206F\\uFEFF]"
     );
 
     /**
@@ -90,7 +108,7 @@ public class PromptSanitizer {
     private String sanitizeInternal(String text) {
 
         boolean injected = false;
-        String result = text;
+        String result = normalizeForSecurity(text);
 
         var roleMatcher = ROLE_INJECTION_PATTERN.matcher(result);
         if (roleMatcher.find()) {
@@ -117,6 +135,16 @@ public class PromptSanitizer {
             log.warn("检测到潜在 Prompt 注入尝试，文本长度: {}", text.length());
         }
         return result;
+    }
+
+    /**
+     * 统一全角字符、不可见字符和换行变体，防止攻击者仅通过视觉上不可见的字符绕过检测。
+     * 该方法不压缩普通空格，也不改变中文正文的语义。
+     */
+    private String normalizeForSecurity(String text) {
+        String normalized = Normalizer.normalize(text, Normalizer.Form.NFKC);
+        normalized = INVISIBLE_CONTROL_PATTERN.matcher(normalized).replaceAll("");
+        return normalized.replace("\r\n", "\n").replace('\r', '\n');
     }
 
     /**
@@ -157,10 +185,11 @@ public class PromptSanitizer {
         if (text == null || text.isBlank()) {
             return false;
         }
-        return ROLE_INJECTION_PATTERN.matcher(text).find()
-            || INJECTION_PHRASE_PATTERN.matcher(text).find()
-            || DELIMITER_INJECTION_PATTERN.matcher(text).find()
-            || BOUNDARY_TAG_PATTERN.matcher(text).find();
+        String normalized = normalizeForSecurity(text);
+        return ROLE_INJECTION_PATTERN.matcher(normalized).find()
+            || INJECTION_PHRASE_PATTERN.matcher(normalized).find()
+            || DELIMITER_INJECTION_PATTERN.matcher(normalized).find()
+            || BOUNDARY_TAG_PATTERN.matcher(normalized).find();
     }
 
     private String safeLabel(String label) {

@@ -1164,6 +1164,9 @@ public class InterviewAgentService {
         String memory = compacted
             ? compactPromptText(context.longTermMemory(), 2_000)
             : context.longTermMemory();
+        String sessionSummary = compacted
+            ? compactPromptText(context.sessionSummary(), 3_000)
+            : context.sessionSummary();
         Map<String, Object> fixedContextVariables = Map.of(
             "context", promptSanitizer.wrapWithStableDelimiters(
                 "interview-report", report),
@@ -1178,15 +1181,18 @@ public class InterviewAgentService {
             "rag", promptSanitizer.wrapWithDelimiters("rag-context", rag),
             "plan", promptSanitizer.wrapWithStableDelimiters(
                 "agent-loop-plan", plan + "\n\n已完成的 Loop 观察：\n" + loopTrace
-            )
+            ),
+            "summary", promptSanitizer.wrapWithDelimiters("session-summary", sessionSummary)
         );
         String systemPrompt = systemPromptTemplate.render()
             + PromptSecurityConstants.ANTI_INJECTION_INSTRUCTION
             + "\n\n"
-            + buildAnswerFormatInstruction(context, request, message)
-            + "\n\n"
             + fixedContextPromptTemplate.render(fixedContextVariables);
-        return new PromptVariant(systemPrompt, userPromptTemplate.render(variables), history);
+        // 输出格式规则属于本轮动态请求，放到固定资料之后，避免当前问题变化时破坏稳定前缀。
+        String userPrompt = buildAnswerFormatInstruction(context, request, message)
+            + "\n\n"
+            + userPromptTemplate.render(variables);
+        return new PromptVariant(systemPrompt, userPrompt, history);
     }
 
     private String buildAnswerFormatInstruction(

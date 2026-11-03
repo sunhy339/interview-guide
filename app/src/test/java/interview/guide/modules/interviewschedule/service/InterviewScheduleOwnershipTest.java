@@ -94,6 +94,25 @@ class InterviewScheduleOwnershipTest {
     }
 
     @Test
+    void agentReadUsesExplicitOwnerEvenWithoutAuthenticationContext() {
+        AuthUserContext.clear();
+        when(repository.findAllByOwnerIdOrderByInterviewTimeAsc("user-a"))
+            .thenReturn(List.of());
+
+        service.listForOwner("user-a", null, null, 10);
+
+        verify(repository).findAllByOwnerIdOrderByInterviewTimeAsc("user-a");
+    }
+
+    @Test
+    void agentReadRejectsPartialTimeRange() {
+        assertThatThrownBy(() -> service.listForOwner(
+            "user-a", LocalDateTime.now(), null, 10
+        )).isInstanceOf(BusinessException.class)
+            .hasMessageContaining("同时提供开始和结束时间");
+    }
+
+    @Test
     void detailCannotReadAnotherUsersSchedule() {
         when(repository.findByIdAndOwnerId(8L, "user-a")).thenReturn(Optional.empty());
 

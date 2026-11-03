@@ -9,6 +9,9 @@ import interview.guide.modules.agent.model.AgentContextBindingResponse;
 import interview.guide.modules.agent.model.AgentInterviewSearchResult;
 import interview.guide.modules.agent.model.AgentActionResponse;
 import interview.guide.modules.agent.model.AttachAgentResourceRequest;
+import interview.guide.modules.interviewschedule.model.InterviewScheduleDTO;
+import interview.guide.modules.interviewschedule.model.InterviewStatus;
+import interview.guide.modules.interviewschedule.service.InterviewScheduleService;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -37,6 +40,8 @@ public class AgentContextToolCallbackFactory {
     private static final String INTERVIEW_CLEAR = "interview.clear_context";
     private static final String CONTEXT_LIST = "agent_context.list";
     private static final String CONTEXT_ASSET_ACTION = "agent_context.asset_action";
+    private static final String SCHEDULE_LIST = "schedule.list";
+    private static final String SCHEDULE_CONFLICT = "schedule.check_conflict";
     private static final String SCHEDULE_DRAFT = "schedule.create_draft";
 
     private static final String SEARCH_SCHEMA = """
@@ -51,6 +56,12 @@ public class AgentContextToolCallbackFactory {
     private static final String ASSET_ACTION_SCHEMA = """
         {"type":"object","properties":{"assetId":{"type":"string"},"operation":{"type":"string","enum":["review","attach","request_knowledge_base","confirm_knowledge_base"]}},"required":["assetId","operation"],"additionalProperties":false}
         """;
+    private static final String SCHEDULE_LIST_SCHEMA = """
+        {"type":"object","properties":{"startTime":{"type":"string","description":"本地时间，格式 yyyy-MM-ddTHH:mm"},"endTime":{"type":"string","description":"本地时间，格式 yyyy-MM-ddTHH:mm"},"limit":{"type":"integer","minimum":1,"maximum":20}},"additionalProperties":false}
+        """;
+    private static final String SCHEDULE_CONFLICT_SCHEMA = """
+        {"type":"object","properties":{"interviewTime":{"type":"string","description":"本地时间，格式 yyyy-MM-ddTHH:mm"},"windowMinutes":{"type":"integer","minimum":5,"maximum":240}},"required":["interviewTime"],"additionalProperties":false}
+        """;
     private static final String SCHEDULE_SCHEMA = """
         {"type":"object","properties":{"companyName":{"type":"string"},"position":{"type":"string"},"interviewTime":{"type":"string","description":"本地时间，格式 yyyy-MM-ddTHH:mm"},"interviewType":{"type":"string"},"meetingLink":{"type":"string"},"roundNumber":{"type":"integer","minimum":1,"maximum":20},"interviewer":{"type":"string"},"notes":{"type":"string"}},"required":["companyName","position","interviewTime"],"additionalProperties":false}
         """;
@@ -60,6 +71,7 @@ public class AgentContextToolCallbackFactory {
     private final AgentContextAssetService contextAssetService;
     private final AgentActionService actionService;
     private final AgentConversationService conversationService;
+    private final InterviewScheduleService interviewScheduleService;
     private final PromptSanitizer promptSanitizer;
     private final ObjectMapper objectMapper;
 
@@ -69,6 +81,7 @@ public class AgentContextToolCallbackFactory {
         AgentContextAssetService contextAssetService,
         AgentActionService actionService,
         AgentConversationService conversationService,
+        InterviewScheduleService interviewScheduleService,
         PromptSanitizer promptSanitizer,
         ObjectMapper objectMapper
     ) {
@@ -77,6 +90,7 @@ public class AgentContextToolCallbackFactory {
         this.contextAssetService = contextAssetService;
         this.actionService = actionService;
         this.conversationService = conversationService;
+        this.interviewScheduleService = interviewScheduleService;
         this.promptSanitizer = promptSanitizer;
         this.objectMapper = objectMapper;
     }
@@ -98,6 +112,12 @@ public class AgentContextToolCallbackFactory {
             callback(CONTEXT_ASSET_ACTION,
                 "管理用户上传文件的审核、当前会话绑定和知识库导入。任何知识库写入都必须经过用户明确确认，不能替用户确认。",
                 ASSET_ACTION_SCHEMA, this::assetAction),
+            callback(SCHEDULE_LIST,
+                "查询当前用户在指定时间范围内的面试日程，只返回低敏摘要，不修改日程。",
+                SCHEDULE_LIST_SCHEMA, this::listSchedules),
+            callback(SCHEDULE_CONFLICT,
+                "检查当前用户指定时间附近是否已有未取消的面试日程，只读，不创建或修改日程。",
+                SCHEDULE_CONFLICT_SCHEMA, this::checkScheduleConflict),
             callback(SCHEDULE_DRAFT,
                 "根据用户明确提供的时间生成待确认面试日程草稿；只提出动作，不直接创建日程。",
                 SCHEDULE_SCHEMA, this::scheduleDraft)
@@ -121,7 +141,7 @@ public class AgentContextToolCallbackFactory {
     private String searchInterviews(JsonNode input, ToolContext toolContext) {
         ToolContextData context = context(toolContext);
         List<AgentInterviewSearchResult> results = interviewContextService.search(
-            context.ownerKey(), text(input, "query"), integer(input, "limit", 8)
+            context.ownerKey(), safeContextText(text(input, "query")), integer(input, "limit", 8)
         );
         return emit(results);
     }
@@ -216,26 +236,60 @@ public class AgentContextToolCallbackFactory {
         ));
     }
 
+    private String listSchedules(JsonNode input, ToolContext toolContext) {
+        ToolContextData context = context(toolContext);
+        LocalDateTime start = optionalTime(input, "startTime");
+        LocalDateTime end = optionalTime(input, "endTime");
+        List<ScheduleSummary> schedules = interviewScheduleService.listForOwner(
+                context.ownerKey(), start, end, integer(input, "limit", 10)
+            ).stream()
+            .map(ScheduleSummary::from)
+            .toList();
+        return emit(Map.of(
+            "status", "READ_ONLY",
+            "schedules", schedules
+        ));
+    }
+
+    private String checkScheduleConflict(JsonNode input, ToolContext toolContext) {
+        ToolContextData context = context(toolContext);
+        LocalDateTime interviewTime = requiredTime(input, "interviewTime", "面试时间不能为空");
+        int windowMinutes = integer(input, "windowMinutes", 60);
+        if (windowMinutes < 5 || windowMinutes > 240) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "冲突检查范围必须在5到240分钟之间");
+        }
+        List<ScheduleSummary> conflicts = interviewScheduleService.listForOwner(
+                context.ownerKey(), interviewTime.minusMinutes(windowMinutes),
+                interviewTime.plusMinutes(windowMinutes), 50
+            ).stream()
+            .filter(item -> item.getStatus() != InterviewStatus.CANCELLED
+                && item.getStatus() != InterviewStatus.COMPLETED)
+            .map(ScheduleSummary::from)
+            .toList();
+        return emit(Map.of(
+            "status", "READ_ONLY",
+            "interviewTime", interviewTime.toString(),
+            "windowMinutes", windowMinutes,
+            "hasConflict", !conflicts.isEmpty(),
+            "conflicts", conflicts
+        ));
+    }
+
     private String scheduleDraft(JsonNode input, ToolContext toolContext) {
         ToolContextData context = context(toolContext);
         requireUserIntent(context.userMessage(), "预约", "安排", "创建面试", "添加面试", "日程");
         String time = required(input, "interviewTime", "面试时间不能为空");
-        LocalDateTime interviewTime;
-        try {
-            interviewTime = LocalDateTime.parse(time);
-        } catch (RuntimeException error) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "面试时间格式应为 yyyy-MM-ddTHH:mm");
-        }
+        LocalDateTime interviewTime = parseTime(time, "面试时间格式应为 yyyy-MM-ddTHH:mm");
         conversationService.assertAccess(
             context.interviewSessionId(), context.agentSessionId(), context.ownerKey()
         );
         AgentActionResponse action = actionService.proposeInterviewScheduleDraft(
             context.interviewSessionId(), context.agentSessionId(), context.ownerKey(),
-            required(input, "companyName", "公司或面试主题不能为空"),
-            required(input, "position", "岗位不能为空"), interviewTime,
-            optional(input, "interviewType"), optional(input, "meetingLink"),
-            integer(input, "roundNumber", 1), optional(input, "interviewer"),
-            optional(input, "notes"), null
+            requiredSafeText(input, "companyName", "公司或面试主题不能为空"),
+            requiredSafeText(input, "position", "岗位不能为空"), interviewTime,
+            optionalSafeText(input, "interviewType"), optionalSafeText(input, "meetingLink"),
+            integer(input, "roundNumber", 1), optionalSafeText(input, "interviewer"),
+            optionalSafeText(input, "notes"), null
         );
         return emit(Map.of(
             "status", "ACTION_PROPOSED",
@@ -265,6 +319,12 @@ public class AgentContextToolCallbackFactory {
     }
 
     private void requireUserIntent(String message, String... phrases) {
+        if (promptSanitizer.detectInjectionAttempt(message)) {
+            throw new BusinessException(
+                ErrorCode.BAD_REQUEST,
+                "检测到当前请求包含疑似提示注入内容，未执行任何 Agent 操作"
+            );
+        }
         if (!containsAny(message, phrases)) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "需要用户明确说明要执行该操作");
         }
@@ -289,6 +349,18 @@ public class AgentContextToolCallbackFactory {
         return value.isBlank() ? null : value;
     }
 
+    private String requiredSafeText(JsonNode input, String field, String message) {
+        return safeContextText(required(input, field, message));
+    }
+
+    private String optionalSafeText(JsonNode input, String field) {
+        return safeContextText(optional(input, field));
+    }
+
+    private String safeContextText(String value) {
+        return value == null ? null : promptSanitizer.sanitizeForContext(value);
+    }
+
     private String text(JsonNode input, String field) {
         if (input == null || input.get(field) == null || input.get(field).isNull()) return "";
         return input.get(field).asText().trim();
@@ -297,6 +369,24 @@ public class AgentContextToolCallbackFactory {
     private int integer(JsonNode input, String field, int fallback) {
         if (input == null || input.get(field) == null || input.get(field).isNull()) return fallback;
         return input.get(field).asInt(fallback);
+    }
+
+    private LocalDateTime optionalTime(JsonNode input, String field) {
+        String value = text(input, field);
+        return value.isBlank() ? null : parseTime(value, field + "格式应为 yyyy-MM-ddTHH:mm");
+    }
+
+    private LocalDateTime requiredTime(JsonNode input, String field, String message) {
+        String value = required(input, field, message);
+        return parseTime(value, field + "格式应为 yyyy-MM-ddTHH:mm");
+    }
+
+    private LocalDateTime parseTime(String value, String message) {
+        try {
+            return LocalDateTime.parse(value);
+        } catch (RuntimeException error) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, message);
+        }
     }
 
     private String emit(Object value) {
@@ -318,6 +408,22 @@ public class AgentContextToolCallbackFactory {
         List<AgentContextBindingResponse> bindings,
         List<AgentContextAssetResponse> assets
     ) {
+    }
+
+    private record ScheduleSummary(
+        Long id,
+        String companyName,
+        String position,
+        LocalDateTime interviewTime,
+        String interviewType,
+        InterviewStatus status
+    ) {
+        private static ScheduleSummary from(InterviewScheduleDTO schedule) {
+            return new ScheduleSummary(
+                schedule.getId(), schedule.getCompanyName(), schedule.getPosition(),
+                schedule.getInterviewTime(), schedule.getInterviewType(), schedule.getStatus()
+            );
+        }
     }
 
     private static final class Callback implements ToolCallback {

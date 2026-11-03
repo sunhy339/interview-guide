@@ -7,6 +7,7 @@ import interview.guide.modules.agent.model.AgentSource;
 import interview.guide.modules.agent.model.AgentMemorySnapshot;
 import interview.guide.modules.interview.model.InterviewDetailDTO;
 import interview.guide.modules.interview.service.InterviewHistoryService;
+import interview.guide.modules.interview.service.InterviewPersistenceService;
 import interview.guide.modules.interview.skill.InterviewSkillService;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseQueryService;
 import interview.guide.modules.knowledgebase.service.RagQueryExecution;
@@ -52,6 +53,7 @@ public class AgentContextService {
     private static final int WEAK_SCORE_THRESHOLD = 70;
 
     private final InterviewHistoryService interviewHistoryService;
+    private final InterviewPersistenceService interviewPersistenceService;
     private final InterviewSkillService interviewSkillService;
     private final KnowledgeBaseQueryService knowledgeBaseQueryService;
     private final PromptSanitizer promptSanitizer;
@@ -61,6 +63,7 @@ public class AgentContextService {
     private final AgentContextAssetRepository contextAssetRepository;
     private final ResumeRepository resumeRepository;
     private final KnowledgeBaseRepository knowledgeBaseRepository;
+    private final AgentContextSummaryService contextSummaryService;
 
     public AgentContextService(
         InterviewHistoryService interviewHistoryService,
@@ -70,14 +73,15 @@ public class AgentContextService {
         ObjectMapper objectMapper
     ) {
         this(
-            interviewHistoryService, interviewSkillService, knowledgeBaseQueryService,
-            promptSanitizer, objectMapper, null, null, null, null, null
+            interviewHistoryService, null, interviewSkillService, knowledgeBaseQueryService,
+            promptSanitizer, objectMapper, null, null, null, null, null, null
         );
     }
 
     @Autowired
     public AgentContextService(
         InterviewHistoryService interviewHistoryService,
+        InterviewPersistenceService interviewPersistenceService,
         InterviewSkillService interviewSkillService,
         KnowledgeBaseQueryService knowledgeBaseQueryService,
         PromptSanitizer promptSanitizer,
@@ -86,9 +90,11 @@ public class AgentContextService {
         AgentSessionContextRepository sessionContextRepository,
         AgentContextAssetRepository contextAssetRepository,
         ResumeRepository resumeRepository,
-        KnowledgeBaseRepository knowledgeBaseRepository
+        KnowledgeBaseRepository knowledgeBaseRepository,
+        AgentContextSummaryService contextSummaryService
     ) {
         this.interviewHistoryService = interviewHistoryService;
+        this.interviewPersistenceService = interviewPersistenceService;
         this.interviewSkillService = interviewSkillService;
         this.knowledgeBaseQueryService = knowledgeBaseQueryService;
         this.promptSanitizer = promptSanitizer;
@@ -98,6 +104,7 @@ public class AgentContextService {
         this.contextAssetRepository = contextAssetRepository;
         this.resumeRepository = resumeRepository;
         this.knowledgeBaseRepository = knowledgeBaseRepository;
+        this.contextSummaryService = contextSummaryService;
     }
 
     /** 兼容当前单元测试和迁移期内部调用方。 */
@@ -110,8 +117,8 @@ public class AgentContextService {
         AgentMemoryService agentMemoryService
     ) {
         this(
-            interviewHistoryService, interviewSkillService, knowledgeBaseQueryService,
-            promptSanitizer, objectMapper, agentMemoryService, null, null, null, null
+            interviewHistoryService, null, interviewSkillService, knowledgeBaseQueryService,
+            promptSanitizer, objectMapper, agentMemoryService, null, null, null, null, null
         );
     }
 
@@ -124,7 +131,7 @@ public class AgentContextService {
             return buildGeneralContext(request, effectiveHistory);
         }
         InterviewDetailDTO detail = interviewHistoryService.getInterviewDetail(sessionId);
-        String report = serializeReport(detail);
+        String report = promptSanitizer.sanitizeForContext(serializeReport(detail));
         List<AgentSource> sources = new ArrayList<>();
 
         // 旧的“从面试详情进入 Agent”链路继续以报告为主，但允许输入区追加已审核的简历/文件资料。
@@ -148,7 +155,8 @@ public class AgentContextService {
             retrievalQuery,
             List.copyOf(sources),
             memory.toPrompt(detail.skillId()),
-            extractWeaknesses(detail)
+            extractWeaknesses(detail),
+            loadSessionSummary(request)
         );
     }
 
@@ -170,7 +178,8 @@ public class AgentContextService {
             retrievalQuery,
             List.copyOf(sources),
             memory.toPrompt(null),
-            List.of()
+            List.of(),
+            loadSessionSummary(request)
         );
     }
 
@@ -208,11 +217,13 @@ public class AgentContextService {
             }
             if (resourceId == null || resourceId.isBlank()) continue;
             switch (type) {
-                case "INTERVIEW_REPORT" -> appendInterviewContext(report, resourceId, sources);
+                case "INTERVIEW_REPORT" -> appendInterviewContext(
+                    report, resourceId, ownerKey(request), sources
+                );
                 case "RESUME" -> appendResumeContext(report, resourceId, request, sources);
                 case "FILE" -> appendFileContext(report, resourceId, request, sources);
                 case "KNOWLEDGE_BASE" -> appendKnowledgeContext(
-                    report, resourceId, retrievalQuery, effectiveHistory, sources
+                    report, resourceId, retrievalQuery, effectiveHistory, sources, ownerKey(request)
                 );
                 default -> log.warn("忽略未知 Agent 上下文类型: type={}, resourceId={}", type, resourceId);
             }
@@ -225,11 +236,18 @@ public class AgentContextService {
         return truncate(report.toString(), MAX_REPORT_CHARS);
     }
 
-    private void appendInterviewContext(StringBuilder report, String sessionId, List<AgentSource> sources) {
+    private void appendInterviewContext(
+        StringBuilder report, String sessionId, String ownerId, List<AgentSource> sources
+    ) {
         try {
+            if (interviewHistoryService == null || interviewPersistenceService == null
+                || ownerId == null || ownerId.isBlank()
+                || interviewPersistenceService.findBySessionIdForOwner(sessionId, ownerId).isEmpty()) {
+                return;
+            }
             InterviewDetailDTO detail = interviewHistoryService.getInterviewDetail(sessionId);
             report.append("\n[面试报告：").append(sessionId).append("]\n")
-                .append(serializeReport(detail)).append('\n');
+                .append(promptSanitizer.sanitizeForContext(serializeReport(detail))).append('\n');
             sources.add(new AgentSource("interview", "面试报告 " + sessionId, null, "INTERVIEW"));
         } catch (RuntimeException error) {
             log.warn("通用 Agent 读取面试报告失败: sessionId={}", sessionId, error);
@@ -243,7 +261,9 @@ public class AgentContextService {
         parseLong(resourceId).flatMap(id -> resumeRepository.findByIdAndOwnerId(id, ownerKey(request)))
             .ifPresent(resume -> {
                 report.append("\n[简历：").append(resume.getOriginalFilename()).append("]\n")
-                    .append(resume.getResumeText() == null ? "" : resume.getResumeText()).append('\n');
+                    .append(promptSanitizer.sanitizeForContext(
+                        resume.getResumeText() == null ? "" : resume.getResumeText()
+                    )).append('\n');
                 sources.add(new AgentSource("resume", resume.getOriginalFilename(), null, "RESUME-" + resourceId));
             });
     }
@@ -257,7 +277,9 @@ public class AgentContextService {
                 || asset.getReviewStatus() == AgentContextAssetStatus.KB_IMPORT_COMPLETED)
             .ifPresent(asset -> {
                 report.append("\n[已审核文件：").append(asset.getOriginalFilename()).append("]\n")
-                    .append(asset.getExtractedText() == null ? "" : asset.getExtractedText()).append('\n');
+                    .append(promptSanitizer.sanitizeForContext(
+                        asset.getExtractedText() == null ? "" : asset.getExtractedText()
+                    )).append('\n');
                 sources.add(new AgentSource("file", asset.getOriginalFilename(), null, "FILE-" + resourceId));
             });
     }
@@ -267,10 +289,12 @@ public class AgentContextService {
         String resourceId,
         String retrievalQuery,
         List<AgentHistoryMessage> effectiveHistory,
-        List<AgentSource> sources
+        List<AgentSource> sources,
+        String ownerId
     ) {
         if (knowledgeBaseRepository == null || retrievalQuery.isBlank()) return;
-        parseLong(resourceId).flatMap(knowledgeBaseRepository::findById).ifPresent(kb -> {
+        parseLong(resourceId).flatMap(id -> knowledgeBaseRepository.findAccessibleById(id, ownerId))
+            .ifPresent(kb -> {
             try {
                 RagQueryExecution execution = knowledgeBaseQueryService.retrieveOnly(
                     List.of(kb.getId()), retrievalQuery, buildRetrievalHistory(effectiveHistory)
@@ -291,8 +315,10 @@ public class AgentContextService {
             if (report.length() >= MAX_RAG_CONTEXT_CHARS) break;
             index++;
             String reference = "R" + index;
-            String title = describe(document.metadata());
-            String text = document.text() == null ? "" : document.text();
+            String title = promptSanitizer.sanitizeForContext(describe(document.metadata()));
+            String text = promptSanitizer.sanitizeForContext(
+                document.text() == null ? "" : document.text()
+            );
             int remaining = MAX_RAG_CONTEXT_CHARS - report.length();
             int budget = Math.max(0, remaining - title.length() - reference.length() - 24);
             if (budget <= 0) break;
@@ -313,6 +339,15 @@ public class AgentContextService {
     private String ownerKey(AgentMessageRequest request) {
         return AuthUserContext.currentUserId()
             .orElse(request == null ? null : request.memoryKey());
+    }
+
+    private String loadSessionSummary(AgentMessageRequest request) {
+        if (contextSummaryService == null || request == null) {
+            return "暂无会话摘要";
+        }
+        return contextSummaryService.loadForPrompt(
+            request.agentSessionId(), ownerKey(request)
+        );
     }
 
     private AgentMemorySnapshot loadAndUpdateMemory(InterviewDetailDTO detail, AgentMessageRequest request) {
@@ -394,8 +429,10 @@ public class AgentContextService {
             for (int index = 0; index < execution.retrievedDocs().size(); index++) {
                 RagQueryExecution.RetrievedDoc document = execution.retrievedDocs().get(index);
                 String reference = "R" + (index + 1);
-                String title = describe(document.metadata());
-                String text = document.text() == null ? "" : document.text();
+                String title = promptSanitizer.sanitizeForContext(describe(document.metadata()));
+                String text = promptSanitizer.sanitizeForContext(
+                    document.text() == null ? "" : document.text()
+                );
                 String prefix = "[" + reference + "] 来源：" + title + '\n';
                 int remaining = MAX_RAG_CONTEXT_CHARS - context.length();
                 if (remaining <= prefix.length()) {
@@ -522,7 +559,8 @@ public class AgentContextService {
         String retrievalQuery,
         List<AgentSource> sources,
         String longTermMemory,
-        List<String> weaknesses
+        List<String> weaknesses,
+        String sessionSummary
     ) {
         public AgentContext(
             String interviewReport,
@@ -533,13 +571,29 @@ public class AgentContextService {
             List<AgentSource> sources
         ) {
             this(interviewReport, skillId, skillReference, ragContext, retrievalQuery, sources,
-                "暂无长期记忆", List.of());
+                "暂无长期记忆", List.of(), "暂无会话摘要");
+        }
+
+        /** 兼容 Loop 工具和迁移期调用方传入长期记忆、薄弱点的旧构造方式。 */
+        public AgentContext(
+            String interviewReport,
+            String skillId,
+            String skillReference,
+            String ragContext,
+            String retrievalQuery,
+            List<AgentSource> sources,
+            String longTermMemory,
+            List<String> weaknesses
+        ) {
+            this(interviewReport, skillId, skillReference, ragContext, retrievalQuery, sources,
+                longTermMemory, weaknesses, "暂无会话摘要");
         }
 
         public AgentContext {
             longTermMemory = longTermMemory == null ? "暂无长期记忆" : longTermMemory;
             weaknesses = weaknesses == null ? List.of() : List.copyOf(weaknesses);
             sources = sources == null ? List.of() : List.copyOf(sources);
+            sessionSummary = sessionSummary == null ? "暂无会话摘要" : sessionSummary;
         }
     }
 }

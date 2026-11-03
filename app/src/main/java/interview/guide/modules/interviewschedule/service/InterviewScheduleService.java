@@ -108,6 +108,30 @@ public class InterviewScheduleService {
             .collect(Collectors.toList());
     }
 
+    /**
+     * Agent 只读查询入口：显式按 owner 查询，不能依赖当前线程认证上下文。
+     * 返回数量由调用方限制，避免把整张日程表注入模型上下文。
+     */
+    @Transactional(readOnly = true)
+    public List<InterviewScheduleDTO> listForOwner(
+        String ownerId, LocalDateTime start, LocalDateTime end, int limit
+    ) {
+        if (ownerId == null || ownerId.isBlank()) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED, "面试日程身份已失效");
+        }
+        if ((start == null) != (end == null)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "日程查询需要同时提供开始和结束时间");
+        }
+        if (start != null && end.isBefore(start)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "日程查询时间范围无效");
+        }
+        int safeLimit = Math.max(1, Math.min(50, limit));
+        List<InterviewScheduleEntity> entities = start == null
+            ? repository.findAllByOwnerIdOrderByInterviewTimeAsc(ownerId.trim())
+            : repository.findByOwnerIdAndInterviewTimeBetween(ownerId.trim(), start, end);
+        return entities.stream().limit(safeLimit).map(this::toDTO).toList();
+    }
+
     public InterviewScheduleDTO getById(Long id) {
         return toDTO(getByIdOrThrow(id));
     }

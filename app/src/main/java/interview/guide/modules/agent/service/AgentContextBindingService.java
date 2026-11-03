@@ -55,8 +55,7 @@ public class AgentContextBindingService {
             }
             case "KNOWLEDGE_BASE" -> {
                 Long id = parseLong(resourceId, "知识库 ID");
-                KnowledgeBaseEntity kb = knowledgeBaseRepository.findById(id)
-                    .filter(item -> item.getOwnerId() == null || ownerId.equals(item.getOwnerId()))
+                KnowledgeBaseEntity kb = knowledgeBaseRepository.findAccessibleById(id, ownerId)
                     .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "知识库不存在"));
                 resourceName = kb.getName();
             }
