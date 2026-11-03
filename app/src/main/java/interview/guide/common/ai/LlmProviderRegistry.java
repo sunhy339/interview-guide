@@ -8,6 +8,7 @@ import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.service.AgentAuditService;
+import interview.guide.modules.agent.service.AgentContextToolCallbackFactory;
 import interview.guide.modules.llmprovider.model.LlmGlobalSettingEntity;
 import interview.guide.modules.llmprovider.model.LlmProviderEntity;
 import interview.guide.modules.llmprovider.repository.LlmGlobalSettingRepository;
@@ -66,6 +67,7 @@ public class LlmProviderRegistry {
     private final ToolCallback interviewSkillsToolCallback;
     private final AgentMetrics agentMetrics;
     private final AgentAuditService agentAuditService;
+    private final AgentContextToolCallbackFactory agentContextToolCallbackFactory;
 
     @Autowired
     public LlmProviderRegistry(
@@ -77,7 +79,8 @@ public class LlmProviderRegistry {
             @Autowired(required = false) ObservationRegistry observationRegistry,
             @Autowired(required = false) @Qualifier("interviewSkillsToolCallback") ToolCallback interviewSkillsToolCallback,
              @Autowired(required = false) AgentMetrics agentMetrics,
-             @Autowired(required = false) AgentAuditService agentAuditService) {
+             @Autowired(required = false) AgentAuditService agentAuditService,
+             @Autowired(required = false) AgentContextToolCallbackFactory agentContextToolCallbackFactory) {
         this.properties = properties;
         this.providerRepository = providerRepository;
         this.globalSettingRepository = globalSettingRepository;
@@ -87,6 +90,7 @@ public class LlmProviderRegistry {
         this.interviewSkillsToolCallback = interviewSkillsToolCallback;
         this.agentMetrics = agentMetrics;
         this.agentAuditService = agentAuditService;
+        this.agentContextToolCallbackFactory = agentContextToolCallbackFactory;
     }
 
     public LlmProviderRegistry(
@@ -95,7 +99,7 @@ public class LlmProviderRegistry {
             ObservationRegistry observationRegistry,
             ToolCallback interviewSkillsToolCallback) {
         this(properties, null, null, null, toolCallingManager, observationRegistry,
-            interviewSkillsToolCallback, null, null);
+            interviewSkillsToolCallback, null, null, null);
     }
 
     /**
@@ -387,13 +391,24 @@ public class LlmProviderRegistry {
     private ChatClient createAgentChatClient(String providerId) {
         OpenAiChatModel chatModel = getChatModel(providerId);
         ChatClient.Builder builder = ChatClient.builder(chatModel);
+        List<ToolCallback> agentTools = new ArrayList<>();
         if (interviewSkillsToolCallback != null) {
-            builder.defaultTools(new AgentObservedToolCallback(
+            agentTools.add(new AgentObservedToolCallback(
                 interviewSkillsToolCallback, agentMetrics, agentAuditService
             ));
         }
+        if (agentContextToolCallbackFactory != null) {
+            agentContextToolCallbackFactory.callbacks().stream()
+                .map(callback -> new AgentObservedToolCallback(callback, agentMetrics, agentAuditService))
+                .forEach(agentTools::add);
+        }
+        if (!agentTools.isEmpty()) {
+            for (ToolCallback agentTool : agentTools) {
+                builder.defaultTools(agentTool);
+            }
+        }
         List<Advisor> advisors = new ArrayList<>();
-        if (toolCallingManager != null && interviewSkillsToolCallback != null) {
+        if (toolCallingManager != null && !agentTools.isEmpty()) {
             advisors.add(buildToolCallAdvisor(false));
         }
         buildSafeGuardAdvisor().ifPresent(advisors::add);

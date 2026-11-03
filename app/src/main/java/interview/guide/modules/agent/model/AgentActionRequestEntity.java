@@ -40,7 +40,7 @@ public class AgentActionRequestEntity {
     @Column(name = "owner_key", nullable = false, length = 64)
     private String ownerKey;
 
-    @Column(name = "interview_session_id", nullable = false, length = 64)
+    @Column(name = "interview_session_id", length = 64)
     private String interviewSessionId;
 
     @Column(name = "agent_session_id", nullable = false, length = 64)

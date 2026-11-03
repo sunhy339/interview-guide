@@ -108,13 +108,16 @@ public class AgentLoopPlanner {
                 if (agentMetrics != null) {
                     modelCall = agentMetrics.startModelCall(providerId, runTracker);
                 }
-                ChatClient client = providerRegistry.getAgentChatClient(providerId);
+                // 规划阶段只生成受限步骤，不暴露会修改上下文、知识库或日程的工具。
+                // 否则恶意资料可能诱导 planner 先于最终回答执行写操作。
+                ChatClient client = providerRegistry.getPlainChatClient(providerId);
                 var promptSpec = client.prompt()
                     .system("你是一个严格受控的 Agent Loop planner，只返回执行计划，不要编造资料。"
                         + PromptSecurityConstants.ANTI_INJECTION_INSTRUCTION);
                 if (runTracker != null) {
                     promptSpec = promptSpec.toolContext(Map.of(
-                        AgentMetrics.RUN_TRACKER_TOOL_CONTEXT_KEY, runTracker
+                        AgentMetrics.RUN_TRACKER_TOOL_CONTEXT_KEY, runTracker,
+                        AgentMetrics.USER_MESSAGE_TOOL_CONTEXT_KEY, message
                     ));
                 }
                 String content = promptSpec.user(prompt).call().content();

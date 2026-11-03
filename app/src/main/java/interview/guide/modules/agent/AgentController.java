@@ -474,6 +474,18 @@ public class AgentController {
         return Result.success(actionService.listForOwner(sessionId, agentSessionId, identity));
     }
 
+    /** 查询通用 Agent 会话通过 tool_call 生成的动作草稿。 */
+    @GetMapping("/api/agent/sessions/{agentSessionId}/actions")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
+    public Result<List<AgentActionResponse>> listGeneralAgentActions(
+        @PathVariable String agentSessionId,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        String identity = authIdentityService.requireIdentity(ownerKey);
+        conversationService.assertAccess(null, agentSessionId, identity);
+        return Result.success(actionService.listForAgentSession(agentSessionId, identity));
+    }
+
     /** 只生成待确认的训练计划草稿，不修改原始面试或简历数据。 */
     @PostMapping("/api/agent/interview-sessions/{sessionId}/conversations/{agentSessionId}/actions/training-plan-draft")
     @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 20)

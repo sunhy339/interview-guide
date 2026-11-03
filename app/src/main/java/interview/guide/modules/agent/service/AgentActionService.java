@@ -175,7 +175,7 @@ public class AgentActionService {
         String requestedIdempotencyKey
     ) {
         String owner = requireOwner(ownerKey);
-        String interviewId = requireText(interviewSessionId, "面试会话不能为空", 64);
+        String interviewId = normalizeOptional(interviewSessionId, 64);
         String agentId = requireText(agentSessionId, "Agent 会话不能为空", 64);
         String normalizedCompany = requireText(companyName, "公司或面试主题不能为空", 255);
         String normalizedPosition = requireText(position, "复习岗位不能为空", 255);
@@ -442,6 +442,15 @@ public class AgentActionService {
             : repository.findTop50ByOwnerKeyAndInterviewSessionIdAndAgentSessionIdOrderByCreatedAtDesc(
                 owner, interviewId, requireText(agentId, "Agent 会话不能为空", 64));
         return actions
+            .stream().map(AgentActionResponse::from).toList();
+    }
+
+    /** 查询通用 Agent 会话生成的动作草稿。 */
+    @Transactional
+    public List<AgentActionResponse> listForAgentSession(String agentSessionId, String ownerKey) {
+        String owner = requireOwner(ownerKey);
+        String agentId = requireText(agentSessionId, "Agent 会话不能为空", 64);
+        return repository.findTop50ByOwnerKeyAndAgentSessionIdOrderByCreatedAtDesc(owner, agentId)
             .stream().map(AgentActionResponse::from).toList();
     }
 

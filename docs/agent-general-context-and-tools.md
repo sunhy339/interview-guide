@@ -165,28 +165,25 @@ POST /api/agent/context-assets/{assetId}/knowledge-base/confirm
 
 ## 7. 面试上下文工具
 
-第一批工具全部使用当前登录用户的 owner 身份，模型不能自行传入 owner ID：
+当前已接入的第一批 Tool Callback 全部从服务端 `ToolContext` 取得当前登录用户、Agent 会话和运行预算，模型不能自行传入 owner ID：
 
 | 工具 | 作用 | 类型 |
 | --- | --- | --- |
-| `interview.search` | 按名称、公司、岗位、时间和关键词搜索面试 | 只读 |
-| `interview.get_context` | 读取指定面试的报告、技能和可用知识库引用 | 只读 |
+| `interview.search` | 按标题、方向、编号或状态搜索当前用户的面试 | 只读 |
 | `interview.attach_context` | 将唯一匹配的面试绑定到当前 Agent 会话 | 低风险状态变更 |
 | `interview.clear_context` | 清除当前面试上下文 | 低风险状态变更 |
-| `schedule.list` | 查询用户已有面试日程 | 只读 |
-| `schedule.check_conflict` | 检查时间冲突 | 只读 |
+| `agent_context.list` | 查看当前绑定和上传素材的审核状态 | 只读 |
+| `agent_context.asset_action` | 审核、绑定素材或申请/确认导入知识库 | 分阶段确认 |
 | `schedule.create_draft` | 生成待确认日程草稿 | 必须确认 |
 
-搜索结果只返回标题、日期、岗位等元数据；只有用户选择或模型获得唯一明确匹配后，才调用 `interview.get_context` 读取报告内容，避免无关报告泄漏到 Prompt。
+搜索结果只返回当前用户自己的轻量元数据；只有用户明确表达“使用/根据/基于某份面试报告”后，才允许绑定报告，避免无关报告泄漏到 Prompt。绑定后的正文仍由后端上下文编排器加载和净化，工具本身不接受 owner 或任意 Repository 参数。
+
+规划阶段使用无工具 ChatClient，只能产生有限的只读步骤；真正的上下文和日程工具只在最终回答阶段可见。工具回调还会复核当前用户消息的操作意图，因此报告、RAG、上传文件和工具返回值中的“请预约/请导入/忽略规则”等文本不能单独触发写操作。
 
 ## 8. 日程工具调用链
 
 ```text
 用户：帮我预约周五下午三点的 Java 面试
-  ↓
-schedule.list
-  ↓
-schedule.check_conflict
   ↓
 schedule.create_draft
   ↓
@@ -199,7 +196,7 @@ AgentActionService.confirm
 InterviewScheduleService.createForOwner
 ```
 
-当前项目的面试日程是本地日程记录，并不等于创建腾讯会议、飞书会议或 Zoom 房间。第一阶段只支持创建带会议链接的日程记录；外部会议创建需要单独接入 OAuth、第三方 API 或 MCP Connector。
+当前项目的面试日程是本地日程记录，并不等于创建腾讯会议、飞书会议或 Zoom 房间。当前 Tool Callback 只生成日程草稿，仍需在“动作与训练”页确认；外部会议创建需要单独接入 OAuth、第三方 API 或 MCP Connector。
 
 ## 9. 滚动摘要
 
@@ -231,8 +228,10 @@ InterviewScheduleService.createForOwner
 ```text
 工具 schema
   -> owner 校验
+  -> ToolContext 会话和运行预算校验
   -> 资源归属校验
   -> 参数校验
+  -> 当前用户明确意图校验
   -> 只读执行或生成动作草稿
   -> 幂等键
   -> 用户确认
@@ -241,6 +240,8 @@ InterviewScheduleService.createForOwner
 ```
 
 模型不能直接调用 Repository 或 Service 的任意写方法。写工具必须返回动作草稿，沿用现有 `PROPOSED -> CONFIRMED -> RUNNING -> SUCCEEDED/FAILED/CANCELLED` 状态机。
+
+提示注入防护不依赖单一正则：资料进入模型前经过强制净化和固定边界包裹，疑似注入的上传文件必须二次确认；规划器不暴露写工具；工具执行时再次做 owner、会话、用户意图和业务状态校验。任何失败只返回安全错误摘要，不把原始工具参数、文件正文或隐藏提示写入审计和指标。
 
 ## 11. 实施顺序
 

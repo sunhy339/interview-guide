@@ -492,9 +492,7 @@ public class InterviewAgentService {
                                         promptSpec = promptSpec.messages(prompt.history());
                                     }
                                     if (runTracker != null) {
-                                        promptSpec = promptSpec.toolContext(Map.of(
-                                            AgentMetrics.RUN_TRACKER_TOOL_CONTEXT_KEY, runTracker
-                                        ));
+                                        promptSpec = promptSpec.toolContext(agentToolContext(runTracker, message));
                                     }
                                     var streamSpec = promptSpec.user(prompt.userPrompt()).stream();
                                     Flux<ChatResponse> chatResponses = streamSpec.chatResponse();
@@ -1349,6 +1347,15 @@ public class InterviewAgentService {
             }
         }
         return result;
+    }
+
+    private Map<String, Object> agentToolContext(
+        AgentMetrics.RunTracker runTracker, String userMessage
+    ) {
+        return Map.of(
+            AgentMetrics.RUN_TRACKER_TOOL_CONTEXT_KEY, runTracker,
+            AgentMetrics.USER_MESSAGE_TOOL_CONTEXT_KEY, userMessage == null ? "" : userMessage
+        );
     }
 
     private record LoopResumeState(

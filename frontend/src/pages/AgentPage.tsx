@@ -369,6 +369,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const agentSessionId = routeSessionId
     ? resolveAgentThreadId(routeSessionId, routeAgentSessionId, null, storedAgentSessionId)
     : routeAgentSessionId || storedAgentSessionId;
+  const isGeneralAgentSession = !sessionId && Boolean(agentSessionId);
   const [goal, setGoal] = useState<AgentGoal>('review');
   const [providerId, setProviderId] = useState('');
   const [providers, setProviders] = useState<ProviderItem[]>([]);
@@ -1025,6 +1026,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         : agentApi.getConversation(sessionId!, targetAgentSessionId);
       void conversationRequest.then((conversation) => {
         restoreRunProgress(conversation);
+        void loadAgentActions();
         if (!actionIntent) autoProposeGoalAction(conversation, runGoal);
         autoProposeActionIntent(conversation, actionIntent);
         if (actionIntent?.type === 'schedule') {
@@ -1227,6 +1229,13 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   }, []);
 
   const loadAgentActions = useCallback(() => {
+    if (isGeneralAgentSession) {
+      setActionsLoading(true);
+      return agentApi.listGeneralActions(agentSessionId!)
+        .then((value) => setActions(value))
+        .catch(() => setActionNotice('待确认动作读取失败，请稍后重试'))
+        .finally(() => setActionsLoading(false));
+    }
     if (!sessionId || (isWorkspaceView && (!interview || !agentSessionId))) {
       setActions([]);
       return Promise.resolve();
@@ -1236,7 +1245,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       .then((value) => setActions(value))
       .catch(() => setActionNotice('待确认动作读取失败，请稍后重试'))
       .finally(() => setActionsLoading(false));
-  }, [agentSessionId, interview, isWorkspaceView, sessionId]);
+  }, [agentSessionId, interview, isGeneralAgentSession, isWorkspaceView, sessionId]);
 
   const loadTrainingTasks = useCallback(() => {
     if (view !== 'actions') {

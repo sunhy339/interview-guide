@@ -101,6 +101,13 @@ export const agentApi = {
     );
   },
 
+  listGeneralActions(agentSessionId: string): Promise<AgentAction[]> {
+    return request.get<AgentAction[]>(
+      `/api/agent/sessions/${encodeURIComponent(agentSessionId)}/actions`,
+      { headers: agentHeaders() },
+    );
+  },
+
   cancelGeneralRun(agentSessionId: string): Promise<AgentConversationResponse> {
     return request.post<AgentConversationResponse>(
       `/api/agent/sessions/${encodeURIComponent(agentSessionId)}/cancel`,

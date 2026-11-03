@@ -117,7 +117,7 @@ export type AgentActionStatus = 'PROPOSED' | 'CONFIRMED' | 'RUNNING' | 'SUCCEEDE
 
 export interface AgentAction {
   actionId: string;
-  interviewSessionId: string;
+  interviewSessionId: string | null;
   agentSessionId: string;
   toolId: string;
   riskLevel: string;
