@@ -87,7 +87,7 @@ public class AgentContextAssetPersistenceService {
         if (ownerId == null || ownerId.isBlank()) {
             throw new BusinessException(ErrorCode.UNAUTHORIZED, "Agent 身份已失效，请刷新页面后重试");
         }
-        return repository.findByAssetIdAndOwnerId(assetId.trim(), ownerId.trim())
+        return repository.findByAssetIdAndOwnerIdForUpdate(assetId.trim(), ownerId.trim())
             .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "Agent 素材不存在"));
     }
 

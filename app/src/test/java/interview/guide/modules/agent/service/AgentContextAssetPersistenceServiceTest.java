@@ -27,7 +27,7 @@ class AgentContextAssetPersistenceServiceTest {
         KnowledgeBaseEntity knowledgeBase = new KnowledgeBaseEntity();
         knowledgeBase.setId(42L);
 
-        when(assets.findByAssetIdAndOwnerId("asset-1", "owner-1"))
+        when(assets.findByAssetIdAndOwnerIdForUpdate("asset-1", "owner-1"))
             .thenReturn(Optional.of(asset));
         when(knowledgeBases.findByFileHashAndOwnerId("hash-1", "owner-1"))
             .thenReturn(Optional.empty());
@@ -59,7 +59,7 @@ class AgentContextAssetPersistenceServiceTest {
         KnowledgeBaseEntity existing = new KnowledgeBaseEntity();
         existing.setId(7L);
 
-        when(assets.findByAssetIdAndOwnerId("asset-1", "owner-1"))
+        when(assets.findByAssetIdAndOwnerIdForUpdate("asset-1", "owner-1"))
             .thenReturn(Optional.of(asset));
         when(knowledgeBases.findByFileHashAndOwnerId("hash-1", "owner-1"))
             .thenReturn(Optional.of(existing));

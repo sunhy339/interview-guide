@@ -375,7 +375,8 @@ public class AgentContextToolCallbackFactory {
         for (String field : fields) {
             JsonNode value = input.get(field);
             if (value != null && value.isTextual()
-                && promptSanitizer.detectInjectionAttempt(value.asText())) {
+                && (promptSanitizer.detectInjectionAttempt(value.asText())
+                    || containsIndirectAuthorizationIntent(value.asText()))) {
                 throw new BusinessException(
                     ErrorCode.BAD_REQUEST,
                     "工具参数包含疑似提示注入内容，未执行任何 Agent 操作"
@@ -498,8 +499,9 @@ public class AgentContextToolCallbackFactory {
 
     private boolean containsAny(String value, String... phrases) {
         if (value == null) return false;
+        String normalized = promptSanitizer.sanitizeForContext(value);
         for (String phrase : phrases) {
-            if (value.contains(phrase)) return true;
+            if (normalized != null && normalized.contains(phrase)) return true;
         }
         return false;
     }
