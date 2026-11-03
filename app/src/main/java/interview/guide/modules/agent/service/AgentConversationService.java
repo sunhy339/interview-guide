@@ -1158,10 +1158,13 @@ public class AgentConversationService {
         if (interviewSessionId == null || interviewSessionId.isBlank()) {
             return;
         }
-        if (ownerKey != null && AuthUserContext.currentUserId().isPresent()
-            && interviewPersistenceService != null) {
-            Optional<?> ownedSession = interviewPersistenceService.findBySessionIdForOwnerOrClaimLegacy(
-                interviewSessionId, ownerKey);
+        if (ownerKey != null && !ownerKey.isBlank() && interviewPersistenceService != null) {
+            // 正式登录可以认领明确未归属的旧数据；旧 X-User-Id 兼容请求不能认领，
+            // 但仍必须执行严格的 owner 查询，不能因为没有 ThreadLocal 就跳过隔离。
+            Optional<?> ownedSession = AuthUserContext.currentUserId().isPresent()
+                ? interviewPersistenceService.findBySessionIdForOwnerOrClaimLegacy(
+                    interviewSessionId, ownerKey)
+                : interviewPersistenceService.findBySessionIdForOwner(interviewSessionId, ownerKey);
             if (ownedSession != null && ownedSession.isEmpty()) {
                 throw accessDenied();
             }

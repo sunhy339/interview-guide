@@ -38,4 +38,15 @@ class AgentInterviewOwnershipTest {
             .isInstanceOf(BusinessException.class)
             .hasMessageContaining("无权访问");
     }
+
+    @Test
+    void legacyHeaderUserStillRequiresStrictInterviewOwnership() {
+        // 兼容 X-User-Id 不会建立 AuthUserContext，不能因此绕过面试记录 owner 校验。
+        when(interviews.findBySessionIdForOwner("interview-a", "user-b"))
+            .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.assertAccess("interview-a", null, "user-b"))
+            .isInstanceOf(BusinessException.class)
+            .hasMessageContaining("无权访问");
+    }
 }
