@@ -144,6 +144,9 @@ public class AgentContextToolCallbackFactory {
         List<AgentInterviewSearchResult> results = interviewContextService.search(
             context.ownerKey(), safeContextText(text(input, "query")), integer(input, "limit", 8)
         );
+        context.tracker().rememberInterviewSearchCandidates(
+            results.stream().map(AgentInterviewSearchResult::sessionId).filter(java.util.Objects::nonNull).toList()
+        );
         return emit(results);
     }
 
@@ -152,6 +155,12 @@ public class AgentContextToolCallbackFactory {
         requireUserIntent(context.userMessage(), "使用", "根据", "基于", "绑定", "选中");
         requireUserIntent(context.userMessage(), "面试", "报告");
         String interviewSessionId = required(input, "interviewSessionId", "面试编号不能为空");
+        if (!isExplicitInterviewSelection(context, interviewSessionId)) {
+            return emit(Map.of(
+                "status", "SELECTION_REQUIRED",
+                "message", "找到多个可能的面试报告，请让用户明确选择面试编号或唯一名称后再绑定"
+            ));
+        }
         String scope = text(input, "scope");
         AgentContextBindingResponse binding = contextBindingService.attach(
             context.agentSessionId(),
@@ -163,6 +172,14 @@ public class AgentContextToolCallbackFactory {
             "message", "面试报告已绑定，从下一轮 Agent 消息开始作为上下文使用",
             "binding", binding
         ));
+    }
+
+    private boolean isExplicitInterviewSelection(ToolContextData context, String interviewSessionId) {
+        if (context.userMessage().contains(interviewSessionId)) {
+            return true;
+        }
+        List<String> candidates = context.tracker().interviewSearchCandidateIds();
+        return candidates.size() == 1 && interviewSessionId.equals(candidates.getFirst());
     }
 
     private String clearContext(JsonNode ignored, ToolContext toolContext) {
@@ -342,7 +359,7 @@ public class AgentContextToolCallbackFactory {
         }
         Object message = toolContext.getContext().get(AgentMetrics.USER_MESSAGE_TOOL_CONTEXT_KEY);
         return new ToolContextData(
-            audit.ownerKey(), audit.interviewSessionId(), audit.agentSessionId(),
+            tracker, audit.ownerKey(), audit.interviewSessionId(), audit.agentSessionId(),
             message == null ? "" : message.toString()
         );
     }
@@ -429,6 +446,7 @@ public class AgentContextToolCallbackFactory {
     }
 
     private record ToolContextData(
+        AgentMetrics.RunTracker tracker,
         String ownerKey, String interviewSessionId, String agentSessionId, String userMessage
     ) {
     }

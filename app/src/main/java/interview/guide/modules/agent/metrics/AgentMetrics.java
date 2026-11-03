@@ -5,6 +5,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -317,6 +318,9 @@ public class AgentMetrics {
         private final AtomicReference<String> currency = new AtomicReference<>();
         private final AtomicReference<String> provider = new AtomicReference<>();
         private final AtomicReference<String> model = new AtomicReference<>();
+        /** 当前运行最近一次面试搜索的候选 ID；只用于服务端消歧，不进入模型指标。 */
+        private final AtomicReference<List<String>> interviewSearchCandidateIds =
+            new AtomicReference<>(List.of());
         private volatile AuditContext auditContext = AuditContext.empty();
 
         private RunTracker(long startedNanos, int maxModelCalls, int maxToolCalls) {
@@ -348,6 +352,14 @@ public class AgentMetrics {
 
         public AuditContext auditContext() {
             return auditContext;
+        }
+
+        public void rememberInterviewSearchCandidates(List<String> candidateIds) {
+            interviewSearchCandidateIds.set(candidateIds == null ? List.of() : List.copyOf(candidateIds));
+        }
+
+        public List<String> interviewSearchCandidateIds() {
+            return interviewSearchCandidateIds.get();
         }
 
         private void record(

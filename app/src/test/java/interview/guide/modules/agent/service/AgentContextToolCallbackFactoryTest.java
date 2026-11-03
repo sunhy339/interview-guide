@@ -5,6 +5,7 @@ import interview.guide.common.config.LlmProviderProperties;
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.model.AgentContextAssetResponse;
 import interview.guide.modules.agent.model.AgentContextAssetStatus;
+import interview.guide.modules.agent.model.AgentInterviewSearchResult;
 import interview.guide.modules.interviewschedule.model.InterviewScheduleDTO;
 import interview.guide.modules.interviewschedule.model.InterviewStatus;
 import interview.guide.modules.interviewschedule.service.InterviewScheduleService;
@@ -21,6 +22,7 @@ import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -164,6 +166,44 @@ class AgentContextToolCallbackFactoryTest {
 
         assertThat(result).contains("需要用户明确说明要执行该操作");
         verify(interviewScheduleService, never()).listForOwner("owner-1", null, null, 10);
+    }
+
+    @Test
+    void refusesToGuessWhenInterviewSearchHasMultipleCandidates() {
+        when(interviewContextService.search("owner-1", "Java", 8)).thenReturn(List.of(
+            new AgentInterviewSearchResult("interview-1", "Java 后端一面", "java", "COMPLETED", 80, null, null),
+            new AgentInterviewSearchResult("interview-2", "Java 后端二面", "java", "COMPLETED", 82, null, null)
+        ));
+        ToolContext context = context("请根据 Java 面试报告给我建议");
+
+        tool("interview.search").call("{\"query\":\"Java\"}", context);
+        String result = tool("interview.attach_context").call(
+            "{\"interviewSessionId\":\"interview-1\"}", context
+        );
+
+        assertThat(result).contains("SELECTION_REQUIRED");
+        verify(contextBindingService, never()).attach(any(), any(), any());
+    }
+
+    @Test
+    void allowsAttachWhenSearchReturnedExactlyOneCandidate() {
+        when(interviewContextService.search("owner-1", "Java", 8)).thenReturn(List.of(
+            new AgentInterviewSearchResult("interview-1", "Java 后端一面", "java", "COMPLETED", 80, null, null)
+        ));
+        when(contextBindingService.attach(any(), any(), eq("owner-1"))).thenReturn(
+            new interview.guide.modules.agent.model.AgentContextBindingResponse(
+                "INTERVIEW_REPORT", "interview-1", "interview-1", "Java 后端一面", "SESSION", true, null
+            )
+        );
+        ToolContext context = context("请根据 Java 面试报告给我建议");
+
+        tool("interview.search").call("{\"query\":\"Java\"}", context);
+        String result = tool("interview.attach_context").call(
+            "{\"interviewSessionId\":\"interview-1\"}", context
+        );
+
+        assertThat(result).contains("ATTACHED");
+        verify(contextBindingService).attach(any(), any(), eq("owner-1"));
     }
 
     private ToolCallback tool(String name) {
