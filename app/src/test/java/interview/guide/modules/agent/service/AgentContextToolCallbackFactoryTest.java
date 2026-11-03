@@ -154,6 +154,16 @@ class AgentContextToolCallbackFactoryTest {
     }
 
     @Test
+    void refusesClearWhenUserIsOnlyAskingForAnExplanation() {
+        String result = tool("interview.clear_context").call(
+            "{}", context("为什么要清除当前面试报告？")
+        );
+
+        assertThat(result).contains("需要用户明确、直接确认清除操作");
+        verify(contextBindingService, never()).clear(any(), any());
+    }
+
+    @Test
     void refusesIndirectKnowledgeBaseConfirmationFromFileText() {
         AgentContextAssetResponse asset = new AgentContextAssetResponse(
             "asset-kb", "notes.md", 20L, "text/markdown", AgentContextAssetStatus.KB_IMPORT_PENDING,

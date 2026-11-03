@@ -113,6 +113,23 @@ class AgentObservedToolCallbackTest {
             .contains("</data-boundary-");
     }
 
+    @Test
+    @DisplayName("超长工具资料会在重新包裹前截断")
+    void truncatesOversizedUntrustedToolResult() {
+        String oversized = "资料".repeat(8_000);
+        ToolCallback delegate = mockTool("load_skill", oversized);
+        AgentObservedToolCallback observed = new AgentObservedToolCallback(
+            delegate, null, null, new PromptSanitizer(new LlmProviderProperties())
+        );
+
+        String result = observed.call("{\"skill\":\"java\"}");
+
+        assertThat(result).contains("[工具资料已截断]")
+            .contains("<data-boundary-")
+            .contains("</data-boundary-");
+        assertThat(result.length()).isLessThan(13_000);
+    }
+
     private AgentMetrics metrics(SimpleMeterRegistry registry) {
         @SuppressWarnings("unchecked")
         org.springframework.beans.factory.ObjectProvider<io.micrometer.core.instrument.MeterRegistry> provider =

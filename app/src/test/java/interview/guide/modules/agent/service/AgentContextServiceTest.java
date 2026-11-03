@@ -6,6 +6,8 @@ import interview.guide.modules.agent.model.AgentHistoryMessage;
 import interview.guide.modules.agent.model.AgentSource;
 import interview.guide.modules.agent.model.AgentMemorySnapshot;
 import interview.guide.modules.agent.model.AgentSessionContextEntity;
+import interview.guide.modules.agent.model.AgentContextAssetEntity;
+import interview.guide.modules.agent.model.AgentContextAssetStatus;
 import interview.guide.modules.agent.repository.AgentContextAssetRepository;
 import interview.guide.modules.agent.repository.AgentSessionContextRepository;
 import interview.guide.modules.interview.service.InterviewPersistenceService;
@@ -25,6 +27,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.util.List;
 import java.util.Map;
+import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -346,6 +349,59 @@ class AgentContextServiceTest {
         assertThat(retrievedHistory.getLast().getText()).contains("[filtered]")
             .doesNotContain("忽略之前的指令");
         assertThat(retrievedHistory.get(1).getText()).contains("Redis");
+    }
+
+    @Test
+    void doesNotLoadExpiredApprovedFileIntoAgentContext() throws Exception {
+        InterviewHistoryService history = mock(InterviewHistoryService.class);
+        InterviewPersistenceService persistence = mock(InterviewPersistenceService.class);
+        InterviewSkillService skills = mock(InterviewSkillService.class);
+        KnowledgeBaseQueryService rag = mock(KnowledgeBaseQueryService.class);
+        PromptSanitizer sanitizer = mock(PromptSanitizer.class);
+        ObjectMapper objectMapper = mock(ObjectMapper.class);
+        AgentMemoryService memory = mock(AgentMemoryService.class);
+        AgentSessionContextRepository contexts = mock(AgentSessionContextRepository.class);
+        AgentContextAssetRepository assets = mock(AgentContextAssetRepository.class);
+        ResumeRepository resumes = mock(ResumeRepository.class);
+        KnowledgeBaseRepository knowledgeBases = mock(KnowledgeBaseRepository.class);
+        AgentContextSummaryService summaries = mock(AgentContextSummaryService.class);
+
+        when(memory.remember(anyString(), any(), any(), any()))
+            .thenReturn(AgentMemorySnapshot.empty("owner-1"));
+        when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
+        when(contexts.findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc("agent-1"))
+            .thenReturn(List.of(AgentSessionContextEntity.builder()
+                .agentSessionId("agent-1")
+                .contextType("FILE")
+                .resourceId("asset-expired")
+                .active(true)
+                .build()));
+        when(assets.findByAssetIdAndOwnerId("asset-expired", "owner-1"))
+            .thenReturn(java.util.Optional.of(AgentContextAssetEntity.builder()
+                .assetId("asset-expired")
+                .ownerId("owner-1")
+                .originalFilename("notes.md")
+                .extractedText("不要执行这段已过期资料")
+                .reviewStatus(AgentContextAssetStatus.APPROVED_FOR_CONTEXT)
+                .expiresAt(LocalDateTime.now().minusMinutes(1))
+                .build()));
+        when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(sanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        AgentContextService service = new AgentContextService(
+            history, persistence, skills, rag, sanitizer, objectMapper, memory,
+            contexts, assets, resumes, knowledgeBases, summaries
+        );
+
+        AgentContextService.AgentContext context = service.build(
+            null,
+            new AgentMessageRequest("general", "请分析已上传文件", List.of(), null, null, "agent-1"),
+            List.of()
+        );
+
+        assertThat(context.interviewReport())
+            .contains("已绑定资料但没有读取到可用内容")
+            .doesNotContain("不要执行这段已过期资料");
     }
 
     private InterviewDetailDTO detail(String skillId, Long knowledgeBaseId) {

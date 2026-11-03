@@ -16,6 +16,9 @@ import org.springframework.ai.tool.metadata.ToolMetadata;
  */
 final class AgentObservedToolCallback implements ToolCallback {
 
+    private static final int MAX_RESULT_CHARS = 12_000;
+    private static final String RESULT_TRUNCATION_NOTICE = "\n[工具资料已截断]";
+
     private final ToolCallback delegate;
     private final AgentMetrics metrics;
     private final AgentAuditService auditService;
@@ -127,6 +130,10 @@ final class AgentObservedToolCallback implements ToolCallback {
         // 服务端边界重新包裹；不能直接返回净化文本，否则模型可能看不到“工具数据”
         // 的结构边界，也不能继续信任工具结果中的任何指令。
         String safe = promptSanitizer.sanitizeForContext(result);
+        if (safe != null && safe.length() > MAX_RESULT_CHARS) {
+            int contentChars = Math.max(0, MAX_RESULT_CHARS - RESULT_TRUNCATION_NOTICE.length());
+            safe = safe.substring(0, contentChars) + RESULT_TRUNCATION_NOTICE;
+        }
         return promptSanitizer.wrapWithDelimiters("agent-observed-tool-result", safe);
     }
 }

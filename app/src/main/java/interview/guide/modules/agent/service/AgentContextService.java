@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.time.LocalDateTime;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -287,6 +288,8 @@ public class AgentContextService {
         contextAssetRepository.findByAssetIdAndOwnerId(resourceId, ownerKey(request))
             .filter(asset -> asset.getReviewStatus() == AgentContextAssetStatus.APPROVED_FOR_CONTEXT
                 || asset.getReviewStatus() == AgentContextAssetStatus.KB_IMPORT_COMPLETED)
+            .filter(asset -> asset.getExpiresAt() == null
+                || asset.getExpiresAt().isAfter(LocalDateTime.now()))
             .ifPresent(asset -> {
                 String safeFilename = promptSanitizer.sanitizeForContext(asset.getOriginalFilename());
                 report.append("\n[已审核文件：").append(safeFilename).append("]\n")

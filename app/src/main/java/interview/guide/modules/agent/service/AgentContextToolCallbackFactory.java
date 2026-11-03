@@ -442,7 +442,9 @@ public class AgentContextToolCallbackFactory {
         requireUserIntent(message, "清除", "清空", "取消绑定", "移除");
         if (containsAny(
             message, "不要", "别", "勿", "无需", "不用", "不需要", "暂不", "先不要",
-            "不想", "不必", "是否", "要不要", "能不能", "可不可以", "如果", "考虑一下", "建议我"
+            "不想", "不必", "是否", "要不要", "能不能", "可不可以", "如果", "考虑一下", "建议我",
+            "为什么", "为何", "什么原因", "什么意思", "怎么做", "如何做", "怎么清除", "如何清除",
+            "说明一下", "解释一下", "介绍一下", "查看", "查询"
         )) {
             throw new BusinessException(
                 ErrorCode.BAD_REQUEST,
