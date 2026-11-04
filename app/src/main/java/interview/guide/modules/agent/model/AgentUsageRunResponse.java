@@ -23,6 +23,8 @@ public record AgentUsageRunResponse(
     String model,
     LocalDateTime runStartedAt,
     LocalDateTime runFinishedAt,
-    LocalDateTime createdAt
+    LocalDateTime createdAt,
+    String promptVersion,
+    String promptFingerprint
 ) {
 }

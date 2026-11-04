@@ -151,6 +151,12 @@ public class AgentChatSessionEntity {
     @Column(name = "run_model", length = 128)
     private String runModel;
 
+    @Column(name = "run_prompt_version", length = 64)
+    private String runPromptVersion;
+
+    @Column(name = "run_prompt_fingerprint", length = 64)
+    private String runPromptFingerprint;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 

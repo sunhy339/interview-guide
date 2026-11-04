@@ -1266,6 +1266,8 @@ public class AgentConversationService {
         session.setRunCurrency(null);
         session.setRunProvider(null);
         session.setRunModel(null);
+        session.setRunPromptVersion(null);
+        session.setRunPromptFingerprint(null);
     }
 
     private void applyRunUsage(AgentChatSessionEntity session, AgentRunUsage usage) {
@@ -1279,6 +1281,8 @@ public class AgentConversationService {
         session.setRunCurrency(safe.currency());
         session.setRunProvider(safe.provider());
         session.setRunModel(safe.model());
+        session.setRunPromptVersion(safe.promptVersion());
+        session.setRunPromptFingerprint(safe.promptFingerprint());
     }
 
     private boolean isTerminalRun(AgentRunStatus status) {
@@ -1305,7 +1309,9 @@ public class AgentConversationService {
             session.getRunCost(),
             session.getRunCurrency(),
             session.getRunProvider(),
-            session.getRunModel()
+            session.getRunModel(),
+            session.getRunPromptVersion(),
+            session.getRunPromptFingerprint()
         ) : null;
     }
 

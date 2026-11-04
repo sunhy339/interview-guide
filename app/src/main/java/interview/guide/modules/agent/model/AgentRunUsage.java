@@ -17,8 +17,26 @@ public record AgentRunUsage(
     BigDecimal cost,
     String currency,
     String provider,
-    String model
+    String model,
+    String promptVersion,
+    String promptFingerprint
 ) {
+    /** 兼容没有稳定前缀元数据的旧调用方。 */
+    public AgentRunUsage(
+        int promptTokens,
+        int completionTokens,
+        int totalTokens,
+        int modelCalls,
+        long durationMillis,
+        BigDecimal cost,
+        String currency,
+        String provider,
+        String model
+    ) {
+        this(promptTokens, completionTokens, totalTokens, modelCalls, durationMillis,
+            cost, currency, provider, model, null, null);
+    }
+
     public AgentRunUsage {
         promptTokens = Math.max(0, promptTokens);
         completionTokens = Math.max(0, completionTokens);
@@ -28,13 +46,16 @@ public record AgentRunUsage(
         currency = currency == null || currency.isBlank() ? null : currency;
         provider = provider == null || provider.isBlank() ? null : provider;
         model = model == null || model.isBlank() ? null : model;
+        promptVersion = promptVersion == null || promptVersion.isBlank() ? null : promptVersion;
+        promptFingerprint = promptFingerprint == null || promptFingerprint.isBlank()
+            ? null : promptFingerprint;
         if (cost != null && cost.signum() < 0) {
             cost = BigDecimal.ZERO;
         }
     }
 
     public static AgentRunUsage empty() {
-        return new AgentRunUsage(0, 0, 0, 0, 0, null, null, null, null);
+        return new AgentRunUsage(0, 0, 0, 0, 0, null, null, null, null, null, null);
     }
 
     public boolean available() {

@@ -58,6 +58,8 @@ export interface AgentRunUsage {
   currency?: string | null;
   provider?: string | null;
   model?: string | null;
+  promptVersion?: string | null;
+  promptFingerprint?: string | null;
 }
 
 export interface AgentUsageCostSummary {
@@ -96,6 +98,8 @@ export interface AgentUsageRun {
   currency?: string | null;
   provider?: string | null;
   model?: string | null;
+  promptVersion?: string | null;
+  promptFingerprint?: string | null;
   runStartedAt?: string | null;
   runFinishedAt?: string | null;
   createdAt: string;

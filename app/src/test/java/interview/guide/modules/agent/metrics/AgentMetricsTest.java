@@ -1,5 +1,6 @@
 package interview.guide.modules.agent.metrics;
 
+import interview.guide.modules.agent.model.AgentRunUsage;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -222,6 +223,27 @@ class AgentMetricsTest {
         assertThat(metrics.snapshot(run).currency()).isEqualTo("CNY");
         assertThat(metrics.snapshot(run).provider()).isEqualTo("pixel");
         assertThat(metrics.snapshot(run).model()).isEqualTo("gpt-5.6-luna");
+    }
+
+    @Test
+    @DisplayName("稳定前缀指纹在同一运行内保持一致并能发现漂移")
+    void recordsStablePromptPrefixFingerprintAndDetectsDrift() {
+        AgentMetrics metrics = metrics(true);
+        AgentMetrics.RunTracker run = metrics.startRun();
+
+        metrics.recordPromptPrefix(run, "固定系统策略");
+        metrics.recordPromptPrefix(run, "固定系统策略");
+
+        AgentRunUsage first = metrics.snapshot(run);
+        assertThat(first.promptVersion()).isEqualTo(AgentMetrics.SYSTEM_PROMPT_VERSION);
+        assertThat(first.promptFingerprint()).hasSize(64);
+        assertThat(registry.get(AgentMetrics.PROMPT_PREFIX)
+            .tag("version", AgentMetrics.SYSTEM_PROMPT_VERSION)
+            .tag("fingerprint", first.promptFingerprint()).counter().count()).isEqualTo(1.0);
+
+        metrics.recordPromptPrefix(run, "发生变化的系统策略");
+        assertThat(registry.get(AgentMetrics.PROMPT_PREFIX_MISMATCH)
+            .tag("version", AgentMetrics.SYSTEM_PROMPT_VERSION).counter().count()).isEqualTo(1.0);
     }
 
     @Test

@@ -496,6 +496,7 @@ public class InterviewAgentService {
                     PromptVariant compactPrompt = buildPromptVariant(
                         context, request, message, compactHistory, plan, loopTrace, true
                     );
+                    agentMetrics.recordPromptPrefix(runTracker, normalPrompt.systemPrompt());
                     BiFunction<String, Boolean, Supplier<ModelStream>> modelStreamFactory =
                         (providerId, compacted) -> {
                             PromptVariant prompt = compacted ? compactPrompt : normalPrompt;

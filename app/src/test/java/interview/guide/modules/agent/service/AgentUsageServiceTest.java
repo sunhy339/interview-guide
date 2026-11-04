@@ -80,6 +80,29 @@ class AgentUsageServiceTest {
     }
 
     @Test
+    void recordsGeneralAgentRunWithoutInterviewAndKeepsPromptMetadata() {
+        AgentChatSessionEntity session = AgentChatSessionEntity.builder()
+            .ownerKey("user-1")
+            .agentSessionId("agent-general-1")
+            .runId("run-general-1")
+            .runStatus(AgentRunStatus.COMPLETED)
+            .build();
+        AgentRunUsage usage = new AgentRunUsage(
+            10, 20, 30, 1, 1_200, null, null, "pixel", "gpt-5.6-luna",
+            "agent-system:v1", "abc123"
+        );
+        when(usageRepository.findByRunId("run-general-1")).thenReturn(Optional.empty());
+
+        service.record(session, usage);
+
+        ArgumentCaptor<AgentRunUsageEntity> captor = ArgumentCaptor.forClass(AgentRunUsageEntity.class);
+        verify(usageRepository).save(captor.capture());
+        assertThat(captor.getValue().getInterviewSessionId()).isNull();
+        assertThat(captor.getValue().getPromptVersion()).isEqualTo("agent-system:v1");
+        assertThat(captor.getValue().getPromptFingerprint()).isEqualTo("abc123");
+    }
+
+    @Test
     void summarizesTokensStatusesDurationAndCostsByOwner() {
         AgentUsageTotalsProjection totals = org.mockito.Mockito.mock(AgentUsageTotalsProjection.class);
         when(totals.getPromptTokens()).thenReturn(150L);

@@ -37,7 +37,8 @@ public class AgentRunUsageEntity {
     @Column(name = "owner_key", length = 64)
     private String ownerKey;
 
-    @Column(name = "interview_session_id", nullable = false, length = 36)
+    /** 通用 Agent 运行可以没有面试报告上下文。 */
+    @Column(name = "interview_session_id", length = 36)
     private String interviewSessionId;
 
     @Column(name = "agent_session_id", nullable = false, length = 36)
@@ -87,6 +88,13 @@ public class AgentRunUsageEntity {
 
     @Column(name = "model", length = 128)
     private String model;
+
+    /** 固定系统 Prompt 的版本和指纹，不保存 Prompt 正文。 */
+    @Column(name = "prompt_version", length = 64)
+    private String promptVersion;
+
+    @Column(name = "prompt_fingerprint", length = 64)
+    private String promptFingerprint;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;

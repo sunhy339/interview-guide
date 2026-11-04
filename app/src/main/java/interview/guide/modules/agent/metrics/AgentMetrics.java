@@ -1,5 +1,6 @@
 package interview.guide.modules.agent.metrics;
 
+import interview.guide.common.ai.PromptFingerprint;
 import interview.guide.modules.agent.model.AgentRunUsage;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -40,6 +41,9 @@ public class AgentMetrics {
     public static final String MODEL_DURATION = "app.agent.model.duration";
     public static final String TOKENS = "app.agent.tokens";
     public static final String COST = "app.agent.cost";
+    public static final String PROMPT_PREFIX = "app.agent.prompt.prefix";
+    public static final String PROMPT_PREFIX_MISMATCH = "app.agent.prompt.prefix.mismatch";
+    public static final String SYSTEM_PROMPT_VERSION = "agent-system:v1";
 
     private final MeterRegistry registry;
     private final boolean enabled;
@@ -136,6 +140,29 @@ public class AgentMetrics {
     public void recordProviderAttempt(String role, String result) {
         if (enabled) {
             registry.counter(PROVIDER_ATTEMPTS, "role", role, "result", result).increment();
+        }
+    }
+
+    /**
+     * 记录当前运行使用的稳定系统前缀版本和指纹；不记录 Prompt 正文或用户数据。
+     * 同一运行重复构造 normal/compact Prompt 时只计一次，若指纹发生漂移则单独告警。
+     */
+    public void recordPromptPrefix(RunTracker tracker, String systemPrompt) {
+        if (tracker == null || systemPrompt == null) {
+            return;
+        }
+        String fingerprint = PromptFingerprint.sha256(systemPrompt);
+        String previous = tracker.promptPrefixFingerprint.get();
+        if (previous == null && tracker.promptPrefixFingerprint.compareAndSet(null, fingerprint)) {
+            tracker.promptPrefixVersion.set(SYSTEM_PROMPT_VERSION);
+            if (enabled) {
+                registry.counter(PROMPT_PREFIX,
+                    "version", SYSTEM_PROMPT_VERSION, "fingerprint", fingerprint).increment();
+            }
+            return;
+        }
+        if (previous != null && !previous.equals(fingerprint) && enabled) {
+            registry.counter(PROMPT_PREFIX_MISMATCH, "version", SYSTEM_PROMPT_VERSION).increment();
         }
     }
 
@@ -318,6 +345,8 @@ public class AgentMetrics {
         private final AtomicReference<String> currency = new AtomicReference<>();
         private final AtomicReference<String> provider = new AtomicReference<>();
         private final AtomicReference<String> model = new AtomicReference<>();
+        private final AtomicReference<String> promptPrefixVersion = new AtomicReference<>();
+        private final AtomicReference<String> promptPrefixFingerprint = new AtomicReference<>();
         /** 当前运行最近一次面试搜索的候选 ID；只用于服务端消歧，不进入模型指标。 */
         private final AtomicReference<List<InterviewSearchCandidate>> interviewSearchCandidates =
             new AtomicReference<>(List.of());
@@ -395,7 +424,9 @@ public class AgentMetrics {
                 cost.get(),
                 currency.get(),
                 provider.get(),
-                model.get()
+                model.get(),
+                promptPrefixVersion.get(),
+                promptPrefixFingerprint.get()
             );
         }
     }

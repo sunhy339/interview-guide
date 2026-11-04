@@ -73,6 +73,8 @@ public class AgentUsageService {
         entity.setCurrency(normalize(safe.currency()));
         entity.setProvider(normalize(safe.provider()));
         entity.setModel(normalize(safe.model()));
+        entity.setPromptVersion(normalize(safe.promptVersion()));
+        entity.setPromptFingerprint(normalize(safe.promptFingerprint()));
         usageRepository.save(entity);
     }
 
@@ -154,7 +156,8 @@ public class AgentUsageService {
                 run.getRunStatus() == null ? null : run.getRunStatus().name(),
                 run.getPromptTokens(), run.getCompletionTokens(), run.getTotalTokens(),
                 run.getModelCalls(), run.getDurationMillis(), run.getCost(), run.getCurrency(),
-                run.getProvider(), run.getModel(), run.getRunStartedAt(), run.getRunFinishedAt(), run.getCreatedAt()
+                run.getProvider(), run.getModel(), run.getRunStartedAt(), run.getRunFinishedAt(), run.getCreatedAt(),
+                run.getPromptVersion(), run.getPromptFingerprint()
             );
         }).toList();
     }
