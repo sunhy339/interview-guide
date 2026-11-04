@@ -182,7 +182,7 @@ public class AgentContextService {
             request, buildGeneralRetrievalQuery(request, effectiveHistory), effectiveHistory, sources, sessionId
         );
         if (!attachedSupplement.isBlank()) {
-            report = truncate(report + "\n\n" + attachedSupplement, MAX_REPORT_CHARS);
+            report = truncateToBudget(report + "\n\n" + attachedSupplement, MAX_REPORT_CHARS);
         }
 
         String safeSkillId = sanitizeSkillId(detail.skillId());
@@ -202,7 +202,7 @@ public class AgentContextService {
             ragContext,
             retrievalQuery,
             List.copyOf(sources),
-            memory.toPrompt(safeSkillId),
+            promptSanitizer.sanitizeForContext(memory.toPrompt(safeSkillId)),
             extractWeaknesses(detail),
             loadSessionSummary(request)
         );
@@ -225,7 +225,7 @@ public class AgentContextService {
             "暂无知识库检索上下文",
             retrievalQuery,
             List.copyOf(sources),
-            memory.toPrompt(null),
+            promptSanitizer.sanitizeForContext(memory.toPrompt(null)),
             List.of(),
             loadSessionSummary(request)
         );
@@ -260,6 +260,9 @@ public class AgentContextService {
         }
         StringBuilder report = new StringBuilder();
         for (AgentSessionContextEntity binding : contexts) {
+            if (report.length() >= MAX_REPORT_CHARS) {
+                break;
+            }
             String type = binding.getContextType();
             String resourceId = binding.getResourceId();
             if ((resourceId == null || resourceId.isBlank()) && "INTERVIEW_REPORT".equals(type)) {
@@ -290,7 +293,7 @@ public class AgentContextService {
                 : "";
         }
         consumeTurnContexts(agentSessionId, ownerKey(request));
-        return truncate(report.toString(), MAX_REPORT_CHARS);
+        return report.toString();
     }
 
     private void consumeTurnContexts(String agentSessionId, String ownerId) {
@@ -316,9 +319,12 @@ public class AgentContextService {
             auditContextInjection(ownerId, sessionId, agentSessionId,
                 "interview-report", sessionId, rawReport);
             String safeSessionLabel = safeContextLabel(sessionId, "面试报告");
-            report.append("\n[面试报告：").append(safeSessionLabel).append("]\n")
-                .append(promptSanitizer.sanitizeForContext(rawReport)).append('\n');
-            sources.add(new AgentSource("interview", "面试报告 " + safeSessionLabel, null, "INTERVIEW"));
+            boolean appended = appendBounded(report,
+                "\n[面试报告：" + safeSessionLabel + "]\n"
+                    + promptSanitizer.sanitizeForContext(rawReport) + '\n');
+            if (appended) {
+                sources.add(new AgentSource("interview", "面试报告 " + safeSessionLabel, null, "INTERVIEW"));
+            }
         } catch (RuntimeException error) {
             log.warn("通用 Agent 读取面试报告失败: sessionId={}", sessionId, error);
         }
@@ -335,16 +341,19 @@ public class AgentContextService {
                     ownerKey(request), null, request == null ? null : request.agentSessionId(),
                     "resume", resourceId, resumeText
                 );
-                report.append("\n[简历：")
-                    .append(promptSanitizer.sanitizeForContext(resume.getOriginalFilename()))
-                    .append("]\n")
-                    .append(promptSanitizer.sanitizeForContext(
-                        resumeText
-                    )).append('\n');
-                sources.add(new AgentSource(
-                    "resume", promptSanitizer.sanitizeForContext(resume.getOriginalFilename()),
-                    null, "RESUME-" + resourceId
-                ));
+                String safeFilename = promptSanitizer.sanitizeForContext(resume.getOriginalFilename());
+                String safeResumeText = truncateToBudget(
+                    promptSanitizer.sanitizeForContext(resumeText), MAX_REPORT_CHARS
+                );
+                boolean appended = appendBounded(report,
+                    "\n[简历：" + (safeFilename == null ? "未命名简历" : safeFilename) + "]\n"
+                        + safeResumeText + '\n');
+                if (appended) {
+                    sources.add(new AgentSource(
+                        "resume", safeFilename == null ? "未命名简历" : safeFilename,
+                        null, "RESUME-" + resourceId
+                    ));
+                }
             });
     }
 
@@ -364,9 +373,18 @@ public class AgentContextService {
                     "context-asset", resourceId, extractedText
                 );
                 String safeFilename = promptSanitizer.sanitizeForContext(asset.getOriginalFilename());
-                report.append("\n[已审核文件：").append(safeFilename).append("]\n")
-                    .append(promptSanitizer.sanitizeForContext(extractedText)).append('\n');
-                sources.add(new AgentSource("file", safeFilename, null, "FILE-" + resourceId));
+                String safeExtractedText = truncateToBudget(
+                    promptSanitizer.sanitizeForContext(extractedText), MAX_REPORT_CHARS
+                );
+                boolean appended = appendBounded(report,
+                    "\n[已审核文件：" + (safeFilename == null ? "未命名文件" : safeFilename) + "]\n"
+                        + safeExtractedText + '\n');
+                if (appended) {
+                    sources.add(new AgentSource(
+                        "file", safeFilename == null ? "未命名文件" : safeFilename,
+                        null, "FILE-" + resourceId
+                    ));
+                }
             });
     }
 
@@ -404,9 +422,11 @@ public class AgentContextService {
             index++;
             String reference = "R" + index;
             String title = promptSanitizer.sanitizeForContext(describe(document.metadata()));
+            title = title == null || title.isBlank() ? "知识库片段" : truncate(title, 256);
             String text = promptSanitizer.sanitizeForContext(
                 document.text() == null ? "" : document.text()
             );
+            text = text == null ? "" : truncateToBudget(text, MAX_RAG_CONTEXT_CHARS);
             String rawText = document.text() == null ? "" : document.text();
             auditContextInjection(
                 ownerId, interviewSessionId, agentSessionId,
@@ -419,6 +439,17 @@ public class AgentContextService {
                 .append(text, 0, Math.min(text.length(), budget)).append('\n');
             sources.add(new AgentSource("rag", title, document.score(), reference));
         }
+    }
+
+    /** 绑定资料必须边拼装边限额，不能先把多份大文件全部累积后再截断。 */
+    private boolean appendBounded(StringBuilder target, String value) {
+        if (target == null || value == null || value.isEmpty()
+            || target.length() >= MAX_REPORT_CHARS) {
+            return false;
+        }
+        int remaining = MAX_REPORT_CHARS - target.length();
+        target.append(value, 0, Math.min(remaining, value.length()));
+        return true;
     }
 
     private java.util.Optional<Long> parseLong(String value) {
@@ -726,6 +757,15 @@ public class AgentContextService {
             return value;
         }
         return value.substring(0, maxChars) + "\n[内容已截断]";
+    }
+
+    private String truncateToBudget(String value, int maxChars) {
+        if (value == null || value.length() <= maxChars) {
+            return value;
+        }
+        String marker = "\n[内容已截断]";
+        int contentChars = Math.max(0, maxChars - marker.length());
+        return value.substring(0, contentChars) + marker;
     }
 
     public record AgentContext(

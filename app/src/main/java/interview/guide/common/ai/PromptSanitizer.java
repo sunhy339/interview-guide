@@ -33,6 +33,14 @@ public class PromptSanitizer {
             + "(?:\\s+(?:message|prompt|instruction|content|role))?\\s*[:：].*"
     );
 
+    // XML/JSON 角色层级伪造：部分模型会把这些格式重新解释成消息对象。
+    private static final Pattern STRUCTURED_ROLE_MARKER_PATTERN = Pattern.compile(
+        "</?(?:system|developer|user|assistant|human|ai|model|tool)"
+            + "(?:\\s+[^>]*)?>"
+            + "|\\\"role\\\"\\s*:\\s*\\\"(?:system|developer|user|assistant|tool)\\\"",
+        Pattern.CASE_INSENSITIVE
+    );
+
     // 注入短语：先做 NFKC 和零宽字符归一化，再匹配常见英文/中文变体。
     private static final Pattern INJECTION_PHRASE_PATTERN = Pattern.compile(
         "ignore\\s+(?:(?:all|any|the)\\s+)?(?:previous|prior|above|earlier|preceding)"
@@ -173,6 +181,11 @@ public class PromptSanitizer {
             injected = true;
             result = roleMatcher.replaceAll("[filtered-role-marker]");
         }
+        var structuredRoleMatcher = STRUCTURED_ROLE_MARKER_PATTERN.matcher(result);
+        if (structuredRoleMatcher.find()) {
+            injected = true;
+            result = structuredRoleMatcher.replaceAll("[filtered-role-marker]");
+        }
         var phraseMatcher = INJECTION_PHRASE_PATTERN.matcher(result);
         if (phraseMatcher.find()) {
             injected = true;
@@ -268,6 +281,7 @@ public class PromptSanitizer {
         }
         String normalized = normalizeForSecurity(text);
         return ROLE_INJECTION_PATTERN.matcher(normalized).find()
+            || STRUCTURED_ROLE_MARKER_PATTERN.matcher(normalized).find()
             || INJECTION_PHRASE_PATTERN.matcher(normalized).find()
             || DELIMITER_INJECTION_PATTERN.matcher(normalized).find()
             || BOUNDARY_TAG_PATTERN.matcher(normalized).find()

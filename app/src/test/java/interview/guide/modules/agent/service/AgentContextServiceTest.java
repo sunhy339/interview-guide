@@ -713,6 +713,64 @@ class AgentContextServiceTest {
             .contains("面试报告 secondary [filtered]");
     }
 
+    @Test
+    void boundsCombinedAttachedFileContextBeforeReturningItToTheAgent() throws Exception {
+        InterviewHistoryService history = mock(InterviewHistoryService.class);
+        InterviewPersistenceService persistence = mock(InterviewPersistenceService.class);
+        InterviewSkillService skills = mock(InterviewSkillService.class);
+        KnowledgeBaseQueryService rag = mock(KnowledgeBaseQueryService.class);
+        PromptSanitizer sanitizer = mock(PromptSanitizer.class);
+        ObjectMapper objectMapper = mock(ObjectMapper.class);
+        AgentMemoryService memory = mock(AgentMemoryService.class);
+        AgentSessionContextRepository contexts = mock(AgentSessionContextRepository.class);
+        AgentContextAssetRepository assets = mock(AgentContextAssetRepository.class);
+        AgentContextBindingService bindings = mock(AgentContextBindingService.class);
+        AgentContextSummaryService summaries = mock(AgentContextSummaryService.class);
+        String largeText = "资料内容".repeat(200_000);
+
+        when(memory.remember(anyString(), any(), any(), any()))
+            .thenReturn(AgentMemorySnapshot.empty("owner-1"));
+        when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
+        when(contexts.findByAgentSessionIdAndOwnerKeyAndActiveTrueOrderByAttachedAtDesc(
+            "agent-1", "owner-1"
+        )).thenReturn(List.of(
+            AgentSessionContextEntity.builder().agentSessionId("agent-1")
+                .contextType("FILE").resourceId("asset-1").active(true).build(),
+            AgentSessionContextEntity.builder().agentSessionId("agent-1")
+                .contextType("FILE").resourceId("asset-2").active(true).build()
+        ));
+        when(assets.findByAssetIdAndOwnerId("asset-1", "owner-1"))
+            .thenReturn(java.util.Optional.of(approvedAsset("asset-1", largeText)));
+        when(assets.findByAssetIdAndOwnerId("asset-2", "owner-1"))
+            .thenReturn(java.util.Optional.of(approvedAsset("asset-2", largeText)));
+        when(sanitizer.sanitizeForContext(anyString()))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        when(sanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        AgentContextService service = new AgentContextService(
+            history, persistence, skills, rag, sanitizer, objectMapper, memory,
+            contexts, assets, null, null, summaries
+        );
+        service.setContextBindingService(bindings);
+
+        AgentContextService.AgentContext context = service.build(
+            null,
+            new AgentMessageRequest("general", "分析资料", List.of(), null, null, "agent-1"),
+            List.of()
+        );
+
+        assertThat(context.interviewReport()).hasSizeLessThanOrEqualTo(14_000);
+        verify(bindings).consumeTurnContexts("agent-1", "owner-1");
+    }
+
+    private AgentContextAssetEntity approvedAsset(String assetId, String extractedText) {
+        return AgentContextAssetEntity.builder()
+            .assetId(assetId).ownerId("owner-1").originalFilename(assetId + ".md")
+            .extractedText(extractedText)
+            .reviewStatus(AgentContextAssetStatus.APPROVED_FOR_CONTEXT)
+            .expiresAt(LocalDateTime.now().plusDays(1)).build();
+    }
+
     private InterviewDetailDTO detail(String skillId, Long knowledgeBaseId) {
         return new InterviewDetailDTO(
             1L, "session", null, 1, "COMPLETED", "COMPLETED", null, 60,

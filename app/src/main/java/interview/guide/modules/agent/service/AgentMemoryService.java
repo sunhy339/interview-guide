@@ -116,7 +116,7 @@ public class AgentMemoryService {
     ) {
         String key = normalizeKey(memoryKey);
         AgentMemorySnapshot previous = load(key);
-        String nextSkill = clean(skillId, 64);
+        String nextSkill = cleanMetadata(skillId, 64);
         if (nextSkill == null) {
             nextSkill = previous.lastSkillId();
         }
@@ -150,7 +150,7 @@ public class AgentMemoryService {
         int max = CATEGORY_GOAL.equals(normalizedCategory) ? MAX_GOALS : MAX_WEAKNESSES;
         List<AgentMemoryItem> items = mergeItems(
             previous.items(), List.of(normalizedContent), normalizedCategory,
-            "agent-action", clean(jobScope, 64), max
+            "agent-action", cleanMetadata(jobScope, 64), max
         );
         AgentMemorySnapshot snapshot = saveSnapshot(key, previous.lastSkillId(), items);
         audit(key, "MEMORY_REMEMBERED", "memory", key, "success");
@@ -175,7 +175,7 @@ public class AgentMemoryService {
             throw new BusinessException(ErrorCode.NOT_FOUND, "长期记忆不存在");
         }
         AgentMemoryItem current = items.get(index);
-        String normalizedScope = jobScope == null ? current.jobScope() : clean(jobScope, 64);
+        String normalizedScope = jobScope == null ? current.jobScope() : cleanMetadata(jobScope, 64);
         items.set(index, new AgentMemoryItem(
             current.id(), current.category(), normalizedContent, current.source(),
             normalizedScope,
@@ -220,7 +220,7 @@ public class AgentMemoryService {
                 entity.getUpdatedAt()
             );
             return new AgentMemorySnapshot(
-                entity.getMemoryKey(), payload == null ? null : clean(payload.lastSkillId(), 64),
+                entity.getMemoryKey(), payload == null ? null : cleanMetadata(payload.lastSkillId(), 64),
                 valuesForCategory(items, CATEGORY_WEAKNESS, MAX_WEAKNESSES),
                 valuesForCategory(items, CATEGORY_GOAL, MAX_GOALS), entity.getUpdatedAt(), items
             );
@@ -272,7 +272,7 @@ public class AgentMemoryService {
                 }
                 categoryItems.add(0, new AgentMemoryItem(
                     UUID.randomUUID().toString(), category, normalized, source,
-                    clean(jobScope, 64), 0.7d, LocalDateTime.now(), expiresAt(LocalDateTime.now())
+                    cleanMetadata(jobScope, 64), 0.7d, LocalDateTime.now(), expiresAt(LocalDateTime.now())
                 ));
             });
         }
@@ -303,7 +303,8 @@ public class AgentMemoryService {
                     id = category + "-" + index;
                 }
                 result.add(new AgentMemoryItem(
-                    id, category, content, clean(item.source(), 64), clean(item.jobScope(), 64),
+                    id, category, content, cleanMetadata(item.source(), 64),
+                    cleanMetadata(item.jobScope(), 64),
                     normalizeConfidence(item.confidence()),
                     item.updatedAt() == null ? fallbackUpdatedAt : item.updatedAt(),
                     item.expiresAt() == null
@@ -368,7 +369,7 @@ public class AgentMemoryService {
             .toList();
         AgentMemorySnapshot next = new AgentMemorySnapshot(
             key,
-            clean(lastSkillId, 64),
+            cleanMetadata(lastSkillId, 64),
             valuesForCategory(safeItems, CATEGORY_WEAKNESS, MAX_WEAKNESSES),
             valuesForCategory(safeItems, CATEGORY_GOAL, MAX_GOALS),
             LocalDateTime.now(),
@@ -432,6 +433,14 @@ public class AgentMemoryService {
             return null;
         }
         return clean(promptSanitizer.sanitizeForContext(value), MAX_ITEM_CHARS);
+    }
+
+    /** 旧版本持久化的记忆元数据也可能进入筛选、展示和 Prompt，读取时必须重新净化。 */
+    private String cleanMetadata(String value, int maxLength) {
+        if (value == null) {
+            return null;
+        }
+        return clean(promptSanitizer.sanitizeForContext(value), maxLength);
     }
 
     private record MemoryPayload(
