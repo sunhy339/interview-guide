@@ -557,7 +557,7 @@ public class AgentConversationService {
     public void failMessage(
         Long messageId, String partialContent, String errorMessage, String expectedRunId
     ) {
-        String safeError = truncate(errorMessage, 500);
+        String safeError = safeStoredText(errorMessage, 500);
         AgentChatMessageEntity message = lockActiveMessage(messageId, expectedRunId);
         if (message == null) {
             log.info("忽略已失效 Agent 失败事件: messageId={}", messageId);
@@ -627,9 +627,9 @@ public class AgentConversationService {
             log.info("忽略已失效 Agent 进度事件: messageId={}", messageId);
             return;
         }
-        session.setRunStep(truncate(step, 32));
-        session.setRunStepStatus(truncate(status, 16));
-        session.setRunNotice(truncate(notice, 500));
+        session.setRunStep(safeStoredText(step, 32));
+        session.setRunStepStatus(safeStoredText(status, 16));
+        session.setRunNotice(safeStoredText(notice, 500));
         sessionRepository.save(session);
     }
 
@@ -688,7 +688,7 @@ public class AgentConversationService {
             log.info("忽略已失效 Agent Loop 状态事件: messageId={}", messageId);
             return;
         }
-        session.setLoopPlan(truncate(plan, 1200));
+        session.setLoopPlan(safeStoredText(plan, 1200));
         session.setLoopNextStep(Math.max(0, nextStepIndex));
         session.setLoopCompletedSteps(serializeLoopCompletedSteps(completedStepIndices));
         sessionRepository.save(session);
@@ -900,15 +900,15 @@ public class AgentConversationService {
             session.getRunStatus(),
             session.getRunStartedAt(),
             session.getRunFinishedAt(),
-            session.getRunError(),
-            session.getRunStep(),
-            session.getRunStepStatus(),
-            session.getRunNotice(),
+            safeStoredText(session.getRunError(), 500),
+            safeStoredText(session.getRunStep(), 32),
+            safeStoredText(session.getRunStepStatus(), 16),
+            safeStoredText(session.getRunNotice(), 500),
             partialAnswer,
             parseSources(session.getRunSourcesJson()),
             normalized,
             readRunUsage(session),
-            session.getLoopPlan(),
+            safeStoredText(session.getLoopPlan(), 1200),
             session.getLoopNextStep(),
             parseLoopCompletedSteps(session.getLoopCompletedSteps()),
             parseLoopTrace(session.getLoopTraceJson())
@@ -952,6 +952,16 @@ public class AgentConversationService {
             return value;
         }
         return value.substring(0, maxLength);
+    }
+
+    /** 兼容入口写入的运行元数据也不能原样成为恢复或展示数据。 */
+    private String safeStoredText(String value, int maxLength) {
+        if (value == null) {
+            return null;
+        }
+        String safe = promptSanitizer == null
+            ? value : promptSanitizer.sanitizeForAction(value);
+        return truncate(safe == null ? value : safe, maxLength);
     }
 
     private String serializeSources(List<AgentSource> sources) {
@@ -1098,13 +1108,20 @@ public class AgentConversationService {
         return new AgentLoopTraceItem(
             item.iteration(),
             promptSanitizer.sanitizeForContext(item.action()),
-            item.status(),
+            normalizeTraceStatus(item.status()),
             promptSanitizer.sanitizeForContext(item.observation()),
             item.attempts(),
             item.durationMillis(),
             item.failureReason() == null
                 ? null : promptSanitizer.sanitizeForContext(item.failureReason())
         );
+    }
+
+    private String normalizeTraceStatus(String status) {
+        return switch (status == null ? "" : status) {
+            case "completed", "failed", "timeout", "running" -> status;
+            default -> "unknown";
+        };
     }
 
     private Optional<AgentChatSessionEntity> findSession(
@@ -1277,7 +1294,7 @@ public class AgentConversationService {
         session.setRunStatus(status);
         session.setRunFinishedAt(LocalDateTime.now());
         session.setActiveMessageId(null);
-        session.setRunError(truncate(error, 500));
+        session.setRunError(safeStoredText(error, 500));
         session.setRunStepStatus(status == AgentRunStatus.COMPLETED ? "completed"
             : status == AgentRunStatus.CANCELLED ? "cancelled" : "failed");
         session.setRunNotice(null);
