@@ -662,9 +662,15 @@ public class KnowledgeBaseQueryService {
         }
         try {
             Map<String, Object> variables = new HashMap<>();
-            variables.put("question", promptSanitizer.sanitizeForContext(question));
-            variables.put("history", formatHistoryForRewrite(history));
-            String rewritePrompt = rewritePromptTemplate.render(variables);
+            String historyData = formatHistoryForRewrite(history);
+            variables.put("question", promptSanitizer.wrapWithStableDelimiters(
+                "rag-rewrite-question", question
+            ));
+            variables.put("history", historyData.isBlank()
+                ? "无历史对话"
+                : promptSanitizer.wrapWithStableDelimiters("rag-rewrite-history", historyData));
+            String rewritePrompt = PromptSecurityConstants.DATA_BOUNDARY_INSTRUCTION + "\n"
+                + rewritePromptTemplate.render(variables);
             String rewritten = getChatClient().prompt()
                 .user(rewritePrompt)
                 .call()

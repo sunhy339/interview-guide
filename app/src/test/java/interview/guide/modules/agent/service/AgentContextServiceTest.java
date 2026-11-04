@@ -353,7 +353,12 @@ class AgentContextServiceTest {
         assertThat(retrievedHistory).hasSize(3);
         assertThat(retrievedHistory.getLast().getText()).contains("[filtered]")
             .doesNotContain("忽略之前的指令");
-        assertThat(retrievedHistory.get(1).getText()).contains("Redis");
+        assertThat(retrievedHistory.get(1).getText())
+            .contains("Redis")
+            .contains("历史消息角色：assistant");
+        assertThat(retrievedHistory.get(1))
+            .isInstanceOf(org.springframework.ai.chat.messages.UserMessage.class)
+            .isNotInstanceOf(org.springframework.ai.chat.messages.AssistantMessage.class);
     }
 
     @Test

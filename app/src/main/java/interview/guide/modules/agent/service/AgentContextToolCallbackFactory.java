@@ -170,6 +170,7 @@ public class AgentContextToolCallbackFactory {
             ));
         }
         String scope = text(input, "scope");
+        requireExplicitScopeIntent(context.userMessage(), scope);
         AgentContextBindingResponse binding = contextBindingService.attach(
             context.agentSessionId(),
             new AttachAgentResourceRequest("INTERVIEW_REPORT", interviewSessionId, scope, null),
@@ -180,6 +181,39 @@ public class AgentContextToolCallbackFactory {
             "message", "面试报告已绑定，从下一轮 Agent 消息开始作为上下文使用",
             "binding", binding
         ));
+    }
+
+    /**
+     * 资料持久化范围不能由不可信报告、RAG 或模型自由选择。
+     * 未声明范围时沿用 SESSION 默认值；只有用户明确说“本次/临时”时才允许 TURN。
+     */
+    private void requireExplicitScopeIntent(String message, String requestedScope) {
+        String scope = requestedScope == null || requestedScope.isBlank()
+            ? "SESSION" : requestedScope.trim().toUpperCase(java.util.Locale.ROOT);
+        boolean turnIntent = containsAny(
+            message, "本次", "这次", "仅本轮", "只在本轮", "临时使用", "只用一次", "一次性使用"
+        );
+        boolean sessionIntent = containsAny(
+            message, "后续", "以后", "接下来都", "之后都", "持续使用", "长期使用", "绑定到会话"
+        );
+        if (turnIntent && "SESSION".equals(scope)) {
+            throw new BusinessException(
+                ErrorCode.BAD_REQUEST,
+                "用户只要求本次使用该资料，未执行持续绑定；请使用 TURN 作用域"
+            );
+        }
+        if (sessionIntent && "TURN".equals(scope)) {
+            throw new BusinessException(
+                ErrorCode.BAD_REQUEST,
+                "用户要求后续继续使用该资料，未执行临时绑定；请使用 SESSION 作用域"
+            );
+        }
+        if (!turnIntent && !sessionIntent && "TURN".equals(scope)) {
+            throw new BusinessException(
+                ErrorCode.BAD_REQUEST,
+                "临时使用资料需要用户明确说明“本次使用”或“仅本轮使用”"
+            );
+        }
     }
 
     private boolean isExplicitInterviewSelection(ToolContextData context, String interviewSessionId) {

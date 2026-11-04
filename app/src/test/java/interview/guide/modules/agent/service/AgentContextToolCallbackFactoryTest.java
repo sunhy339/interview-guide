@@ -449,6 +449,75 @@ class AgentContextToolCallbackFactoryTest {
         verify(contextBindingService).attach(any(), any(), eq("owner-1"));
     }
 
+    @Test
+    void rejectsPersistentScopeWhenUserOnlyRequestedThisTurn() {
+        when(interviewContextService.search("owner-1", "Java", 8)).thenReturn(List.of(
+            new AgentInterviewSearchResult("interview-1", "Java 后端一面", "java", "COMPLETED", 80, null, null)
+        ));
+        ToolContext context = context("本次使用 Java 后端一面这份面试报告给我建议");
+
+        tool("interview.search").call("{\"query\":\"Java\"}", context);
+        String result = tool("interview.attach_context").call(
+            "{\"interviewSessionId\":\"interview-1\",\"scope\":\"SESSION\"}", context
+        );
+
+        assertThat(result).contains("只要求本次使用");
+        verify(contextBindingService, never()).attach(any(), any(), any());
+    }
+
+    @Test
+    void rejectsTemporaryScopeWhenUserRequestedFutureConversationUse() {
+        when(interviewContextService.search("owner-1", "Java", 8)).thenReturn(List.of(
+            new AgentInterviewSearchResult("interview-1", "Java 后端一面", "java", "COMPLETED", 80, null, null)
+        ));
+        ToolContext context = context("后续都使用 Java 后端一面这份面试报告给我建议");
+
+        tool("interview.search").call("{\"query\":\"Java\"}", context);
+        String result = tool("interview.attach_context").call(
+            "{\"interviewSessionId\":\"interview-1\",\"scope\":\"TURN\"}", context
+        );
+
+        assertThat(result).contains("要求后续继续使用");
+        verify(contextBindingService, never()).attach(any(), any(), any());
+    }
+
+    @Test
+    void rejectsTemporaryScopeWithoutExplicitOneTurnIntent() {
+        when(interviewContextService.search("owner-1", "Java", 8)).thenReturn(List.of(
+            new AgentInterviewSearchResult("interview-1", "Java 后端一面", "java", "COMPLETED", 80, null, null)
+        ));
+        ToolContext context = context("使用 Java 后端一面这份面试报告给我建议");
+
+        tool("interview.search").call("{\"query\":\"Java\"}", context);
+        String result = tool("interview.attach_context").call(
+            "{\"interviewSessionId\":\"interview-1\",\"scope\":\"TURN\"}", context
+        );
+
+        assertThat(result).contains("临时使用资料需要用户明确说明");
+        verify(contextBindingService, never()).attach(any(), any(), any());
+    }
+
+    @Test
+    void allowsTemporaryScopeWhenUserExplicitlyRequestsThisTurn() {
+        when(interviewContextService.search("owner-1", "Java", 8)).thenReturn(List.of(
+            new AgentInterviewSearchResult("interview-1", "Java 后端一面", "java", "COMPLETED", 80, null, null)
+        ));
+        when(contextBindingService.attach(any(), any(), eq("owner-1"))).thenReturn(
+            new interview.guide.modules.agent.model.AgentContextBindingResponse(
+                "INTERVIEW_REPORT", "interview-1", "interview-1", "Java 后端一面", "TURN", true, null
+            )
+        );
+        ToolContext context = context("本次使用 Java 后端一面这份面试报告给我建议");
+
+        tool("interview.search").call("{\"query\":\"Java\"}", context);
+        String result = tool("interview.attach_context").call(
+            "{\"interviewSessionId\":\"interview-1\",\"scope\":\"TURN\"}", context
+        );
+
+        assertThat(result).contains("ATTACHED");
+        verify(contextBindingService).attach(any(), any(), eq("owner-1"));
+    }
+
     private ToolCallback tool(String name) {
         return factory.callbacks().stream()
             .filter(callback -> name.equals(callback.getToolDefinition().name()))

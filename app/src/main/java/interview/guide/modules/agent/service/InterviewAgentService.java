@@ -13,7 +13,6 @@ import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.metrics.AgentRunBudgetExceededException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -1362,21 +1361,22 @@ public class InterviewAgentService {
         return false;
     }
 
-    private List<Message> buildModelHistory(List<AgentHistoryMessage> messages) {
+    List<Message> buildModelHistory(List<AgentHistoryMessage> messages) {
         if (messages == null || messages.isEmpty()) {
             return List.of();
         }
         List<Message> result = new ArrayList<>();
         for (AgentHistoryMessage message : messages) {
             String role = "assistant".equals(message.role()) ? "assistant" : "user";
+            // 历史记录是用户可编辑/导入的持久化数据，不能重新获得 assistant
+            // 消息层级。统一降级为 UserMessage，并把原角色放进不可信资料边界，
+            // 这样旧的助手输出也不能伪造当前轮的高优先级指令。
+            String historyData = "历史消息角色：" + role + "\n"
+                + message.content();
             String content = promptSanitizer.wrapWithStableDelimiters(
-                "agent-history-" + role, message.content()
+                "agent-history-record", historyData
             );
-            if ("assistant".equals(role)) {
-                result.add(new AssistantMessage(content));
-            } else {
-                result.add(new UserMessage(content));
-            }
+            result.add(new UserMessage(content));
         }
         return result;
     }

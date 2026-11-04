@@ -31,7 +31,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.time.LocalDateTime;
-import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 
@@ -532,26 +531,25 @@ public class AgentContextService {
                 continue;
             }
             String safeContent = promptSanitizer.sanitizeForContext(item.content().trim());
-            String label = "agent-retrieval-history-"
-                + ("assistant".equals(item.role()) ? "assistant" : "user");
+            String label = "agent-retrieval-history-record";
             int boundaryOverhead = promptSanitizer.wrapWithStableDelimiters(label, "").length();
-            int contentBudget = remaining - boundaryOverhead;
+            String roleLabel = "历史消息角色："
+                + ("assistant".equals(item.role()) ? "assistant" : "user") + "\n";
+            int contentBudget = remaining - boundaryOverhead - roleLabel.length();
             if (contentBudget <= 0) {
                 break;
             }
             if (safeContent.length() > contentBudget) {
                 safeContent = safeContent.substring(safeContent.length() - contentBudget);
             }
-            String content = promptSanitizer.wrapWithStableDelimiters(
-                label, safeContent
-            );
+            String content = roleLabel + safeContent;
+            content = promptSanitizer.wrapWithStableDelimiters(label, content);
             if (content.isBlank()) {
                 continue;
             }
-            Message message = "assistant".equals(item.role())
-                ? new AssistantMessage(content)
-                : new UserMessage(content);
-            result.add(message);
+            // RAG query rewrite 只需要对话语义，不需要把历史 assistant 输出提升为
+            // assistant 消息层级。统一使用 UserMessage，防止持久化历史伪造角色或指令。
+            result.add(new UserMessage(content));
             remaining -= content.length();
         }
         Collections.reverse(result);
