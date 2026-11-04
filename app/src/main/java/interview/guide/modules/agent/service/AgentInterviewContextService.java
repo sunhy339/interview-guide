@@ -38,7 +38,9 @@ public class AgentInterviewContextService {
         } else {
             InterviewSessionEntity.SessionStatus status = parseStatus(normalizedQuery);
             page = status == null
-                ? interviewSessionRepository.searchOwnedForAgent(effectiveOwner, normalizedQuery, pageRequest)
+                ? interviewSessionRepository.searchOwnedForAgent(
+                    effectiveOwner, escapeLikeQuery(normalizedQuery), pageRequest
+                )
                 : interviewSessionRepository.findByOwnerIdAndStatus(effectiveOwner, status, pageRequest);
         }
         return page.getContent().stream()
@@ -62,6 +64,12 @@ public class AgentInterviewContextService {
         } catch (IllegalArgumentException ignored) {
             return null;
         }
+    }
+
+    private String escapeLikeQuery(String query) {
+        return query.replace("!", "!!")
+            .replace("%", "!%")
+            .replace("_", "!_");
     }
 
     private String requireOwner(String ownerKey) {

@@ -60,6 +60,18 @@ class AgentInterviewContextServiceTest {
         );
     }
 
+    @Test
+    void escapesLikeWildcardsBeforeSearchingTheDatabase() {
+        when(repository.searchOwnedForAgent("owner-1", "100!%!_match!!", PageRequest.of(0, 8)))
+            .thenReturn(new PageImpl<>(List.of()));
+
+        service.search("owner-1", "100%_match!", 8);
+
+        verify(repository).searchOwnedForAgent(
+            "owner-1", "100!%!_match!!", PageRequest.of(0, 8)
+        );
+    }
+
     private InterviewSessionEntity session(String id, String title, String skillId) {
         InterviewSessionEntity session = new InterviewSessionEntity();
         session.setSessionId(id);

@@ -50,9 +50,9 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
 
     @Query("SELECT s FROM InterviewSessionEntity s "
         + "WHERE s.ownerId = :ownerId AND ("
-        + "LOWER(COALESCE(s.title, '')) LIKE LOWER(CONCAT('%', :query, '%')) "
-        + "OR LOWER(COALESCE(s.skillId, '')) LIKE LOWER(CONCAT('%', :query, '%')) "
-        + "OR LOWER(COALESCE(s.sessionId, '')) LIKE LOWER(CONCAT('%', :query, '%'))"
+        + "LOWER(COALESCE(s.title, '')) LIKE LOWER(CONCAT('%', :query, '%')) ESCAPE '!' "
+        + "OR LOWER(COALESCE(s.skillId, '')) LIKE LOWER(CONCAT('%', :query, '%')) ESCAPE '!' "
+        + "OR LOWER(COALESCE(s.sessionId, '')) LIKE LOWER(CONCAT('%', :query, '%')) ESCAPE '!'"
         + ") ORDER BY s.createdAt DESC")
     Page<InterviewSessionEntity> searchOwnedForAgent(
         @Param("ownerId") String ownerId, @Param("query") String query, Pageable pageable);
