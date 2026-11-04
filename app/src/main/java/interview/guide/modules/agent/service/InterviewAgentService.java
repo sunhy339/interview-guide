@@ -423,6 +423,9 @@ public class InterviewAgentService {
                     List<String> loopSteps = agentLoopPlanner == null
                         ? List.of("读取面试报告并确认当前目标")
                         : agentLoopPlanner.steps(plan, context);
+                    String safePlan = agentLoopPlanner == null
+                        ? "1. 读取面试报告并确认当前目标"
+                        : agentLoopPlanner.canonicalPlan(plan, context);
                     AgentLoopEngine.ExecutionPolicy loopPolicy = new AgentLoopEngine.ExecutionPolicy(
                         retryProperties.getLoopMaxSteps(),
                         retryProperties.getLoopStepRetryAttempts(),
@@ -442,7 +445,7 @@ public class InterviewAgentService {
                         resumeState == null ? List.of() : resumeState.trace()
                     );
                     persistLoopCheckpoint(
-                        preparedMessage.assistantMessageId(), preparedMessage.runId(), plan,
+                        preparedMessage.assistantMessageId(), preparedMessage.runId(), safePlan,
                         resumeIndex, completedStepIndices, loopTraceItems
                     );
                     java.util.function.Consumer<AgentLoopEngine.LoopIteration> checkpointListener =
@@ -463,7 +466,7 @@ public class InterviewAgentService {
                             persistLoopCheckpoint(
                                 preparedMessage.assistantMessageId(),
                                 preparedMessage.runId(),
-                                plan,
+                                safePlan,
                                 "completed".equals(iteration.status())
                                     ? iteration.iteration() : index,
                                 completedStepIndices,
@@ -491,7 +494,7 @@ public class InterviewAgentService {
                     ));
                     persistLoopCheckpoint(
                         preparedMessage.assistantMessageId(), preparedMessage.runId(),
-                        plan, loopResult.nextStepIndex(), completedStepIndices, loopTraceItems
+                        safePlan, loopResult.nextStepIndex(), completedStepIndices, loopTraceItems
                     );
                     String loopTrace = loopResult.trace()
                         + "\nLoop 终态：" + loopResult.termination();
@@ -500,10 +503,10 @@ public class InterviewAgentService {
                         historyMessages, CONTEXT_RETRY_HISTORY_CHARS, CONTEXT_RETRY_MESSAGE_CHARS
                     ));
                     PromptVariant normalPrompt = buildPromptVariant(
-                        context, request, message, history, plan, loopTrace, false
+                        context, request, message, history, safePlan, loopTrace, false
                     );
                     PromptVariant compactPrompt = buildPromptVariant(
-                        context, request, message, compactHistory, plan, loopTrace, true
+                        context, request, message, compactHistory, safePlan, loopTrace, true
                     );
                     agentMetrics.recordPromptPrefix(runTracker, normalPrompt.systemPrompt());
                     BiFunction<String, Boolean, Supplier<ModelStream>> modelStreamFactory =
@@ -566,7 +569,7 @@ public class InterviewAgentService {
                     );
                     return Flux.concat(
                         Flux.just(
-                            AgentStreamEvent.plan(plan),
+                            AgentStreamEvent.plan(safePlan),
                             AgentStreamEvent.step("planning", "completed"),
                             AgentStreamEvent.step("loop", "running")
                         ),

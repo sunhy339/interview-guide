@@ -184,6 +184,20 @@ public class AgentLoopPlanner {
     }
 
     /**
+     * 返回可以写入检查点和最终 Prompt 的规范化计划。
+     *
+     * <p>规划模型的原始输出属于不可信模型数据，不能因为经过了长度限制就直接
+     * 重新注入下一次模型调用。这里只输出有限的、可审计动作标签。</p>
+     */
+    public String canonicalPlan(String plan, AgentContextService.AgentContext context) {
+        List<String> safeSteps = steps(plan, context);
+        return IntStream.range(0, safeSteps.size())
+            .mapToObj(index -> (index + 1) + ". " + safeSteps.get(index))
+            .reduce((left, right) -> left + "\n" + right)
+            .orElse("1. 读取面试报告并确认当前目标");
+    }
+
+    /**
      * 规划模型可以用自然语言描述动作，但对外的 Loop 轨迹必须使用有限的审计动作集合。
      * 这样既不会把模型的自由文本误当成工具调用，也能让恢复、评测和前端展示使用稳定标签。
      */

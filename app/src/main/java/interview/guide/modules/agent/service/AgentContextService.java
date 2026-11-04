@@ -185,7 +185,8 @@ public class AgentContextService {
             report = truncate(report + "\n\n" + attachedSupplement, MAX_REPORT_CHARS);
         }
 
-        String skillReference = loadSkillReference(detail, sources, trustedOwner,
+        String safeSkillId = sanitizeSkillId(detail.skillId());
+        String skillReference = loadSkillReference(safeSkillId, sources, trustedOwner,
             request == null ? null : request.agentSessionId(), sessionId);
         String retrievalQuery = buildRetrievalQuery(detail, request);
         String ragContext = loadRagContext(
@@ -196,12 +197,12 @@ public class AgentContextService {
 
         return new AgentContext(
             report,
-            detail.skillId(),
+            safeSkillId,
             skillReference,
             ragContext,
             retrievalQuery,
             List.copyOf(sources),
-            memory.toPrompt(detail.skillId()),
+            memory.toPrompt(safeSkillId),
             extractWeaknesses(detail),
             loadSessionSummary(request)
         );
@@ -314,9 +315,10 @@ public class AgentContextService {
             String rawReport = serializeReport(detail);
             auditContextInjection(ownerId, sessionId, agentSessionId,
                 "interview-report", sessionId, rawReport);
-            report.append("\n[面试报告：").append(sessionId).append("]\n")
+            String safeSessionLabel = safeContextLabel(sessionId, "面试报告");
+            report.append("\n[面试报告：").append(safeSessionLabel).append("]\n")
                 .append(promptSanitizer.sanitizeForContext(rawReport)).append('\n');
-            sources.add(new AgentSource("interview", "面试报告 " + sessionId, null, "INTERVIEW"));
+            sources.add(new AgentSource("interview", "面试报告 " + safeSessionLabel, null, "INTERVIEW"));
         } catch (RuntimeException error) {
             log.warn("通用 Agent 读取面试报告失败: sessionId={}", sessionId, error);
         }
@@ -459,9 +461,10 @@ public class AgentContextService {
         if (agentMemoryService == null || trustedOwner == null || trustedOwner.isBlank()) {
             return AgentMemorySnapshot.empty(null);
         }
+        String safeSkillId = detail == null ? null : sanitizeSkillId(detail.skillId());
         return agentMemoryService.remember(
             trustedOwner,
-            detail == null ? null : detail.skillId(),
+            safeSkillId,
             detail == null ? List.of() : extractWeaknesses(detail),
             request.goal()
         );
@@ -496,30 +499,55 @@ public class AgentContextService {
     }
 
     private String loadSkillReference(
-        InterviewDetailDTO detail,
+        String skillId,
         List<AgentSource> sources,
         String ownerId,
         String agentSessionId,
         String interviewSessionId
     ) {
-        if (detail.skillId() == null || detail.skillId().isBlank()) {
+        if (skillId == null || skillId.isBlank()) {
             return "暂无匹配的 Skill references";
         }
         try {
-            String reference = interviewSkillService.buildEvaluationReferenceSectionSafe(detail.skillId());
+            String reference = interviewSkillService.buildEvaluationReferenceSectionSafe(skillId);
             if (reference != null && !reference.isBlank() && !"未配置 references。".equals(reference)) {
                 auditContextInjection(
                     ownerId, interviewSessionId, agentSessionId,
-                    "skill-reference", detail.skillId(), reference
+                    "skill-reference", skillId, reference
                 );
-                sources.add(new AgentSource("skill", "Skill: " + detail.skillId(), null, "skill-reference"));
+                sources.add(new AgentSource("skill", "Skill: " + skillId, null, "skill-reference"));
                 return truncate(promptSanitizer.sanitizeForContext(reference), 8_000);
             }
         } catch (Exception error) {
-            log.warn("Agent 加载 Skill references 失败: skillId={}, error={}", detail.skillId(),
+            log.warn("Agent 加载 Skill references 失败: skillId={}, error={}", skillId,
                 error.getClass().getSimpleName());
         }
         return "暂无匹配的 Skill references";
+    }
+
+    /** Skill 标识会进入 Loop 观察和来源展示，也必须按不可信元数据处理。 */
+    private String sanitizeSkillId(String value) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        String safe = promptSanitizer.sanitizeForContext(value);
+        if (safe == null || safe.isBlank()) {
+            return "";
+        }
+        safe = safe.replaceAll("[\\p{Cntrl}\\p{Z}\\s]+", " ").trim();
+        return truncate(safe, 128);
+    }
+
+    /** 资源标识可能来自持久化绑定，进入模型资料标签前不能保留原始控制文本。 */
+    private String safeContextLabel(String value, String fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        String safe = promptSanitizer.sanitizeForContext(value);
+        if (safe == null || safe.isBlank()) {
+            return fallback;
+        }
+        return truncate(safe.replaceAll("[\\p{Cntrl}\\p{Z}\\s]+", " ").trim(), 128);
     }
 
     private String loadRagContext(
