@@ -19,6 +19,7 @@ import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.interview.service.InterviewPersistenceService;
 import interview.guide.modules.auth.AuthUserContext;
+import interview.guide.common.ai.PromptSanitizer;
 import jakarta.transaction.Transactional;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -61,6 +62,7 @@ public class AgentConversationService {
     private final AgentConversationCreationRequestRepository creationRequestRepository;
     private final AgentSessionContextRepository contextRepository;
     private final AgentContextSummaryService contextSummaryService;
+    private final PromptSanitizer promptSanitizer;
 
     /** 兼容无 Spring 容器的旧测试和内部调用方。 */
     public AgentConversationService(
@@ -70,7 +72,7 @@ public class AgentConversationService {
         InterviewPersistenceService interviewPersistenceService
     ) {
         this(sessionRepository, messageRepository, objectMapper, interviewPersistenceService,
-            null, null, null, null, null);
+            null, null, null, null, null, null);
     }
 
     public AgentConversationService(
@@ -84,7 +86,7 @@ public class AgentConversationService {
         AgentSessionContextRepository contextRepository
     ) {
         this(sessionRepository, messageRepository, objectMapper, interviewPersistenceService,
-            auditService, usageService, creationRequestRepository, contextRepository, null);
+            auditService, usageService, creationRequestRepository, contextRepository, null, null);
     }
 
     @Autowired
@@ -97,7 +99,8 @@ public class AgentConversationService {
         AgentUsageService usageService,
         AgentConversationCreationRequestRepository creationRequestRepository,
         AgentSessionContextRepository contextRepository,
-        AgentContextSummaryService contextSummaryService
+        AgentContextSummaryService contextSummaryService,
+        PromptSanitizer promptSanitizer
     ) {
         this.sessionRepository = sessionRepository;
         this.messageRepository = messageRepository;
@@ -108,6 +111,7 @@ public class AgentConversationService {
         this.creationRequestRepository = creationRequestRepository;
         this.contextRepository = contextRepository;
         this.contextSummaryService = contextSummaryService;
+        this.promptSanitizer = promptSanitizer;
     }
 
     /** 保留旧测试和内部调用方的七参数构造方式。 */
@@ -121,7 +125,7 @@ public class AgentConversationService {
         AgentConversationCreationRequestRepository creationRequestRepository
     ) {
         this(sessionRepository, messageRepository, objectMapper, interviewPersistenceService,
-            auditService, usageService, creationRequestRepository, null, null);
+            auditService, usageService, creationRequestRepository, null, null, null);
     }
 
     @Transactional
@@ -1027,6 +1031,7 @@ public class AgentConversationService {
         try {
             List<AgentLoopTraceItem> safeTrace = trace.stream()
                 .filter(item -> item != null)
+                .map(this::sanitizePersistedLoopTraceItem)
                 .limit(MAX_LOOP_TRACE_ITEMS)
                 .toList();
             for (int count = safeTrace.size(); count >= 0; count--) {
@@ -1052,12 +1057,35 @@ public class AgentConversationService {
             );
             return trace == null ? List.of() : trace.stream()
                 .filter(item -> item != null)
+                .map(this::sanitizePersistedLoopTraceItem)
                 .limit(MAX_LOOP_TRACE_ITEMS)
                 .toList();
         } catch (RuntimeException error) {
             log.warn("Agent Loop 轨迹恢复失败", error);
             return List.of();
         }
+    }
+
+    /**
+     * Loop 轨迹是可恢复、可展示的数据，不是可信指令。
+     *
+     * <p>历史数据库中可能存在旧版本写入的自由文本；在读写边界统一净化，避免旧
+     * 轨迹通过会话接口原样返回，或在下一次恢复前重新进入 Agent 上下文。</p>
+     */
+    private AgentLoopTraceItem sanitizePersistedLoopTraceItem(AgentLoopTraceItem item) {
+        if (item == null || promptSanitizer == null) {
+            return item;
+        }
+        return new AgentLoopTraceItem(
+            item.iteration(),
+            promptSanitizer.sanitizeForContext(item.action()),
+            item.status(),
+            promptSanitizer.sanitizeForContext(item.observation()),
+            item.attempts(),
+            item.durationMillis(),
+            item.failureReason() == null
+                ? null : promptSanitizer.sanitizeForContext(item.failureReason())
+        );
     }
 
     private Optional<AgentChatSessionEntity> findSession(
