@@ -10,6 +10,7 @@ import interview.guide.modules.interviewschedule.model.InterviewStatus;
 import interview.guide.modules.interviewschedule.repository.InterviewScheduleRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.BeanUtils;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -126,10 +127,12 @@ public class InterviewScheduleService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "日程查询时间范围无效");
         }
         int safeLimit = Math.max(1, Math.min(50, limit));
-        List<InterviewScheduleEntity> entities = start == null
-            ? repository.findAllByOwnerIdOrderByInterviewTimeAsc(ownerId.trim())
-            : repository.findByOwnerIdAndInterviewTimeBetween(ownerId.trim(), start, end);
-        return entities.stream().limit(safeLimit).map(this::toDTO).toList();
+        PageRequest pageRequest = PageRequest.of(0, safeLimit);
+        return (start == null
+            ? repository.findAllByOwnerIdOrderByInterviewTimeAsc(ownerId.trim(), pageRequest)
+            : repository.findByOwnerIdAndInterviewTimeBetween(ownerId.trim(), start, end, pageRequest))
+            .map(this::toDTO)
+            .getContent();
     }
 
     public InterviewScheduleDTO getById(Long id) {

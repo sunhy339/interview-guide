@@ -14,6 +14,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -96,12 +98,15 @@ class InterviewScheduleOwnershipTest {
     @Test
     void agentReadUsesExplicitOwnerEvenWithoutAuthenticationContext() {
         AuthUserContext.clear();
-        when(repository.findAllByOwnerIdOrderByInterviewTimeAsc("user-a"))
-            .thenReturn(List.of());
+        when(repository.findAllByOwnerIdOrderByInterviewTimeAsc(
+            "user-a", PageRequest.of(0, 10)
+        )).thenReturn(new PageImpl<>(List.of()));
 
         service.listForOwner("user-a", null, null, 10);
 
-        verify(repository).findAllByOwnerIdOrderByInterviewTimeAsc("user-a");
+        verify(repository).findAllByOwnerIdOrderByInterviewTimeAsc(
+            "user-a", PageRequest.of(0, 10)
+        );
     }
 
     @Test
