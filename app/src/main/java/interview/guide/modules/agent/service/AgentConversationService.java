@@ -956,7 +956,10 @@ public class AgentConversationService {
 
     private String serializeSources(List<AgentSource> sources) {
         try {
-            List<AgentSource> safeSources = sources == null ? List.of() : sources;
+            List<AgentSource> safeSources = sources == null ? List.of() : sources.stream()
+                .filter(source -> source != null)
+                .map(this::sanitizePersistedSource)
+                .toList();
             for (int count = safeSources.size(); count >= 0; count--) {
                 String serialized = objectMapper.writeValueAsString(safeSources.subList(0, count));
                 if (serialized.length() <= MAX_RUN_SOURCES_JSON_CHARS) {
@@ -978,11 +981,27 @@ public class AgentConversationService {
                 serialized,
                 new TypeReference<List<AgentSource>>() {}
             );
-            return sources == null ? List.of() : List.copyOf(sources);
+            return sources == null ? List.of() : sources.stream()
+                .filter(source -> source != null)
+                .map(this::sanitizePersistedSource)
+                .toList();
         } catch (RuntimeException error) {
             log.warn("Agent 运行来源恢复失败", error);
             return List.of();
         }
+    }
+
+    /** 来源摘要会返回前端，也可能被旧会话再次读取；它只能作为不可信元数据。 */
+    private AgentSource sanitizePersistedSource(AgentSource source) {
+        if (source == null || promptSanitizer == null) {
+            return source;
+        }
+        return new AgentSource(
+            promptSanitizer.sanitizeForContext(source.kind()),
+            promptSanitizer.sanitizeForContext(source.title()),
+            source.score(),
+            promptSanitizer.sanitizeForContext(source.reference())
+        );
     }
 
     private String serializeLoopCompletedSteps(List<Integer> indices) {
