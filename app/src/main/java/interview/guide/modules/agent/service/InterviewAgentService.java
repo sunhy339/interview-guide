@@ -436,7 +436,7 @@ public class InterviewAgentService {
                         retryProperties.getLoopMaxParallelSteps()
                     );
                     AgentLoopEngine.StepExecutor loopToolExecutor = new AgentLoopToolExecutor(
-                        agentMetrics, agentAuditService, runTracker
+                        agentMetrics, agentAuditService, runTracker, promptSanitizer
                     );
                     int resumeIndex = resumeState == null
                         ? 0 : Math.max(0, resumeState.nextStepIndex());

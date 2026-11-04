@@ -1,5 +1,6 @@
 package interview.guide.modules.agent.service;
 
+import interview.guide.common.ai.PromptSanitizer;
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import java.time.Duration;
 import java.util.Locale;
@@ -21,15 +22,26 @@ public final class AgentLoopToolExecutor implements AgentLoopEngine.StepExecutor
     private final AgentMetrics metrics;
     private final AgentAuditService auditService;
     private final AgentMetrics.RunTracker runTracker;
+    private final PromptSanitizer promptSanitizer;
 
     public AgentLoopToolExecutor(
         AgentMetrics metrics,
         AgentAuditService auditService,
         AgentMetrics.RunTracker runTracker
     ) {
+        this(metrics, auditService, runTracker, null);
+    }
+
+    public AgentLoopToolExecutor(
+        AgentMetrics metrics,
+        AgentAuditService auditService,
+        AgentMetrics.RunTracker runTracker,
+        PromptSanitizer promptSanitizer
+    ) {
         this.metrics = metrics;
         this.auditService = auditService;
         this.runTracker = runTracker;
+        this.promptSanitizer = promptSanitizer;
     }
 
     @Override
@@ -111,6 +123,11 @@ public final class AgentLoopToolExecutor implements AgentLoopEngine.StepExecutor
     }
 
     private String safeText(String value, String fallback) {
-        return value == null || value.isBlank() ? fallback : value.trim();
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        String safe = promptSanitizer == null
+            ? value : promptSanitizer.sanitizeForContext(value);
+        return safe == null || safe.isBlank() ? fallback : safe.trim();
     }
 }
