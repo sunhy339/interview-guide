@@ -420,12 +420,14 @@ public class InterviewAgentService {
             ),
             planFlux.flatMap(plan -> {
                     AgentLoopEngine loopEngine = new AgentLoopEngine();
-                    List<String> loopSteps = agentLoopPlanner == null
-                        ? List.of("读取面试报告并确认当前目标")
-                        : agentLoopPlanner.steps(plan, context);
                     String safePlan = agentLoopPlanner == null
                         ? "1. 读取面试报告并确认当前目标"
                         : agentLoopPlanner.canonicalPlan(plan, context);
+                    // 恢复计划和规划模型输出都先进入规范化结果，再交给 Loop 执行器。
+                    // 这样未来即使 steps() 的兼容解析规则扩展，也不会重新接收旧的自由文本。
+                    List<String> loopSteps = agentLoopPlanner == null
+                        ? List.of("读取面试报告并确认当前目标")
+                        : agentLoopPlanner.steps(safePlan, context);
                     AgentLoopEngine.ExecutionPolicy loopPolicy = new AgentLoopEngine.ExecutionPolicy(
                         retryProperties.getLoopMaxSteps(),
                         retryProperties.getLoopStepRetryAttempts(),
@@ -442,7 +444,9 @@ public class InterviewAgentService {
                         resumeState == null ? List.of() : resumeState.completedStepIndices()
                     );
                     List<AgentLoopTraceItem> loopTraceItems = new ArrayList<>(
-                        resumeState == null ? List.of() : resumeState.trace()
+                        sanitizeRecoveredLoopTrace(
+                            resumeState == null ? List.of() : resumeState.trace(), context
+                        )
                     );
                     persistLoopCheckpoint(
                         preparedMessage.assistantMessageId(), preparedMessage.runId(), safePlan,
@@ -775,6 +779,44 @@ public class InterviewAgentService {
             // 轨迹是恢复展示能力，不能因为附加写入失败中断 Agent 主流程。
             log.warn("Agent Loop 轨迹持久化失败: messageId={}", assistantMessageId, error);
         }
+    }
+
+    /**
+     * 恢复任务时重新处理数据库中的旧轨迹。
+     *
+     * <p>轨迹不是执行授权凭证，但会返回前端并写回检查点；因此不能把旧的自由文本
+     * 动作、状态、观察或异常原因原样带回当前运行。动作使用当前白名单重新归一化，
+     * 其余字段使用上下文净化并限制为固定状态集合。</p>
+     */
+    private List<AgentLoopTraceItem> sanitizeRecoveredLoopTrace(
+        List<AgentLoopTraceItem> trace, AgentContextService.AgentContext context
+    ) {
+        if (trace == null || trace.isEmpty()) {
+            return List.of();
+        }
+        return trace.stream()
+            .filter(item -> item != null)
+            .limit(128)
+            .map(item -> new AgentLoopTraceItem(
+                item.iteration(),
+                agentLoopPlanner == null
+                    ? "读取面试报告并确认当前目标"
+                    : agentLoopPlanner.canonicalAction(item.action(), context),
+                normalizeRecoveredTraceStatus(item.status()),
+                promptSanitizer.sanitizeForContext(item.observation()),
+                item.attempts(),
+                item.durationMillis(),
+                item.failureReason() == null
+                    ? null : promptSanitizer.sanitizeForContext(item.failureReason())
+            ))
+            .toList();
+    }
+
+    private String normalizeRecoveredTraceStatus(String status) {
+        return switch (status == null ? "" : status) {
+            case "completed", "failed", "timeout", "running" -> status;
+            default -> "unknown";
+        };
     }
 
     private Flux<Boolean> monitorRemoteCancellation(String sessionId, String agentSessionId, String runId) {

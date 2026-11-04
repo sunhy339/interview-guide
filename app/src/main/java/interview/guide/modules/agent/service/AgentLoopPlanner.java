@@ -198,6 +198,17 @@ public class AgentLoopPlanner {
     }
 
     /**
+     * 把恢复出来的旧轨迹动作也映射回有限动作标签。
+     *
+     * <p>轨迹来自数据库，不能因为它曾经由 Agent 生成就被视为可信数据。恢复时
+     * 只保留与当前上下文匹配的审计动作，避免历史脏数据在前端展示、检查点回写或
+     * 后续调试链路中重新表现为可执行指令。</p>
+     */
+    public String canonicalAction(String action, AgentContextService.AgentContext context) {
+        return steps(action, context).getFirst();
+    }
+
+    /**
      * 规划模型可以用自然语言描述动作，但对外的 Loop 轨迹必须使用有限的审计动作集合。
      * 这样既不会把模型的自由文本误当成工具调用，也能让恢复、评测和前端展示使用稳定标签。
      */
