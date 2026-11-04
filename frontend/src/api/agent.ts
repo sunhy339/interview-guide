@@ -102,6 +102,13 @@ export const agentApi = {
     );
   },
 
+  detachContext(agentSessionId: string, sourceType: string, resourceId: string): Promise<void> {
+    return request.delete<void>(
+      `/api/agent/sessions/${encodeURIComponent(agentSessionId)}/contexts/${encodeURIComponent(sourceType)}/${encodeURIComponent(resourceId)}`,
+      { headers: agentHeaders() },
+    );
+  },
+
   listGeneralActions(agentSessionId: string): Promise<AgentAction[]> {
     return request.get<AgentAction[]>(
       `/api/agent/sessions/${encodeURIComponent(agentSessionId)}/actions`,

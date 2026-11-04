@@ -143,7 +143,7 @@ public class AgentContextService {
 
         // 旧的“从面试详情进入 Agent”链路继续以报告为主，但允许输入区追加已审核的简历/文件资料。
         String attachedSupplement = loadAttachedContext(
-            request, buildGeneralRetrievalQuery(request, effectiveHistory), effectiveHistory, sources, false
+            request, buildGeneralRetrievalQuery(request, effectiveHistory), effectiveHistory, sources, sessionId
         );
         if (!attachedSupplement.isBlank()) {
             report = truncate(report + "\n\n" + attachedSupplement, MAX_REPORT_CHARS);
@@ -176,7 +176,7 @@ public class AgentContextService {
         AgentMemorySnapshot memory = loadAndUpdateMemory(null, request);
         String retrievalQuery = buildGeneralRetrievalQuery(request, effectiveHistory);
         List<AgentSource> sources = new ArrayList<>();
-        String report = loadAttachedContext(request, retrievalQuery, effectiveHistory, sources, true);
+        String report = loadAttachedContext(request, retrievalQuery, effectiveHistory, sources, null);
         return new AgentContext(
             report,
             "",
@@ -199,29 +199,33 @@ public class AgentContextService {
         String retrievalQuery,
         List<AgentHistoryMessage> effectiveHistory,
         List<AgentSource> sources,
-        boolean includeInterviewReport
+        String primaryInterviewSessionId
     ) {
         String agentSessionId = request == null ? null : request.agentSessionId();
         if (ownerKey(request) == null || ownerKey(request).isBlank()
             || sessionContextRepository == null || agentSessionId == null || agentSessionId.isBlank()) {
-            return includeInterviewReport
+            return primaryInterviewSessionId == null
                 ? "当前 Agent 会话未绑定任何资料。不要推断未提供的经历、面试表现或知识库结论。"
                 : "";
         }
         List<AgentSessionContextEntity> contexts = sessionContextRepository
             .findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc(agentSessionId);
         if (contexts.isEmpty()) {
-            return includeInterviewReport
+            return primaryInterviewSessionId == null
                 ? "当前 Agent 会话未绑定任何资料。不要推断未提供的经历、面试表现或知识库结论。"
                 : "";
         }
         StringBuilder report = new StringBuilder();
         for (AgentSessionContextEntity binding : contexts) {
             String type = binding.getContextType();
-            if (!includeInterviewReport && "INTERVIEW_REPORT".equals(type)) continue;
             String resourceId = binding.getResourceId();
             if ((resourceId == null || resourceId.isBlank()) && "INTERVIEW_REPORT".equals(type)) {
                 resourceId = binding.getInterviewSessionId();
+            }
+            if ("INTERVIEW_REPORT".equals(type)
+                && primaryInterviewSessionId != null
+                && primaryInterviewSessionId.equals(resourceId)) {
+                continue;
             }
             if (resourceId == null || resourceId.isBlank()) continue;
             switch (type) {
@@ -237,7 +241,7 @@ public class AgentContextService {
             }
         }
         if (report.isEmpty()) {
-            return includeInterviewReport
+            return primaryInterviewSessionId == null
                 ? "已绑定资料但没有读取到可用内容。不要补写未提供的事实。"
                 : "";
         }

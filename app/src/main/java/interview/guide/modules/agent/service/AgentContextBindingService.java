@@ -25,6 +25,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class AgentContextBindingService {
 
+    private static final int MAX_ACTIVE_CONTEXTS = 8;
+
     private final AgentChatSessionRepository sessionRepository;
     private final AgentSessionContextRepository contextRepository;
     private final AgentContextAssetService assetService;
@@ -67,7 +69,7 @@ public class AgentContextBindingService {
 
     @Transactional
     public AgentContextBindingResponse attach(String agentSessionId, AttachAgentResourceRequest request, String ownerId) {
-        AgentChatSessionEntity session = sessionRepository.findByAgentSessionId(agentSessionId)
+        AgentChatSessionEntity session = sessionRepository.findByAgentSessionIdForUpdate(agentSessionId)
             .filter(item -> ownerId.equals(item.getOwnerKey()))
             .orElseThrow(() -> new BusinessException(ErrorCode.FORBIDDEN, "无权访问该 Agent 会话"));
         String type = request.normalizedType();
@@ -96,7 +98,23 @@ public class AgentContextBindingService {
             }
             default -> throw new BusinessException(ErrorCode.BAD_REQUEST, "不支持的上下文类型: " + type);
         }
-        contextRepository.deactivateAllActive(session.getAgentSessionId(), LocalDateTime.now());
+        AgentSessionContextEntity existing = contextRepository
+            .findFirstByAgentSessionIdAndContextTypeAndResourceIdAndActiveTrue(
+                session.getAgentSessionId(), type, resourceId
+            )
+            .orElse(null);
+        if (existing != null) {
+            audit(ownerId, session.getInterviewSessionId(), agentSessionId,
+                "CONTEXT_ATTACH_REUSED", resourceId, type);
+            return AgentContextBindingResponse.from(existing);
+        }
+        if (contextRepository.countByAgentSessionIdAndActiveTrue(session.getAgentSessionId())
+            >= MAX_ACTIVE_CONTEXTS) {
+            throw new BusinessException(
+                ErrorCode.BAD_REQUEST,
+                "当前 Agent 会话最多同时使用 " + MAX_ACTIVE_CONTEXTS + " 份资料，请先移除不需要的上下文"
+            );
+        }
         AgentSessionContextEntity context = contextRepository.save(AgentSessionContextEntity.builder()
             .agentSessionId(session.getAgentSessionId())
             .contextType(type)
@@ -110,6 +128,26 @@ public class AgentContextBindingService {
         audit(ownerId, session.getInterviewSessionId(), agentSessionId,
             "CONTEXT_ATTACHED", resourceId, type);
         return AgentContextBindingResponse.from(context);
+    }
+
+    @Transactional
+    public void detach(
+        String agentSessionId, String contextType, String resourceId, String ownerId
+    ) {
+        AgentChatSessionEntity session = requireSession(agentSessionId, ownerId);
+        String type = contextType == null ? "" : contextType.trim().toUpperCase(java.util.Locale.ROOT);
+        String resource = resourceId == null ? "" : resourceId.trim();
+        if (type.isBlank() || resource.isBlank()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "上下文类型和资源 ID 不能为空");
+        }
+        if (!List.of("INTERVIEW_REPORT", "RESUME", "FILE", "KNOWLEDGE_BASE").contains(type)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "不支持的上下文类型: " + type);
+        }
+        contextRepository.deactivateActiveResource(
+            session.getAgentSessionId(), type, resource, LocalDateTime.now()
+        );
+        audit(ownerId, session.getInterviewSessionId(), agentSessionId,
+            "CONTEXT_DETACHED", resource, type);
     }
 
     @Transactional(readOnly = true)

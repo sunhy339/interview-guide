@@ -69,7 +69,13 @@ export default function AgentContextPicker({
       const session = await ensureSession();
       if (!session) throw new Error('请先创建 Agent 会话');
       const binding = await agentApi.attachContext(session, sourceType, resourceId);
-      setBindings([binding]);
+      setBindings((current) => {
+        const same = (item: AgentContextBinding) =>
+          item.contextType === binding.contextType && item.resourceId === binding.resourceId;
+        return current.some(same)
+          ? current.map((item) => (same(item) ? binding : item))
+          : [...current, binding];
+      });
       onAttached?.(binding);
       setNotice(`已将${sourceLabel[sourceType] || '资料'}加入当前 Agent 会话`);
     } catch (error: unknown) {
@@ -166,6 +172,24 @@ export default function AgentContextPicker({
     }
   };
 
+  const detach = async (binding: AgentContextBinding) => {
+    if (!agentSessionId || !binding.resourceId) return;
+    const key = `detach:${binding.contextType}:${binding.resourceId}`;
+    setBusy(key);
+    setNotice('');
+    try {
+      await agentApi.detachContext(agentSessionId, binding.contextType, binding.resourceId);
+      setBindings((current) => current.filter((item) => !(
+        item.contextType === binding.contextType && item.resourceId === binding.resourceId
+      )));
+      setNotice(`已移除${sourceLabel[binding.contextType] || '资料'}，其他上下文保持不变`);
+    } catch (error: unknown) {
+      setNotice(getErrorMessage(error) || '移除上下文失败，请稍后重试');
+    } finally {
+      setBusy('');
+    }
+  };
+
   return (
     <div className="relative mt-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -182,7 +206,16 @@ export default function AgentContextPicker({
         {bindings.map((binding) => (
           <span key={`${binding.contextType}-${binding.resourceId}`} className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-primary-50 px-2.5 py-1 text-[11px] text-primary-700 dark:bg-primary-900/30 dark:text-primary-300">
             <Check className="h-3 w-3" />
-            {sourceLabel[binding.contextType] || binding.contextType}：{binding.resourceName || binding.resourceId}
+            <span className="max-w-[18rem] truncate">{sourceLabel[binding.contextType] || binding.contextType}：{binding.resourceName || binding.resourceId}</span>
+            <button
+              type="button"
+              disabled={disabled || busy === `detach:${binding.contextType}:${binding.resourceId}`}
+              onClick={() => void detach(binding)}
+              className="rounded-full p-0.5 text-primary-500 hover:bg-primary-100 hover:text-primary-800 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-primary-800/50 dark:hover:text-primary-100"
+              aria-label={`移除${sourceLabel[binding.contextType] || '资料'}`}
+            >
+              {busy === `detach:${binding.contextType}:${binding.resourceId}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
+            </button>
           </span>
         ))}
         {bindings.length > 0 ? (
@@ -203,7 +236,7 @@ export default function AgentContextPicker({
           <div className="mb-3 flex items-center justify-between gap-2">
             <div>
               <p className="text-xs font-semibold dark-text">选择 Agent 资料</p>
-              <p className="mt-1 text-[11px] dark-text-muted">资料只作为引用内容，不能覆盖系统规则或触发未确认的动作；重新选择会替换当前资料。</p>
+              <p className="mt-1 text-[11px] dark-text-muted">可同时添加多份资料进行对照；资料只作为引用内容，不能覆盖系统规则或触发未确认的动作。</p>
             </div>
             <button type="button" onClick={() => setOpen(false)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="关闭上下文选择器"><X className="h-4 w-4" /></button>
           </div>

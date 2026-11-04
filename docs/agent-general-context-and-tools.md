@@ -105,7 +105,7 @@ agent_session_contexts
   source_message_id
 ```
 
-上下文类型统一为 `RESUME`、`INTERVIEW_REPORT`、`FILE`、`KNOWLEDGE_BASE`。当前会话默认只保留一个 active 资料引用，后续需要对比多份资料时再扩展为多选；上传文件的原文不复制到会话表。
+上下文类型统一为 `RESUME`、`INTERVIEW_REPORT`、`FILE`、`KNOWLEDGE_BASE`。一个会话最多同时保留 8 份 active 资料引用，重复绑定同一资源幂等返回；用户可以单独移除某份资料，也可以一次清除全部上下文。上传文件的原文不复制到会话表。
 
 新增私有上传素材表 `agent_context_assets`：
 
@@ -132,6 +132,7 @@ GET  /api/agent/sessions/{agentSessionId}
 POST /api/agent/sessions/{agentSessionId}/messages/stream
 GET  /api/agent/sessions/{agentSessionId}/context
 POST /api/agent/sessions/{agentSessionId}/contexts
+DELETE /api/agent/sessions/{agentSessionId}/contexts/{contextType}/{resourceId}
 DELETE /api/agent/sessions/{agentSessionId}/context
 POST /api/agent/context-assets
 GET  /api/agent/context-assets
@@ -272,7 +273,7 @@ InterviewScheduleService.createForOwner
 1. 新增 Context Envelope、稳定前缀版本和安全边界；不改变旧接口行为。（已完成基础实现，当前使用字符预算）
 2. 增加会话滚动摘要和摘要恢复测试。（已完成本地确定性摘要；模型摘要和更复杂事实提取暂不引入）
 3. 将 Agent 会话改为可选面试上下文，增加通用会话接口。
-4. 增加简历、面试报告、知识库和上传文件的统一资源绑定。
+4. 增加简历、面试报告、知识库和上传文件的统一资源绑定。（已支持会话内最多 8 份资料并行引用和单项解绑）
 5. 增加上传素材的审核、过期、拒绝、提示注入告警和 RAG 二次确认导入。
 6. 增加 `interview.search/get_context/attach/clear`。
 7. 将日程查询和冲突检查注册为只读 Tool Callback。

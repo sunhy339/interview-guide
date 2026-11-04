@@ -325,6 +325,21 @@ public class AgentController {
         return Result.success(null);
     }
 
+    /** 解绑通用 Agent 会话中的单份资料，不影响其他已绑定上下文。 */
+    @DeleteMapping("/api/agent/sessions/{agentSessionId}/contexts/{contextType}/{resourceId}")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
+    public Result<Void> detachGeneralResourceContext(
+        @PathVariable String agentSessionId,
+        @PathVariable String contextType,
+        @PathVariable String resourceId,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        contextBindingService.detach(
+            agentSessionId, contextType, resourceId, authIdentityService.requireIdentity(ownerKey)
+        );
+        return Result.success(null);
+    }
+
     /** 通用 Agent 会话流式消息入口；路径中的线程 ID优先于请求体。 */
     @PostMapping(value = "/api/agent/sessions/{agentSessionId}/messages/stream",
         produces = MediaType.TEXT_EVENT_STREAM_VALUE)

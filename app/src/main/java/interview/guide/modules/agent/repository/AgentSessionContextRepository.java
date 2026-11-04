@@ -21,6 +21,13 @@ public interface AgentSessionContextRepository extends JpaRepository<AgentSessio
         String agentSessionId
     );
 
+    Optional<AgentSessionContextEntity>
+        findFirstByAgentSessionIdAndContextTypeAndResourceIdAndActiveTrue(
+            String agentSessionId, String contextType, String resourceId
+        );
+
+    int countByAgentSessionIdAndActiveTrue(String agentSessionId);
+
     @Modifying
     @Query("""
         UPDATE AgentSessionContextEntity c
@@ -44,6 +51,22 @@ public interface AgentSessionContextRepository extends JpaRepository<AgentSessio
         """)
     int deactivateAllActive(
         @Param("agentSessionId") String agentSessionId,
+        @Param("detachedAt") LocalDateTime detachedAt
+    );
+
+    @Modifying
+    @Query("""
+        UPDATE AgentSessionContextEntity c
+           SET c.active = false, c.detachedAt = :detachedAt
+         WHERE c.agentSessionId = :agentSessionId
+           AND c.contextType = :contextType
+           AND c.resourceId = :resourceId
+           AND c.active = true
+        """)
+    int deactivateActiveResource(
+        @Param("agentSessionId") String agentSessionId,
+        @Param("contextType") String contextType,
+        @Param("resourceId") String resourceId,
         @Param("detachedAt") LocalDateTime detachedAt
     );
 }

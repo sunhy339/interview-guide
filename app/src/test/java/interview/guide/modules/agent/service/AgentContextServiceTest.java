@@ -13,6 +13,7 @@ import interview.guide.modules.agent.repository.AgentSessionContextRepository;
 import interview.guide.modules.interview.service.InterviewPersistenceService;
 import interview.guide.modules.knowledgebase.repository.KnowledgeBaseRepository;
 import interview.guide.modules.resume.repository.ResumeRepository;
+import interview.guide.modules.resume.model.ResumeEntity;
 import interview.guide.modules.interview.model.InterviewDetailDTO;
 import interview.guide.modules.interview.service.InterviewHistoryService;
 import interview.guide.modules.interview.skill.InterviewSkillService;
@@ -406,6 +407,116 @@ class AgentContextServiceTest {
         assertThat(context.interviewReport())
             .contains("已绑定资料但没有读取到可用内容")
             .doesNotContain("不要执行这段已过期资料");
+    }
+
+    @Test
+    void loadsMultipleOwnedContextResourcesIntoOneGeneralAgentTurn() throws Exception {
+        InterviewHistoryService history = mock(InterviewHistoryService.class);
+        InterviewPersistenceService persistence = mock(InterviewPersistenceService.class);
+        InterviewSkillService skills = mock(InterviewSkillService.class);
+        KnowledgeBaseQueryService rag = mock(KnowledgeBaseQueryService.class);
+        PromptSanitizer sanitizer = mock(PromptSanitizer.class);
+        ObjectMapper objectMapper = mock(ObjectMapper.class);
+        AgentMemoryService memory = mock(AgentMemoryService.class);
+        AgentSessionContextRepository contexts = mock(AgentSessionContextRepository.class);
+        AgentContextAssetRepository assets = mock(AgentContextAssetRepository.class);
+        ResumeRepository resumes = mock(ResumeRepository.class);
+        KnowledgeBaseRepository knowledgeBases = mock(KnowledgeBaseRepository.class);
+        AgentContextSummaryService summaries = mock(AgentContextSummaryService.class);
+
+        ResumeEntity resume = new ResumeEntity();
+        resume.setId(1L);
+        resume.setOriginalFilename("resume.pdf");
+        resume.setResumeText("Java 项目经历");
+        when(resumes.findByIdAndOwnerId(1L, "owner-1"))
+            .thenReturn(java.util.Optional.of(resume));
+        when(assets.findByAssetIdAndOwnerId("asset-1", "owner-1"))
+            .thenReturn(java.util.Optional.of(AgentContextAssetEntity.builder()
+                .assetId("asset-1")
+                .ownerId("owner-1")
+                .originalFilename("notes.md")
+                .extractedText("Redis 复习资料")
+                .reviewStatus(AgentContextAssetStatus.APPROVED_FOR_CONTEXT)
+                .expiresAt(LocalDateTime.now().plusDays(1))
+                .build()));
+        when(contexts.findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc("agent-1"))
+            .thenReturn(List.of(
+                AgentSessionContextEntity.builder()
+                    .agentSessionId("agent-1").contextType("RESUME").resourceId("1").active(true).build(),
+                AgentSessionContextEntity.builder()
+                    .agentSessionId("agent-1").contextType("FILE").resourceId("asset-1").active(true).build()
+            ));
+        when(memory.remember(anyString(), any(), any(), any()))
+            .thenReturn(AgentMemorySnapshot.empty("owner-1"));
+        when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
+        when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(sanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        AgentContextService service = new AgentContextService(
+            history, persistence, skills, rag, sanitizer, objectMapper, memory,
+            contexts, assets, resumes, knowledgeBases, summaries
+        );
+
+        AgentContextService.AgentContext context = service.build(
+            null,
+            new AgentMessageRequest("compare", "对比我的简历和这份资料", List.of(), null, null, "agent-1"),
+            List.of()
+        );
+
+        assertThat(context.interviewReport())
+            .contains("Java 项目经历")
+            .contains("Redis 复习资料");
+        assertThat(context.sources()).extracting(AgentSource::kind)
+            .containsExactly("resume", "file");
+    }
+
+    @Test
+    void loadsSecondaryInterviewReportWhenPrimaryInterviewIsAlreadyInContext() throws Exception {
+        InterviewHistoryService history = mock(InterviewHistoryService.class);
+        InterviewPersistenceService persistence = mock(InterviewPersistenceService.class);
+        InterviewSkillService skills = mock(InterviewSkillService.class);
+        KnowledgeBaseQueryService rag = mock(KnowledgeBaseQueryService.class);
+        PromptSanitizer sanitizer = mock(PromptSanitizer.class);
+        ObjectMapper objectMapper = mock(ObjectMapper.class);
+        AgentMemoryService memory = mock(AgentMemoryService.class);
+        AgentSessionContextRepository contexts = mock(AgentSessionContextRepository.class);
+        AgentContextSummaryService summaries = mock(AgentContextSummaryService.class);
+
+        InterviewDetailDTO detail = detail(null, null);
+        when(history.getInterviewDetailForOwner("primary", "owner-1")).thenReturn(detail);
+        when(history.getInterviewDetailForOwner("secondary", "owner-1")).thenReturn(detail);
+        when(persistence.findBySessionIdForOwner("secondary", "owner-1"))
+            .thenReturn(java.util.Optional.of(mock(
+                interview.guide.modules.interview.model.InterviewSessionEntity.class
+            )));
+        when(objectMapper.writeValueAsString(any())).thenReturn("{report}");
+        when(contexts.findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc("agent-1"))
+            .thenReturn(List.of(
+                AgentSessionContextEntity.builder()
+                    .agentSessionId("agent-1").contextType("INTERVIEW_REPORT")
+                    .resourceId("primary").active(true).build(),
+                AgentSessionContextEntity.builder()
+                    .agentSessionId("agent-1").contextType("INTERVIEW_REPORT")
+                    .resourceId("secondary").active(true).build()
+            ));
+        when(memory.remember(anyString(), any(), any(), any()))
+            .thenReturn(AgentMemorySnapshot.empty("owner-1"));
+        when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
+        when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(sanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        AgentContextService service = new AgentContextService(
+            history, persistence, skills, rag, sanitizer, objectMapper, memory,
+            contexts, null, null, null, summaries
+        );
+
+        service.build(
+            "primary",
+            new AgentMessageRequest("compare", "对比两场面试", List.of(), null, null, "agent-1"),
+            List.of()
+        );
+
+        verify(history).getInterviewDetailForOwner("secondary", "owner-1");
     }
 
     private InterviewDetailDTO detail(String skillId, Long knowledgeBaseId) {
