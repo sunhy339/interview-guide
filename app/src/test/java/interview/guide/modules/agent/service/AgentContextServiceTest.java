@@ -223,7 +223,7 @@ class AgentContextServiceTest {
         when(memory.remember(anyString(), any(), any(), any()))
             .thenReturn(AgentMemorySnapshot.empty("owner-1"));
         when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
-        when(contexts.findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc("agent-1"))
+        when(contexts.findByAgentSessionIdAndOwnerKeyAndActiveTrueOrderByAttachedAtDesc("agent-1", "owner-1"))
             .thenReturn(List.of(AgentSessionContextEntity.builder()
                 .agentSessionId("agent-1")
                 .contextType("INTERVIEW_REPORT")
@@ -294,7 +294,7 @@ class AgentContextServiceTest {
         when(sanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
         when(memory.remember(anyString(), any(), any(), any()))
             .thenReturn(AgentMemorySnapshot.empty("owner-1"));
-        when(contexts.findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc("agent-1"))
+        when(contexts.findByAgentSessionIdAndOwnerKeyAndActiveTrueOrderByAttachedAtDesc("agent-1", "owner-1"))
             .thenReturn(List.of());
         when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
         when(skills.buildEvaluationReferenceSectionSafe("java-backend"))
@@ -379,7 +379,7 @@ class AgentContextServiceTest {
         when(memory.remember(anyString(), any(), any(), any()))
             .thenReturn(AgentMemorySnapshot.empty("owner-1"));
         when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
-        when(contexts.findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc("agent-1"))
+        when(contexts.findByAgentSessionIdAndOwnerKeyAndActiveTrueOrderByAttachedAtDesc("agent-1", "owner-1"))
             .thenReturn(List.of(AgentSessionContextEntity.builder()
                 .agentSessionId("agent-1")
                 .contextType("FILE")
@@ -444,7 +444,7 @@ class AgentContextServiceTest {
                 .reviewStatus(AgentContextAssetStatus.APPROVED_FOR_CONTEXT)
                 .expiresAt(LocalDateTime.now().plusDays(1))
                 .build()));
-        when(contexts.findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc("agent-1"))
+        when(contexts.findByAgentSessionIdAndOwnerKeyAndActiveTrueOrderByAttachedAtDesc("agent-1", "owner-1"))
             .thenReturn(List.of(
                 AgentSessionContextEntity.builder()
                     .agentSessionId("agent-1").contextType("RESUME").resourceId("1").active(true).build(),
@@ -489,7 +489,7 @@ class AgentContextServiceTest {
         AgentContextBindingService bindings = mock(AgentContextBindingService.class);
         AgentContextSummaryService summaries = mock(AgentContextSummaryService.class);
 
-        when(contexts.findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc("agent-1"))
+        when(contexts.findByAgentSessionIdAndOwnerKeyAndActiveTrueOrderByAttachedAtDesc("agent-1", "owner-1"))
             .thenReturn(List.of(AgentSessionContextEntity.builder()
                 .agentSessionId("agent-1")
                 .contextType("FILE")
@@ -548,7 +548,7 @@ class AgentContextServiceTest {
                 interview.guide.modules.interview.model.InterviewSessionEntity.class
             )));
         when(objectMapper.writeValueAsString(any())).thenReturn("{report}");
-        when(contexts.findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc("agent-1"))
+        when(contexts.findByAgentSessionIdAndOwnerKeyAndActiveTrueOrderByAttachedAtDesc("agent-1", "owner-1"))
             .thenReturn(List.of(
                 AgentSessionContextEntity.builder()
                     .agentSessionId("agent-1").contextType("INTERVIEW_REPORT")

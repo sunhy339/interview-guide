@@ -17,9 +17,26 @@ public interface AgentSessionContextRepository extends JpaRepository<AgentSessio
         String agentSessionId, String contextType
     );
 
-    List<AgentSessionContextEntity> findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc(
-        String agentSessionId
-    );
+    /**
+     * 读取上下文时同时约束 Agent 会话归属，避免未来新增调用入口只校验资源 ID
+     * 而把另一账号的会话绑定带入 Prompt。
+     */
+    @Query("""
+        SELECT c FROM AgentSessionContextEntity c
+         WHERE c.agentSessionId = :agentSessionId
+           AND c.active = true
+           AND EXISTS (
+               SELECT s.id FROM AgentChatSessionEntity s
+                WHERE s.agentSessionId = c.agentSessionId
+                  AND s.ownerKey = :ownerKey
+           )
+         ORDER BY c.attachedAt DESC
+        """)
+    List<AgentSessionContextEntity>
+        findByAgentSessionIdAndOwnerKeyAndActiveTrueOrderByAttachedAtDesc(
+            @Param("agentSessionId") String agentSessionId,
+            @Param("ownerKey") String ownerKey
+        );
 
     Optional<AgentSessionContextEntity>
         findFirstByAgentSessionIdAndContextTypeAndResourceIdAndActiveTrue(

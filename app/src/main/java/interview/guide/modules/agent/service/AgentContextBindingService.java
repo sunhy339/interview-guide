@@ -173,7 +173,8 @@ public class AgentContextBindingService {
     @Transactional(readOnly = true)
     public List<AgentContextBindingResponse> list(String agentSessionId, String ownerId) {
         requireSession(agentSessionId, ownerId);
-        return contextRepository.findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc(agentSessionId).stream()
+        return contextRepository
+            .findByAgentSessionIdAndOwnerKeyAndActiveTrueOrderByAttachedAtDesc(agentSessionId, ownerId).stream()
             .map(AgentContextBindingResponse::from)
             .toList();
     }

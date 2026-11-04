@@ -5,6 +5,7 @@ import interview.guide.modules.agent.model.AgentContextAssetEntity;
 import interview.guide.modules.agent.model.AgentContextAssetStatus;
 import interview.guide.modules.agent.model.AgentKnowledgeBaseOption;
 import interview.guide.modules.agent.model.AgentContextBindingResponse;
+import interview.guide.modules.agent.model.AgentSessionContextEntity;
 import interview.guide.modules.agent.model.AttachAgentResourceRequest;
 import interview.guide.modules.agent.repository.AgentChatSessionRepository;
 import interview.guide.modules.agent.repository.AgentSessionContextRepository;
@@ -238,5 +239,36 @@ class AgentContextBindingServiceTest {
             "CONTEXT_TURN_CONSUMED", "context-binding", "agent-1", "2"
         );
         verify(contextRepository, never()).deactivateAllActive(any(), any());
+    }
+
+    @Test
+    void listsBindingsWithOwnerScopedRepositoryQuery() {
+        AgentChatSessionEntity session = AgentChatSessionEntity.builder()
+            .agentSessionId("agent-1")
+            .ownerKey("owner-1")
+            .build();
+        when(sessionRepository.findByAgentSessionId("agent-1"))
+            .thenReturn(java.util.Optional.of(session));
+        when(contextRepository.findByAgentSessionIdAndOwnerKeyAndActiveTrueOrderByAttachedAtDesc(
+            "agent-1", "owner-1"
+        )).thenReturn(List.of(AgentSessionContextEntity.builder()
+            .agentSessionId("agent-1")
+            .contextType("FILE")
+            .resourceId("asset-1")
+            .resourceName("notes.md")
+            .scope("SESSION")
+            .active(true)
+            .build()));
+
+        AgentContextBindingService service = new AgentContextBindingService(
+            sessionRepository, contextRepository, assetService, interviewContextService,
+            resumeRepository, knowledgeBaseRepository
+        );
+
+        assertThat(service.list("agent-1", "owner-1"))
+            .extracting(AgentContextBindingResponse::resourceId)
+            .containsExactly("asset-1");
+        verify(contextRepository)
+            .findByAgentSessionIdAndOwnerKeyAndActiveTrueOrderByAttachedAtDesc("agent-1", "owner-1");
     }
 }

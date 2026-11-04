@@ -215,7 +215,9 @@ public class AgentContextService {
                 : "";
         }
         List<AgentSessionContextEntity> contexts = sessionContextRepository
-            .findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc(agentSessionId);
+            .findByAgentSessionIdAndOwnerKeyAndActiveTrueOrderByAttachedAtDesc(
+                agentSessionId, ownerKey(request)
+            );
         if (contexts.isEmpty()) {
             return primaryInterviewSessionId == null
                 ? "当前 Agent 会话未绑定任何资料。不要推断未提供的经历、面试表现或知识库结论。"
