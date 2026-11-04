@@ -267,6 +267,20 @@ public class AgentContextToolCallbackFactory {
         ToolContextData context = context(toolContext);
         String assetId = required(input, "assetId", "文件素材 ID 不能为空");
         String operation = required(input, "operation", "文件操作不能为空");
+        if ("confirm_knowledge_base".equals(operation)
+            && !isExplicitKnowledgeBaseConfirmation(context.userMessage())) {
+            if (promptSanitizer.detectInjectionAttempt(context.userMessage())) {
+                throw new BusinessException(
+                    ErrorCode.BAD_REQUEST,
+                    "检测到当前请求包含疑似提示注入内容，未执行任何 Agent 操作"
+                );
+            }
+            return emit(Map.of(
+                "status", "USER_CONFIRMATION_REQUIRED",
+                "message", "请明确回复“确认加入知识库”，系统才会创建知识库并开始向量化。"
+            ));
+        }
+        requireAssetOperationIntent(operation, context.userMessage());
         AgentContextAssetResponse asset = contextAssetService.get(assetId, context.ownerKey());
         return switch (operation) {
             case "review" -> reviewAsset(asset, context);
@@ -275,6 +289,25 @@ public class AgentContextToolCallbackFactory {
             case "confirm_knowledge_base" -> confirmKnowledgeBase(asset, context);
             default -> throw new BusinessException(ErrorCode.BAD_REQUEST, "不支持的文件操作");
         };
+    }
+
+    /**
+     * 文件元数据本身也属于用户私有上下文。先校验当前用户的直接意图，再读取素材，
+     * 避免报告/附件中的“请审核、请导入”等文字诱导模型触发一次越过意图检查的读取。
+     */
+    private void requireAssetOperationIntent(String operation, String userMessage) {
+        switch (operation) {
+            case "review" -> requireMutationIntent(userMessage, "审核", "确认");
+            case "attach" -> {
+                requireMutationIntent(userMessage, "使用", "绑定", "附加", "引用", "选中");
+                requireMutationIntent(userMessage, "文件", "资料", "附件", "上传");
+            }
+            case "request_knowledge_base" -> requireMutationIntent(
+                userMessage, "加入知识库", "导入知识库", "添加到知识库"
+            );
+            case "confirm_knowledge_base" -> { }
+            default -> throw new BusinessException(ErrorCode.BAD_REQUEST, "不支持的文件操作");
+        }
     }
 
     private String reviewAsset(AgentContextAssetResponse asset, ToolContextData context) {
