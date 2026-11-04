@@ -13,6 +13,8 @@ import jakarta.persistence.LockModeType;
 import java.util.List;
 import java.util.Optional;
 import java.util.Collection;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 
 /**
  * 面试会话Repository
@@ -40,6 +42,20 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
         Long resumeId, String ownerId);
 
     List<InterviewSessionEntity> findAllByOwnerIdOrderByCreatedAtDesc(String ownerId);
+
+    Page<InterviewSessionEntity> findAllByOwnerIdOrderByCreatedAtDesc(String ownerId, Pageable pageable);
+
+    Page<InterviewSessionEntity> findByOwnerIdAndStatus(
+        String ownerId, InterviewSessionEntity.SessionStatus status, Pageable pageable);
+
+    @Query("SELECT s FROM InterviewSessionEntity s "
+        + "WHERE s.ownerId = :ownerId AND ("
+        + "LOWER(COALESCE(s.title, '')) LIKE LOWER(CONCAT('%', :query, '%')) "
+        + "OR LOWER(COALESCE(s.skillId, '')) LIKE LOWER(CONCAT('%', :query, '%')) "
+        + "OR LOWER(COALESCE(s.sessionId, '')) LIKE LOWER(CONCAT('%', :query, '%'))"
+        + ") ORDER BY s.createdAt DESC")
+    Page<InterviewSessionEntity> searchOwnedForAgent(
+        @Param("ownerId") String ownerId, @Param("query") String query, Pageable pageable);
 
     Optional<InterviewSessionEntity> findFirstByResumeIdAndOwnerIdAndStatusInOrderByCreatedAtDesc(
         Long resumeId, String ownerId, List<SessionStatus> statuses);

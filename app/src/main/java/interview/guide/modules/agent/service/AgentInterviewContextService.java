@@ -6,10 +6,11 @@ import interview.guide.modules.agent.model.AgentInterviewSearchResult;
 import interview.guide.modules.auth.AuthUserContext;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
 import interview.guide.modules.interview.repository.InterviewSessionRepository;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
 /**
@@ -26,14 +27,21 @@ public class AgentInterviewContextService {
     public List<AgentInterviewSearchResult> search(String ownerKey, String query, int limit) {
         String owner = requireOwner(ownerKey);
         String normalizedQuery = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
-        List<InterviewSessionEntity> sessions = AuthUserContext.currentUserId()
-            .map(interviewSessionRepository::findAllByOwnerIdOrderByCreatedAtDesc)
-            .orElseGet(() -> interviewSessionRepository.findAllByOwnerIdOrderByCreatedAtDesc(owner));
-        return sessions.stream()
-            .filter(session -> matches(session, normalizedQuery))
-            .sorted(Comparator.comparing(InterviewSessionEntity::getCreatedAt,
-                Comparator.nullsLast(Comparator.reverseOrder())))
-            .limit(Math.max(1, Math.min(20, limit)))
+        String effectiveOwner = AuthUserContext.currentUserId().orElse(owner);
+        int safeLimit = Math.max(1, Math.min(20, limit));
+        PageRequest pageRequest = PageRequest.of(0, safeLimit);
+        Page<InterviewSessionEntity> page;
+        if (normalizedQuery.isBlank()) {
+            page = interviewSessionRepository.findAllByOwnerIdOrderByCreatedAtDesc(
+                effectiveOwner, pageRequest
+            );
+        } else {
+            InterviewSessionEntity.SessionStatus status = parseStatus(normalizedQuery);
+            page = status == null
+                ? interviewSessionRepository.searchOwnedForAgent(effectiveOwner, normalizedQuery, pageRequest)
+                : interviewSessionRepository.findByOwnerIdAndStatus(effectiveOwner, status, pageRequest);
+        }
+        return page.getContent().stream()
             .map(AgentInterviewSearchResult::from)
             .toList();
     }
@@ -48,18 +56,12 @@ public class AgentInterviewContextService {
         }
     }
 
-    private boolean matches(InterviewSessionEntity session, String query) {
-        if (query.isBlank()) {
-            return true;
+    private InterviewSessionEntity.SessionStatus parseStatus(String query) {
+        try {
+            return InterviewSessionEntity.SessionStatus.valueOf(query.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ignored) {
+            return null;
         }
-        return contains(session.getTitle(), query)
-            || contains(session.getSkillId(), query)
-            || contains(session.getSessionId(), query)
-            || contains(session.getStatus() == null ? null : session.getStatus().name(), query);
-    }
-
-    private boolean contains(String value, String query) {
-        return value != null && value.toLowerCase(Locale.ROOT).contains(query);
     }
 
     private String requireOwner(String ownerKey) {

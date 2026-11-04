@@ -46,6 +46,9 @@ public class AgentContextToolCallbackFactory {
     private static final String SCHEDULE_CONFLICT = "schedule.check_conflict";
     private static final String SCHEDULE_DRAFT = "schedule.create_draft";
     private static final int MAX_TOOL_ASSETS = 20;
+    private static final int MAX_SEARCH_QUERY_CHARS = 512;
+    private static final int MAX_TOOL_IDENTIFIER_CHARS = 128;
+    private static final int MAX_TOOL_TIME_CHARS = 64;
 
     private static final String SEARCH_SCHEMA = """
         {"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":10}},"additionalProperties":false}
@@ -146,7 +149,9 @@ public class AgentContextToolCallbackFactory {
         requireUserIntent(context.userMessage(), "面试", "报告", "使用", "根据", "搜索", "查找");
         rejectInjectedToolArguments(input, "query");
         List<AgentInterviewSearchResult> results = interviewContextService.search(
-            context.ownerKey(), safeContextText(text(input, "query")), integer(input, "limit", 8)
+            context.ownerKey(), safeContextText(boundedText(
+                input, "query", MAX_SEARCH_QUERY_CHARS, "面试搜索条件过长，未执行任何操作"
+            )), integer(input, "limit", 8, 1, 10)
         );
         context.tracker().rememberInterviewSearchCandidates(
             results.stream()
@@ -163,7 +168,8 @@ public class AgentContextToolCallbackFactory {
         ToolContextData context = context(toolContext);
         requireMutationIntent(context.userMessage(), "使用", "根据", "基于", "绑定", "选中");
         requireMutationIntent(context.userMessage(), "面试", "报告");
-        String interviewSessionId = required(input, "interviewSessionId", "面试编号不能为空");
+        String interviewSessionId = required(input, "interviewSessionId", "面试编号不能为空",
+            MAX_TOOL_IDENTIFIER_CHARS);
         if (!isExplicitInterviewSelection(context, interviewSessionId)) {
             return emit(Map.of(
                 "status", "SELECTION_REQUIRED",
@@ -265,8 +271,8 @@ public class AgentContextToolCallbackFactory {
 
     private String assetAction(JsonNode input, ToolContext toolContext) {
         ToolContextData context = context(toolContext);
-        String assetId = required(input, "assetId", "文件素材 ID 不能为空");
-        String operation = required(input, "operation", "文件操作不能为空");
+        String assetId = required(input, "assetId", "文件素材 ID 不能为空", MAX_TOOL_IDENTIFIER_CHARS);
+        String operation = required(input, "operation", "文件操作不能为空", 64);
         if ("confirm_knowledge_base".equals(operation)
             && !isExplicitKnowledgeBaseConfirmation(context.userMessage())) {
             if (promptSanitizer.detectInjectionAttempt(context.userMessage())) {
@@ -372,7 +378,7 @@ public class AgentContextToolCallbackFactory {
         LocalDateTime start = optionalTime(input, "startTime");
         LocalDateTime end = optionalTime(input, "endTime");
         List<ScheduleSummary> schedules = interviewScheduleService.listForOwner(
-                context.ownerKey(), start, end, integer(input, "limit", 10)
+                context.ownerKey(), start, end, integer(input, "limit", 10, 1, 20)
             ).stream()
             .map(ScheduleSummary::from)
             .toList();
@@ -386,10 +392,7 @@ public class AgentContextToolCallbackFactory {
         ToolContextData context = context(toolContext);
         requireUserIntent(context.userMessage(), "日程", "预约", "面试安排", "时间冲突", "冲突", "排期");
         LocalDateTime interviewTime = requiredTime(input, "interviewTime", "面试时间不能为空");
-        int windowMinutes = integer(input, "windowMinutes", 60);
-        if (windowMinutes < 5 || windowMinutes > 240) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "冲突检查范围必须在5到240分钟之间");
-        }
+        int windowMinutes = integer(input, "windowMinutes", 60, 5, 240);
         List<ScheduleSummary> conflicts = interviewScheduleService.listForOwner(
                 context.ownerKey(), interviewTime.minusMinutes(windowMinutes),
                 interviewTime.plusMinutes(windowMinutes), 50
@@ -413,18 +416,18 @@ public class AgentContextToolCallbackFactory {
         rejectInjectedToolArguments(
             input, "companyName", "position", "interviewType", "meetingLink", "interviewer", "notes"
         );
-        String time = required(input, "interviewTime", "面试时间不能为空");
+        String time = required(input, "interviewTime", "面试时间不能为空", MAX_TOOL_TIME_CHARS);
         LocalDateTime interviewTime = parseTime(time, "面试时间格式应为 yyyy-MM-ddTHH:mm");
         conversationService.assertAccess(
             context.interviewSessionId(), context.agentSessionId(), context.ownerKey()
         );
         AgentActionResponse action = actionService.proposeInterviewScheduleDraft(
             context.interviewSessionId(), context.agentSessionId(), context.ownerKey(),
-            requiredSafeText(input, "companyName", "公司或面试主题不能为空"),
-            requiredSafeText(input, "position", "岗位不能为空"), interviewTime,
-            optionalSafeText(input, "interviewType"), optionalSafeText(input, "meetingLink"),
-            integer(input, "roundNumber", 1), optionalSafeText(input, "interviewer"),
-            optionalSafeText(input, "notes"), null
+            requiredSafeText(input, "companyName", "公司或面试主题不能为空", 255),
+            requiredSafeText(input, "position", "岗位不能为空", 255), interviewTime,
+            optionalSafeText(input, "interviewType", 64), optionalSafeText(input, "meetingLink", 1000),
+            integer(input, "roundNumber", 1, 1, 20), optionalSafeText(input, "interviewer", 255),
+            optionalSafeText(input, "notes", 2000), null
         );
         return emit(Map.of(
             "status", "ACTION_PROPOSED",
@@ -607,11 +610,24 @@ public class AgentContextToolCallbackFactory {
     }
 
     private String requiredSafeText(JsonNode input, String field, String message) {
-        return safeContextText(required(input, field, message));
+        return requiredSafeText(input, field, message, 2_000);
+    }
+
+    private String requiredSafeText(JsonNode input, String field, String message, int maxChars) {
+        return safeContextText(required(input, field, message, maxChars));
     }
 
     private String optionalSafeText(JsonNode input, String field) {
-        return safeContextText(optional(input, field));
+        return optionalSafeText(input, field, 2_000);
+    }
+
+    private String optionalSafeText(JsonNode input, String field, int maxChars) {
+        String value = optional(input, field);
+        if (value == null) return null;
+        if (value.length() > maxChars) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "工具字段过长，未执行任何操作");
+        }
+        return safeContextText(value);
     }
 
     private String safeContextText(String value) {
@@ -623,9 +639,34 @@ public class AgentContextToolCallbackFactory {
         return input.get(field).asText().trim();
     }
 
-    private int integer(JsonNode input, String field, int fallback) {
+    private String boundedText(JsonNode input, String field, int maxChars, String message) {
+        String value = text(input, field);
+        if (value.length() > maxChars) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, message);
+        }
+        return value;
+    }
+
+    private int integer(JsonNode input, String field, int fallback, int min, int max) {
         if (input == null || input.get(field) == null || input.get(field).isNull()) return fallback;
-        return input.get(field).asInt(fallback);
+        JsonNode value = input.get(field);
+        if (!value.isIntegralNumber() || !value.canConvertToInt()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "工具字段 " + field + " 必须是整数");
+        }
+        int parsed = value.intValue();
+        if (parsed < min || parsed > max) {
+            throw new BusinessException(
+                ErrorCode.BAD_REQUEST,
+                "工具字段 " + field + " 必须在" + min + "和" + max + "之间"
+            );
+        }
+        return parsed;
+    }
+
+    private String required(JsonNode input, String field, String message, int maxChars) {
+        String value = boundedText(input, field, maxChars, "工具字段过长，未执行任何操作");
+        if (value.isBlank()) throw new BusinessException(ErrorCode.BAD_REQUEST, message);
+        return value;
     }
 
     private LocalDateTime optionalTime(JsonNode input, String field) {

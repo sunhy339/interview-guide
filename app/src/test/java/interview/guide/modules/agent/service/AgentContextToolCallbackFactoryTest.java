@@ -78,6 +78,69 @@ class AgentContextToolCallbackFactoryTest {
     }
 
     @Test
+    void refusesOversizedSearchQueryBeforeCallingTheContextService() {
+        String result = tool("interview.search").call(
+            "{\"query\":\"" + "x".repeat(513) + "\"}",
+            context("搜索我的面试报告")
+        );
+
+        assertThat(result).contains("面试搜索条件过长");
+        verify(interviewContextService, never()).search(any(), any(), anyInt());
+    }
+
+    @Test
+    void refusesNonIntegerOrOutOfRangeSearchLimits() {
+        String decimal = tool("interview.search").call(
+            "{\"query\":\"Java\",\"limit\":1.5}", context("搜索我的面试报告")
+        );
+        String tooLarge = tool("interview.search").call(
+            "{\"query\":\"Java\",\"limit\":11}", context("搜索我的面试报告")
+        );
+
+        assertThat(decimal).contains("必须是整数");
+        assertThat(tooLarge).contains("必须在1和10之间");
+        verify(interviewContextService, never()).search(any(), any(), anyInt());
+    }
+
+    @Test
+    void refusesOutOfRangeScheduleParametersBeforeCallingDownstreamServices() {
+        String list = tool("schedule.list").call(
+            "{\"limit\":21}", context("查看我的面试日程")
+        );
+        String conflict = tool("schedule.check_conflict").call(
+            "{\"interviewTime\":\"2026-11-03T10:00\",\"windowMinutes\":241}",
+            context("检查我的面试时间冲突")
+        );
+        String draft = tool("schedule.create_draft").call(
+            "{\"companyName\":\"示例公司\",\"position\":\"Java\","
+                + "\"interviewTime\":\"2026-11-03T10:00\",\"roundNumber\":0}",
+            context("请帮我预约这个面试")
+        );
+
+        assertThat(list).contains("必须在1和20之间");
+        assertThat(conflict).contains("必须在5和240之间");
+        assertThat(draft).contains("必须在1和20之间");
+        verify(interviewScheduleService, never()).listForOwner(any(), any(), any(), anyInt());
+        verify(actionService, never()).proposeInterviewScheduleDraft(
+            any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+        );
+    }
+
+    @Test
+    void refusesOversizedScheduleDraftFieldBeforeProposingAction() {
+        String result = tool("schedule.create_draft").call(
+            "{\"companyName\":\"" + "x".repeat(256) + "\",\"position\":\"Java\","
+                + "\"interviewTime\":\"2026-11-03T10:00\"}",
+            context("请帮我预约这个面试")
+        );
+
+        assertThat(result).contains("工具字段过长");
+        verify(actionService, never()).proposeInterviewScheduleDraft(
+            any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+        );
+    }
+
+    @Test
     void refusesScheduleWhenOnlyUntrustedContextMentionsAnAction() {
         ToolCallback callback = tool("schedule.create_draft");
 
