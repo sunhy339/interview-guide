@@ -18,6 +18,8 @@ final class AgentObservedToolCallback implements ToolCallback {
 
     private static final int MAX_RESULT_CHARS = 12_000;
     private static final String RESULT_TRUNCATION_NOTICE = "\n[工具资料已截断]";
+    private static final String OVERSIZED_INPUT_REJECTION =
+        "[agent-tool-rejected] 工具参数过长，未执行任何操作";
 
     private final ToolCallback delegate;
     private final AgentMetrics metrics;
@@ -60,6 +62,11 @@ final class AgentObservedToolCallback implements ToolCallback {
     public String call(String toolInput) {
         long startedNanos = System.nanoTime();
         try {
+            if (isOversizedInput(toolInput)) {
+                String result = sanitizeResult(rejectOversizedInput());
+                record("rejected", startedNanos);
+                return result;
+            }
             String rawResult = delegate.call(toolInput);
             boolean rejected = isRejectedResult(rawResult);
             String result = sanitizeResult(rawResult);
@@ -77,6 +84,13 @@ final class AgentObservedToolCallback implements ToolCallback {
         AgentMetrics.RunTracker runTracker = runTracker(toolContext);
         try {
             reserveToolCall(runTracker);
+            if (isOversizedInput(toolInput)) {
+                String result = sanitizeResult(rejectOversizedInput());
+                record("rejected", startedNanos);
+                audit(runTracker, "rejected");
+                auditSecurityRejection(runTracker);
+                return result;
+            }
             String rawResult = delegate.call(toolInput, toolContext);
             boolean rejected = isRejectedResult(rawResult);
             String result = sanitizeResult(rawResult);
@@ -130,6 +144,20 @@ final class AgentObservedToolCallback implements ToolCallback {
         );
     }
 
+    private boolean isOversizedInput(String toolInput) {
+        return toolInput != null
+            && toolInput.length() > PromptSecurityConstants.MAX_AGENT_TOOL_INPUT_CHARS;
+    }
+
+    private String rejectOversizedInput() {
+        if (promptSanitizer == null) {
+            return OVERSIZED_INPUT_REJECTION;
+        }
+        return promptSanitizer.wrapWithDelimiters(
+            "agent-tool-error", "工具参数过长，未执行任何操作"
+        );
+    }
+
     private void record(String result, long startedNanos) {
         if (metrics != null) {
             metrics.recordToolCall(
@@ -147,6 +175,9 @@ final class AgentObservedToolCallback implements ToolCallback {
     private boolean isRejectedResult(String result) {
         if (result == null || result.isBlank()) {
             return false;
+        }
+        if (result.startsWith(OVERSIZED_INPUT_REJECTION)) {
+            return true;
         }
         return result.matches(
             "(?s)^<data-boundary-([0-9a-f]{8})-agent-tool-error>.*"

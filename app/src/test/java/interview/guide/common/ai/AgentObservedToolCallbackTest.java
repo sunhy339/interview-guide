@@ -17,6 +17,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -191,6 +192,36 @@ class AgentObservedToolCallbackTest {
             .contains("<data-boundary-")
             .contains("</data-boundary-");
         assertThat(result.length()).isLessThan(13_000);
+    }
+
+    @Test
+    @DisplayName("超长工具参数在统一入口拒绝且不调用下游工具")
+    void rejectsOversizedToolInputBeforeDelegate() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AgentMetrics metrics = metrics(registry);
+        AgentMetrics.RunTracker run = metrics.startRun(4, 2);
+        metrics.setAuditContext(run, "user-1", "interview-1", "agent-1", "run-1");
+        AgentAuditService auditService = mock(AgentAuditService.class);
+        ToolCallback delegate = mockTool("load_skill", "不应被读取");
+        AgentObservedToolCallback observed = new AgentObservedToolCallback(
+            delegate, metrics, auditService, new PromptSanitizer(new LlmProviderProperties())
+        );
+        org.springframework.ai.chat.model.ToolContext context =
+            new org.springframework.ai.chat.model.ToolContext(Map.of(
+                AgentMetrics.RUN_TRACKER_TOOL_CONTEXT_KEY, run
+            ));
+        String oversized = "x".repeat(PromptSecurityConstants.MAX_AGENT_TOOL_INPUT_CHARS + 1);
+
+        String result = observed.call(oversized, context);
+
+        assertThat(result).contains("工具参数过长").contains("agent-observed-tool-result");
+        verify(delegate, never()).call(eq(oversized), any());
+        assertThat(registry.get(AgentMetrics.TOOL_CALLS)
+            .tag("tool", "load_skill").tag("result", "rejected").counter().count())
+            .isEqualTo(1.0);
+        verify(auditService).recordToolSecurityRejected(
+            "user-1", "interview-1", "agent-1", "run-1", "load_skill"
+        );
     }
 
     private AgentMetrics metrics(SimpleMeterRegistry registry) {

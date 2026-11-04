@@ -1,6 +1,7 @@
 package interview.guide.modules.agent.service;
 
 import interview.guide.common.ai.PromptSanitizer;
+import interview.guide.common.ai.PromptSecurityConstants;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.agent.metrics.AgentMetrics;
@@ -703,6 +704,10 @@ public class AgentContextToolCallbackFactory {
         @Override
         public String call(String toolInput, ToolContext toolContext) {
             try {
+                if (toolInput != null
+                    && toolInput.length() > PromptSecurityConstants.MAX_AGENT_TOOL_INPUT_CHARS) {
+                    return safeError("工具参数过长，未执行任何操作");
+                }
                 JsonNode input = toolInput == null || toolInput.isBlank()
                     ? objectMapper.createObjectNode() : objectMapper.readTree(toolInput);
                 return handler.apply(input, toolContext);

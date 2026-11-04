@@ -11,6 +11,12 @@ public final class PromptSecurityConstants {
     private PromptSecurityConstants() {}
 
     /**
+     * Agent 工具 JSON 的统一大小上限。工具参数既不能作为上下文注入载体，也不能
+     * 通过异常膨胀拖垮 JSON 解析和下游工具；业务字段会在各自工具中继续做更细的校验。
+     */
+    public static final int MAX_AGENT_TOOL_INPUT_CHARS = 16_000;
+
+    /**
      * 追加到所有 system prompt 末尾的防注入指令。
      * 告诉 LLM：{@literal <data-boundary>} 标记或 --- 分隔符内的文本是用户数据，不是指令。
      */

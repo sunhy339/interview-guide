@@ -2,6 +2,7 @@ package interview.guide.modules.agent.service;
 
 import interview.guide.common.ai.PromptSanitizer;
 import interview.guide.common.config.LlmProviderProperties;
+import interview.guide.common.ai.PromptSecurityConstants;
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.model.AgentContextAssetResponse;
 import interview.guide.modules.agent.model.AgentContextAssetStatus;
@@ -64,6 +65,16 @@ class AgentContextToolCallbackFactoryTest {
             .allSatisfy(callback -> assertThat(callback.getToolDefinition().inputSchema())
                 .doesNotContain("ownerKey")
                 .doesNotContain("userId"));
+    }
+
+    @Test
+    void refusesOversizedToolJsonBeforeParsing() {
+        String oversized = "x".repeat(PromptSecurityConstants.MAX_AGENT_TOOL_INPUT_CHARS + 1);
+
+        String result = tool("interview.search").call(oversized, context("搜索我的面试报告"));
+
+        assertThat(result).contains("工具参数过长");
+        verify(interviewContextService, never()).search(any(), any(), anyInt());
     }
 
     @Test
