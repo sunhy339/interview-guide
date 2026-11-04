@@ -231,11 +231,24 @@ function formatAuditAction(action: string) {
     ACTION_DRAFT_UPDATED: '修改动作草稿',
     ACTION_CANCELLED: '取消动作',
     ACTION_FAILED: '动作失败',
+    PROMPT_INJECTION_DETECTED: '请求已净化',
+    CONTEXT_INJECTION_DETECTED: '资料已净化',
+    TOOL_SECURITY_REJECTED: '工具安全拒绝',
     ACTION_RECOVERED: '恢复中断动作',
     TRAINING_TASK_CREATED: '创建训练任务',
     TRAINING_TASK_STATUS_UPDATED: '更新训练任务',
   };
   return labels[action] || action;
+}
+
+function formatAuditResult(result?: string | null) {
+  const labels: Record<string, string> = {
+    success: '成功',
+    rejected: '已拒绝',
+    sanitized: '已净化',
+    failure: '失败',
+  };
+  return result ? (labels[result] || result) : '';
 }
 
 function formatAgentActionStatus(status: string) {
@@ -2354,7 +2367,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                       <span className="h-1.5 w-1.5 rounded-full bg-primary-400 shrink-0" />
                       <span className="font-medium dark-text">{formatAuditAction(event.action)}</span>
                       <span className="dark-text-muted">{event.resourceType}</span>
-                      {event.result ? <span className={event.result === 'success' ? 'text-emerald-600 dark:text-emerald-300' : 'text-rose-600 dark:text-rose-300'}>{event.result === 'success' ? '成功' : event.result}</span> : null}
+                      {event.result ? <span className={event.result === 'success' || event.result === 'sanitized' ? 'text-emerald-600 dark:text-emerald-300' : 'text-rose-600 dark:text-rose-300'}>{formatAuditResult(event.result)}</span> : null}
                     </div>
                     <p className="mt-1 truncate dark-text-muted">
                       面试：{event.interviewTitle || event.interviewSessionId || '未关联面试'}

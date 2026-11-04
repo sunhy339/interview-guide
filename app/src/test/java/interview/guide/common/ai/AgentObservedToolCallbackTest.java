@@ -55,6 +55,28 @@ class AgentObservedToolCallbackTest {
     }
 
     @Test
+    @DisplayName("没有 ToolContext 时安全拒绝也不能记成成功")
+    void observesRejectedToolCallWithoutToolContext() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AgentMetrics metrics = metrics(registry);
+        ToolCallback delegate = mockTool("schedule.create_draft", null);
+        when(delegate.call("{}"))
+            .thenReturn("<data-boundary-ab12cd34-agent-tool-error>缺少安全会话上下文</data-boundary-ab12cd34-agent-tool-error>");
+        AgentObservedToolCallback observed = new AgentObservedToolCallback(
+            delegate, metrics, null, new PromptSanitizer(new LlmProviderProperties())
+        );
+
+        String result = observed.call("{}");
+
+        assertThat(result).contains("agent-observed-tool-result");
+        assertThat(registry.get(AgentMetrics.TOOL_CALLS)
+            .tag("tool", "schedule.create_draft").tag("result", "rejected").counter().count())
+            .isEqualTo(1.0);
+        assertThat(registry.find(AgentMetrics.TOOL_CALLS)
+            .tag("tool", "schedule.create_draft").tag("result", "success").counter()).isNull();
+    }
+
+    @Test
     @DisplayName("工具调用达到单次运行预算后停止继续调用")
     void enforcesToolCallBudgetFromToolContext() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();

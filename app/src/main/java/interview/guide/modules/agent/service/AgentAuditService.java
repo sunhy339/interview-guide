@@ -183,6 +183,20 @@ public class AgentAuditService {
         );
     }
 
+    /** 记录进入模型前被发现的外部资料注入；只保存资料类别和稳定资源标识。 */
+    public void recordContextInjectionDetected(
+        String ownerKey,
+        String interviewSessionId,
+        String agentSessionId,
+        String resourceType,
+        String resourceId
+    ) {
+        recordQuietly(
+            ownerKey, interviewSessionId, agentSessionId, null,
+            "CONTEXT_INJECTION_DETECTED", resourceType, resourceId, "sanitized"
+        );
+    }
+
     /** 记录工具安全策略拒绝；工具名是稳定标识，不记录参数或错误正文。 */
     public void recordToolSecurityRejected(
         String ownerKey,

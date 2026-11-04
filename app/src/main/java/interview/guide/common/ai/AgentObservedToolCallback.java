@@ -60,8 +60,10 @@ final class AgentObservedToolCallback implements ToolCallback {
     public String call(String toolInput) {
         long startedNanos = System.nanoTime();
         try {
-            String result = sanitizeResult(delegate.call(toolInput));
-            record("success", startedNanos);
+            String rawResult = delegate.call(toolInput);
+            boolean rejected = isRejectedResult(rawResult);
+            String result = sanitizeResult(rawResult);
+            record(rejected ? "rejected" : "success", startedNanos);
             return result;
         } catch (RuntimeException error) {
             record("failure", startedNanos);

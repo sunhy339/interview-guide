@@ -93,6 +93,25 @@ class AgentAuditServiceTest {
     }
 
     @Test
+    void recordsContextSecurityDecisionWithStableResourceOnly() {
+        AgentAuditEventRepository repository = mock(AgentAuditEventRepository.class);
+        when(repository.save(any(AgentAuditEventEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        AgentAuditService service = new AgentAuditService(repository);
+
+        service.recordContextInjectionDetected(
+            "user-1", "interview-1", "agent-1", "context-asset", "asset-1"
+        );
+
+        var captor = org.mockito.ArgumentCaptor.forClass(AgentAuditEventEntity.class);
+        verify(repository).save(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("CONTEXT_INJECTION_DETECTED");
+        assertThat(captor.getValue().getResourceType()).isEqualTo("context-asset");
+        assertThat(captor.getValue().getResourceId()).isEqualTo("asset-1");
+        assertThat(captor.getValue().getResult()).isEqualTo("sanitized");
+    }
+
+    @Test
     void defersAuditUntilBusinessTransactionCommits() {
         AgentAuditEventRepository repository = mock(AgentAuditEventRepository.class);
         when(repository.save(any(AgentAuditEventEntity.class)))
