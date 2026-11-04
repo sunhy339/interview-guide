@@ -222,7 +222,7 @@ public class AgentActionService {
             .findByOwnerKeyAndIdempotencyKey(owner, idempotencyKey)
             .orElse(null);
         if (existing != null) {
-            return AgentActionResponse.from(existing);
+            return safeResponse(existing);
         }
         AgentActionRequestEntity entity = AgentActionRequestEntity.builder()
             .actionId(UUID.randomUUID().toString())
@@ -318,7 +318,7 @@ public class AgentActionService {
             .findByOwnerKeyAndIdempotencyKey(owner, idempotencyKey)
             .orElse(null);
         if (existing != null) {
-            return AgentActionResponse.from(existing);
+            return safeResponse(existing);
         }
         AgentActionRequestEntity entity = AgentActionRequestEntity.builder()
             .actionId(UUID.randomUUID().toString())
@@ -359,7 +359,7 @@ public class AgentActionService {
             .findByOwnerKeyAndIdempotencyKey(owner, idempotencyKey)
             .orElse(null);
         if (existing != null) {
-            return AgentActionResponse.from(existing);
+            return safeResponse(existing);
         }
         AgentActionRequestEntity entity = AgentActionRequestEntity.builder()
             .actionId(UUID.randomUUID().toString())
@@ -416,7 +416,7 @@ public class AgentActionService {
             .findByOwnerKeyAndIdempotencyKey(owner, idempotencyKey)
             .orElse(null);
         if (existing != null) {
-            return AgentActionResponse.from(existing);
+            return safeResponse(existing);
         }
 
         AgentActionRequestEntity entity = AgentActionRequestEntity.builder()
@@ -442,7 +442,7 @@ public class AgentActionService {
             "ACTION_PROPOSED", "agent-action",
             saved.getActionId(), AgentActionStatus.PROPOSED.name()
         );
-        return AgentActionResponse.from(saved);
+        return safeResponse(saved);
     }
 
     @Transactional
@@ -461,8 +461,7 @@ public class AgentActionService {
             ? repository.findTop50ByOwnerKeyAndInterviewSessionIdOrderByCreatedAtDesc(owner, interviewId)
             : repository.findTop50ByOwnerKeyAndInterviewSessionIdAndAgentSessionIdOrderByCreatedAtDesc(
                 owner, interviewId, requireText(agentId, "Agent 会话不能为空", 64));
-        return actions
-            .stream().map(AgentActionResponse::from).toList();
+        return actions.stream().map(this::safeResponse).toList();
     }
 
     /** 查询通用 Agent 会话生成的动作草稿。 */
@@ -471,14 +470,23 @@ public class AgentActionService {
         String owner = requireOwner(ownerKey);
         String agentId = requireText(agentSessionId, "Agent 会话不能为空", 64);
         return repository.findTop50ByOwnerKeyAndAgentSessionIdOrderByCreatedAtDesc(owner, agentId)
-            .stream().map(AgentActionResponse::from).toList();
+            .stream().map(this::safeResponse).toList();
     }
 
     @Transactional
     public AgentActionResponse confirm(String actionId, String ownerKey) {
         AgentActionRequestEntity entity = findOwnedForUpdate(actionId, ownerKey);
+        boolean sanitized = sanitizeStoredAction(entity);
         if (entity.getStatus() == AgentActionStatus.SUCCEEDED) {
-            return AgentActionResponse.from(entity);
+            return safeResponse(entity);
+        }
+        if (sanitized && (entity.getStatus() == AgentActionStatus.PROPOSED
+            || entity.getStatus() == AgentActionStatus.FAILED)) {
+            repository.save(entity);
+            throw new BusinessException(
+                ErrorCode.BAD_REQUEST,
+                "该 Agent 草稿包含不安全内容，已净化保存，请检查后重新确认"
+            );
         }
         if (entity.getStatus() == AgentActionStatus.CANCELLED) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "该 Agent 动作已取消，不能重复确认");
@@ -499,14 +507,22 @@ public class AgentActionService {
     @Transactional
     public AgentActionResponse retry(String actionId, String ownerKey) {
         AgentActionRequestEntity entity = findOwnedForUpdate(actionId, ownerKey);
+        boolean sanitized = sanitizeStoredAction(entity);
         if (entity.getStatus() == AgentActionStatus.SUCCEEDED) {
-            return AgentActionResponse.from(entity);
+            return safeResponse(entity);
         }
         if (entity.getStatus() != AgentActionStatus.FAILED) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "只有执行失败的 Agent 动作可以重试");
         }
         if (executionAttempts(entity) >= MAX_EXECUTION_ATTEMPTS) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "该 Agent 动作已达到最大重试次数，请重新生成草稿");
+        }
+        if (sanitized) {
+            repository.save(entity);
+            throw new BusinessException(
+                ErrorCode.BAD_REQUEST,
+                "该 Agent 草稿包含不安全内容，已净化保存，请重新检查后重试"
+            );
         }
         return executeConfirmed(entity, true);
     }
@@ -601,14 +617,14 @@ public class AgentActionService {
             entity.setCompletedAt(LocalDateTime.now());
             repository.save(entity);
             audit(entity, "ACTION_SUCCEEDED", AgentActionStatus.SUCCEEDED.name());
-            return AgentActionResponse.from(entity);
+            return safeResponse(entity);
         } catch (RuntimeException error) {
             entity.setStatus(AgentActionStatus.FAILED);
             entity.setResultSummary(failureSummary(entity));
             entity.setCompletedAt(LocalDateTime.now());
             repository.save(entity);
             audit(entity, "ACTION_FAILED", AgentActionStatus.FAILED.name());
-            return AgentActionResponse.from(entity);
+            return safeResponse(entity);
         }
     }
 
@@ -685,6 +701,7 @@ public class AgentActionService {
     @Transactional
     public AgentActionResponse updateDraft(String actionId, String ownerKey, String content) {
         AgentActionRequestEntity entity = findOwnedForUpdate(actionId, ownerKey);
+        sanitizeStoredAction(entity);
         if (entity.getStatus() != AgentActionStatus.PROPOSED) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "只有待确认的 Agent 草稿可以编辑");
         }
@@ -702,7 +719,7 @@ public class AgentActionService {
         entity.setResultSummary(null);
         AgentActionRequestEntity saved = repository.save(entity);
         audit(saved, "ACTION_DRAFT_UPDATED", AgentActionStatus.PROPOSED.name());
-        return AgentActionResponse.from(saved);
+        return safeResponse(saved);
     }
 
     @Transactional
@@ -712,13 +729,13 @@ public class AgentActionService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "已保存的 Agent 草稿不能取消");
         }
         if (entity.getStatus() == AgentActionStatus.CANCELLED) {
-            return AgentActionResponse.from(entity);
+            return safeResponse(entity);
         }
         entity.setStatus(AgentActionStatus.CANCELLED);
         entity.setResultSummary("用户取消了该动作，原始面试资料未被修改。");
         repository.save(entity);
         audit(entity, "ACTION_CANCELLED", AgentActionStatus.CANCELLED.name());
-        return AgentActionResponse.from(entity);
+        return safeResponse(entity);
     }
 
     private AgentActionRequestEntity findOwnedForUpdate(String actionId, String ownerKey) {
@@ -730,6 +747,60 @@ public class AgentActionService {
             throw new BusinessException(ErrorCode.FORBIDDEN, "无权访问该 Agent 动作");
         }
         return entity;
+    }
+
+    /**
+     * 兼容历史版本生成的动作草稿。旧记录可能是在动作边界净化上线前写入的，
+     * 因此在返回、确认和重试前必须再次复核，不能只保护新建接口。
+     */
+    private boolean sanitizeStoredAction(AgentActionRequestEntity entity) {
+        if (entity == null) {
+            return false;
+        }
+        boolean unsafe = false;
+        unsafe |= replaceIfChanged(entity.getDraftContent(),
+            value -> entity.setDraftContent(value), MAX_CONTENT);
+        unsafe |= replaceIfChanged(entity.getTargetTitle(),
+            value -> entity.setTargetTitle(value), MAX_TITLE);
+        unsafe |= replaceIfChanged(entity.getMemoryJobScope(),
+            value -> entity.setMemoryJobScope(value), 64);
+        unsafe |= replaceIfChanged(entity.getScheduleCompanyName(),
+            value -> entity.setScheduleCompanyName(value), 255);
+        unsafe |= replaceIfChanged(entity.getSchedulePosition(),
+            value -> entity.setSchedulePosition(value), 255);
+        unsafe |= replaceIfChanged(entity.getScheduleInterviewType(),
+            value -> entity.setScheduleInterviewType(value), 64);
+        unsafe |= replaceIfChanged(entity.getScheduleMeetingLink(),
+            value -> entity.setScheduleMeetingLink(value), 1000);
+        unsafe |= replaceIfChanged(entity.getScheduleInterviewer(),
+            value -> entity.setScheduleInterviewer(value), 255);
+        unsafe |= replaceIfChanged(entity.getScheduleNotes(),
+            value -> entity.setScheduleNotes(value), 2000);
+        return unsafe;
+    }
+
+    private boolean replaceIfChanged(
+        String value, java.util.function.Consumer<String> setter, int maxLength
+    ) {
+        if (value == null || value.isBlank()) {
+            return false;
+        }
+        String normalized = value.trim();
+        if (normalized.length() > maxLength) {
+            normalized = normalized.substring(0, maxLength);
+        }
+        boolean unsafe = promptSanitizer.detectInjectionAttempt(value);
+        String safe = promptSanitizer.sanitizeForAction(normalized);
+        if (java.util.Objects.equals(value, safe)) {
+            return unsafe;
+        }
+        setter.accept(safe);
+        return unsafe;
+    }
+
+    private AgentActionResponse safeResponse(AgentActionRequestEntity entity) {
+        sanitizeStoredAction(entity);
+        return AgentActionResponse.from(entity);
     }
 
     private void audit(AgentActionRequestEntity entity, String action, String result) {

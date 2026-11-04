@@ -143,6 +143,7 @@ public class AgentContextToolCallbackFactory {
     private String searchInterviews(JsonNode input, ToolContext toolContext) {
         ToolContextData context = context(toolContext);
         requireUserIntent(context.userMessage(), "面试", "报告", "使用", "根据", "搜索", "查找");
+        rejectInjectedToolArguments(input, "query");
         List<AgentInterviewSearchResult> results = interviewContextService.search(
             context.ownerKey(), safeContextText(text(input, "query")), integer(input, "limit", 8)
         );
