@@ -55,6 +55,44 @@ class AgentAuditServiceTest {
     }
 
     @Test
+    void redactsNonStableAuditValuesBeforePersistence() {
+        AgentAuditEventRepository repository = mock(AgentAuditEventRepository.class);
+        when(repository.save(any(AgentAuditEventEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        AgentAuditService service = new AgentAuditService(repository);
+
+        service.recordQuietly(
+            "user-1", null, null, null,
+            "PROMPT_INJECTION_DETECTED", "agent-input", "message", "原始攻击载荷\nsecret"
+        );
+
+        var captor = org.mockito.ArgumentCaptor.forClass(AgentAuditEventEntity.class);
+        verify(repository).save(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("PROMPT_INJECTION_DETECTED");
+        assertThat(captor.getValue().getResourceType()).isEqualTo("agent-input");
+        assertThat(captor.getValue().getResourceId()).isEqualTo("message");
+        assertThat(captor.getValue().getResult()).isEqualTo("redacted");
+        assertThat(captor.getValue().getResult()).doesNotContain("secret");
+    }
+
+    @Test
+    void recordsPromptSecurityDecisionWithoutPayload() {
+        AgentAuditEventRepository repository = mock(AgentAuditEventRepository.class);
+        when(repository.save(any(AgentAuditEventEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        AgentAuditService service = new AgentAuditService(repository);
+
+        service.recordPromptInjectionDetected("user-1", "interview-1", "agent-1", "run-1", "message");
+
+        var captor = org.mockito.ArgumentCaptor.forClass(AgentAuditEventEntity.class);
+        verify(repository).save(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("PROMPT_INJECTION_DETECTED");
+        assertThat(captor.getValue().getResourceType()).isEqualTo("agent-input");
+        assertThat(captor.getValue().getResourceId()).isEqualTo("message");
+        assertThat(captor.getValue().getResult()).isEqualTo("sanitized");
+    }
+
+    @Test
     void defersAuditUntilBusinessTransactionCommits() {
         AgentAuditEventRepository repository = mock(AgentAuditEventRepository.class);
         when(repository.save(any(AgentAuditEventEntity.class)))

@@ -81,6 +81,9 @@ final class AgentObservedToolCallback implements ToolCallback {
             String outcome = rejected ? "rejected" : "success";
             record(outcome, startedNanos);
             audit(runTracker, outcome);
+            if (rejected) {
+                auditSecurityRejection(runTracker);
+            }
             return result;
         } catch (RuntimeException error) {
             record("failure", startedNanos);
@@ -111,6 +114,17 @@ final class AgentObservedToolCallback implements ToolCallback {
         auditService.recordQuietly(
             context.ownerKey(), context.interviewSessionId(), context.agentSessionId(), context.runId(),
             "TOOL_CALLED", "agent-tool", getToolDefinition().name(), result
+        );
+    }
+
+    private void auditSecurityRejection(AgentMetrics.RunTracker runTracker) {
+        if (auditService == null || runTracker == null) {
+            return;
+        }
+        AgentMetrics.AuditContext context = runTracker.auditContext();
+        auditService.recordToolSecurityRejected(
+            context.ownerKey(), context.interviewSessionId(), context.agentSessionId(),
+            context.runId(), getToolDefinition().name()
         );
     }
 

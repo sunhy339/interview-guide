@@ -235,6 +235,11 @@ public class InterviewAgentService {
                 agentMetrics.setAuditContext(
                     runTracker, dataOwnerKey, sessionId, resolvedAgentSessionId, preparedMessage.runId()
                 );
+                auditPromptSecurity(
+                    runTracker, userIntentMessage,
+                    resolvedRequest.goal(), dataOwnerKey, sessionId,
+                    resolvedAgentSessionId, preparedMessage.runId()
+                );
                 activeTasks.put(resolvedAgentSessionId, taskHandle);
                 persistRunProgress(
                     preparedMessage.assistantMessageId(), "context", "running", null,
@@ -317,6 +322,11 @@ public class InterviewAgentService {
                 // 恢复时同样区分“送给模型的净化文本”和“工具授权校验的原始用户意图”。
                 String userIntentMessage = recoveredRun.userContent();
                 String message = promptSanitizer.sanitize(userIntentMessage);
+                auditPromptSecurity(
+                    runTracker, userIntentMessage,
+                    recoveredRun.goal(), recoveredRun.ownerKey(),
+                    recoveredRun.interviewSessionId(), recoveredRun.agentSessionId(), recoveredRun.runId()
+                );
                 List<AgentHistoryMessage> historyMessages = AgentHistoryPolicy.normalize(
                     removeCurrentUser(agentConversationService.loadHistory(
                         recoveredRun.interviewSessionId(), recoveredRun.agentSessionId(), recoveredRun.ownerKey()
@@ -1388,6 +1398,34 @@ public class InterviewAgentService {
             AgentMetrics.RUN_TRACKER_TOOL_CONTEXT_KEY, runTracker,
             AgentMetrics.USER_MESSAGE_TOOL_CONTEXT_KEY, userMessage == null ? "" : userMessage
         );
+    }
+
+    /**
+     * 当前用户输入仍然可以正常获得分析回答，但命中注入检测时必须留下低敏安全事件。
+     * 工具授权继续使用原始消息并由工具层拒绝，不能因为模型侧净化后只剩下业务词就放行。
+     */
+    private void auditPromptSecurity(
+        AgentMetrics.RunTracker runTracker,
+        String message,
+        String goal,
+        String ownerKey,
+        String interviewSessionId,
+        String agentSessionId,
+        String runId
+    ) {
+        if (agentAuditService == null || runTracker == null) {
+            return;
+        }
+        if (promptSanitizer.detectInjectionAttempt(message)) {
+            agentAuditService.recordPromptInjectionDetected(
+                ownerKey, interviewSessionId, agentSessionId, runId, "message"
+            );
+        }
+        if (promptSanitizer.detectInjectionAttempt(goal)) {
+            agentAuditService.recordPromptInjectionDetected(
+                ownerKey, interviewSessionId, agentSessionId, runId, "goal"
+            );
+        }
     }
 
     private record LoopResumeState(

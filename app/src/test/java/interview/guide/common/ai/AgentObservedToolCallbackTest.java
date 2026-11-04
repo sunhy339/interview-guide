@@ -133,6 +133,9 @@ class AgentObservedToolCallbackTest {
             "user-1", "interview-1", "agent-1", "run-1",
             "TOOL_CALLED", "agent-tool", "schedule.create_draft", "rejected"
         );
+        verify(auditService).recordToolSecurityRejected(
+            "user-1", "interview-1", "agent-1", "run-1", "schedule.create_draft"
+        );
     }
 
     @Test

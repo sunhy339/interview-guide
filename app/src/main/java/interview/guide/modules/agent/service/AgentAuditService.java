@@ -137,11 +137,14 @@ public class AgentAuditService {
                 clean(interviewSessionId, MAX_SESSION),
                 clean(agentSessionId, MAX_SESSION),
                 clean(runId, MAX_RUN),
-                clean(action, MAX_ACTION),
-                clean(resourceType, MAX_RESOURCE_TYPE),
-                clean(resourceId, MAX_RESOURCE_ID),
-                clean(result, MAX_RESULT)
+                cleanStable(action, MAX_ACTION),
+                cleanStable(resourceType, MAX_RESOURCE_TYPE),
+                cleanStable(resourceId, MAX_RESOURCE_ID),
+                cleanStable(result, MAX_RESULT)
             );
+            if (record.action() == null || record.resourceType() == null) {
+                return;
+            }
             if (TransactionSynchronizationManager.isActualTransactionActive()
                 && TransactionSynchronizationManager.isSynchronizationActive()) {
                 TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
@@ -154,8 +157,44 @@ public class AgentAuditService {
             }
             persist(record);
         } catch (RuntimeException error) {
-            log.warn("Agent 审计事件写入失败: action={}, resourceType={}", action, resourceType, error);
+            log.warn(
+                "Agent 审计事件写入失败: action={}, resourceType={}",
+                cleanStable(action, MAX_ACTION), cleanStable(resourceType, MAX_RESOURCE_TYPE), error
+            );
         }
+    }
+
+    /**
+     * 记录当前请求命中的提示注入检测结果。
+     *
+     * <p>location 只能使用固定位置标签，例如 {@code message} 或 {@code goal}；这里不接受
+     * 原始文本，避免为了记录安全事件反而把攻击载荷写入审计。</p>
+     */
+    public void recordPromptInjectionDetected(
+        String ownerKey,
+        String interviewSessionId,
+        String agentSessionId,
+        String runId,
+        String location
+    ) {
+        recordQuietly(
+            ownerKey, interviewSessionId, agentSessionId, runId,
+            "PROMPT_INJECTION_DETECTED", "agent-input", location, "sanitized"
+        );
+    }
+
+    /** 记录工具安全策略拒绝；工具名是稳定标识，不记录参数或错误正文。 */
+    public void recordToolSecurityRejected(
+        String ownerKey,
+        String interviewSessionId,
+        String agentSessionId,
+        String runId,
+        String toolName
+    ) {
+        recordQuietly(
+            ownerKey, interviewSessionId, agentSessionId, runId,
+            "TOOL_SECURITY_REJECTED", "agent-tool", toolName, "rejected"
+        );
     }
 
     private void persist(AuditRecord record) {
@@ -180,6 +219,18 @@ public class AgentAuditService {
         String normalized = value.replaceAll("[\\p{Cntrl}]", " ")
             .replaceAll("\\s+", " ").trim();
         return normalized.isBlank() ? null : normalized.substring(0, Math.min(max, normalized.length()));
+    }
+
+    /**
+     * 审计动作、资源类型、资源 ID 和结果只允许稳定代码值。
+     * 即使未来调用方误把用户输入或异常正文传进来，也不会原样落库。
+     */
+    private String cleanStable(String value, int max) {
+        String normalized = clean(value, max);
+        if (normalized == null) {
+            return null;
+        }
+        return normalized.matches("[A-Za-z0-9][A-Za-z0-9_.:/-]*") ? normalized : "redacted";
     }
 
     private record AuditRecord(
