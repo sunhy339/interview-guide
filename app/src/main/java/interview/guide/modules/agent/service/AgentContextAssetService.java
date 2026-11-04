@@ -109,9 +109,10 @@ public class AgentContextAssetService {
             if (extracted.length() > MAX_EXTRACTED_CHARS) {
                 extracted = extracted.substring(0, MAX_EXTRACTED_CHARS);
             }
-            boolean flagged = promptSanitizer.detectInjectionAttempt(extracted);
+            boolean flagged = promptSanitizer.detectInjectionAttempt(extracted)
+                || promptSanitizer.detectInjectionAttempt(filename);
             String notice = flagged
-                ? "文件内容包含疑似提示注入语句，仅作为资料展示，不会被当作 Agent 指令执行"
+                ? "文件内容或文件名包含疑似提示注入语句，仅作为资料展示，不会被当作 Agent 指令执行"
                 : "文件已完成格式、哈希和文本解析检查，请确认用途后再使用";
             AgentContextAssetEntity saved = repository.save(AgentContextAssetEntity.builder()
                 .assetId(UUID.randomUUID().toString())

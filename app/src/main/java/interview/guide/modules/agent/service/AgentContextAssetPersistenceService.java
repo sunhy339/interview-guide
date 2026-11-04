@@ -2,6 +2,8 @@ package interview.guide.modules.agent.service;
 
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
+import interview.guide.common.ai.PromptSanitizer;
+import interview.guide.common.config.LlmProviderProperties;
 import interview.guide.modules.agent.model.AgentContextAssetEntity;
 import interview.guide.modules.agent.model.AgentContextAssetResponse;
 import interview.guide.modules.agent.model.AgentContextAssetStatus;
@@ -10,7 +12,7 @@ import interview.guide.modules.knowledgebase.model.KnowledgeBaseEntity;
 import interview.guide.modules.knowledgebase.repository.KnowledgeBaseRepository;
 import interview.guide.modules.knowledgebase.service.KnowledgeBasePersistenceService;
 import java.util.Optional;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,12 +23,39 @@ import org.springframework.transaction.annotation.Transactional;
  * 才能投递向量化任务，避免数据库回滚但异步任务已经可见。</p>
  */
 @Service
-@RequiredArgsConstructor
 public class AgentContextAssetPersistenceService {
+
+    private static final int MAX_KNOWLEDGE_BASE_NAME = 120;
+    private static final int MAX_KNOWLEDGE_BASE_CATEGORY = 100;
+    private static final int MAX_ORIGINAL_FILENAME = 255;
 
     private final AgentContextAssetRepository repository;
     private final KnowledgeBaseRepository knowledgeBaseRepository;
     private final KnowledgeBasePersistenceService knowledgeBasePersistenceService;
+    private final PromptSanitizer promptSanitizer;
+
+    /** 保留轻量构造方式，兼容迁移期测试和内部调用方。 */
+    public AgentContextAssetPersistenceService(
+        AgentContextAssetRepository repository,
+        KnowledgeBaseRepository knowledgeBaseRepository,
+        KnowledgeBasePersistenceService knowledgeBasePersistenceService
+    ) {
+        this(repository, knowledgeBaseRepository, knowledgeBasePersistenceService,
+            new PromptSanitizer(new LlmProviderProperties()));
+    }
+
+    @Autowired
+    public AgentContextAssetPersistenceService(
+        AgentContextAssetRepository repository,
+        KnowledgeBaseRepository knowledgeBaseRepository,
+        KnowledgeBasePersistenceService knowledgeBasePersistenceService,
+        PromptSanitizer promptSanitizer
+    ) {
+        this.repository = repository;
+        this.knowledgeBaseRepository = knowledgeBaseRepository;
+        this.knowledgeBasePersistenceService = knowledgeBasePersistenceService;
+        this.promptSanitizer = promptSanitizer;
+    }
 
     @Transactional
     public KnowledgeBaseImportPreparation prepareKnowledgeBaseImport(
@@ -46,9 +75,12 @@ public class AgentContextAssetPersistenceService {
 
         Optional<KnowledgeBaseEntity> duplicate = knowledgeBaseRepository
             .findByFileHashAndOwnerId(asset.getFileHash(), ownerId);
+        String safeName = sanitizeMetadata(name, MAX_KNOWLEDGE_BASE_NAME);
+        String safeCategory = sanitizeMetadata(category, MAX_KNOWLEDGE_BASE_CATEGORY);
+        String safeFilename = sanitizeMetadata(asset.getOriginalFilename(), MAX_ORIGINAL_FILENAME);
         KnowledgeBaseEntity knowledgeBase = duplicate.orElseGet(() ->
             knowledgeBasePersistenceService.saveKnowledgeBaseFromStoredAsset(
-                name, category, asset.getOriginalFilename(), asset.getFileSize(), asset.getContentType(),
+                safeName, safeCategory, safeFilename, asset.getFileSize(), asset.getContentType(),
                 asset.getStorageKey(), asset.getStorageUrl(), asset.getFileHash(), ownerId
             )
         );
@@ -89,6 +121,19 @@ public class AgentContextAssetPersistenceService {
         }
         return repository.findByAssetIdAndOwnerIdForUpdate(assetId.trim(), ownerId.trim())
             .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "Agent 素材不存在"));
+    }
+
+    /** 知识库名称、分类和文件名会成为可检索元数据，不能绕过 Agent 资料边界直接落库。 */
+    private String sanitizeMetadata(String value, int maxLength) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String normalized = value.trim();
+        if (normalized.length() > maxLength) {
+            normalized = normalized.substring(0, maxLength);
+        }
+        String safe = promptSanitizer.sanitizeForAction(normalized);
+        return safe == null || safe.isBlank() ? null : safe;
     }
 
     public record KnowledgeBaseImportPreparation(
