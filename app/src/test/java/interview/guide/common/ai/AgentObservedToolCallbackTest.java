@@ -15,6 +15,8 @@ import org.springframework.ai.tool.definition.ToolDefinition;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -94,6 +96,42 @@ class AgentObservedToolCallbackTest {
         verify(auditService).recordQuietly(
             "user-1", "interview-1", "agent-1", "run-1",
             "TOOL_CALLED", "agent-tool", "load_skill", "success"
+        );
+    }
+
+    @Test
+    @DisplayName("安全策略拒绝工具调用时记录 rejected，而不是成功")
+    void recordsRejectedToolCallAsRejected() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AgentMetrics metrics = metrics(registry);
+        AgentMetrics.RunTracker run = metrics.startRun(4, 2);
+        metrics.setAuditContext(run, "user-1", "interview-1", "agent-1", "run-1");
+        AgentAuditService auditService = mock(AgentAuditService.class);
+        ToolCallback delegate = mockTool("schedule.create_draft", null);
+        when(delegate.call(eq("{}"), any(org.springframework.ai.chat.model.ToolContext.class))).thenReturn(
+            "<data-boundary-ab12cd34-agent-tool-error>需要用户明确说明要执行该操作</data-boundary-ab12cd34-agent-tool-error>"
+        );
+        AgentObservedToolCallback observed = new AgentObservedToolCallback(
+            delegate, metrics, auditService, new PromptSanitizer(new LlmProviderProperties())
+        );
+        org.springframework.ai.chat.model.ToolContext context =
+            new org.springframework.ai.chat.model.ToolContext(Map.of(
+                AgentMetrics.RUN_TRACKER_TOOL_CONTEXT_KEY, run
+            ));
+
+        String result = observed.call("{}", context);
+
+        assertThat(result)
+            .contains("agent-observed-tool-result")
+            .doesNotContain("agent-tool-error");
+        assertThat(registry.get(AgentMetrics.TOOL_CALLS)
+            .tag("tool", "schedule.create_draft").tag("result", "rejected").counter().count())
+            .isEqualTo(1.0);
+        assertThat(registry.find(AgentMetrics.TOOL_CALLS)
+            .tag("tool", "schedule.create_draft").tag("result", "success").counter()).isNull();
+        verify(auditService).recordQuietly(
+            "user-1", "interview-1", "agent-1", "run-1",
+            "TOOL_CALLED", "agent-tool", "schedule.create_draft", "rejected"
         );
     }
 

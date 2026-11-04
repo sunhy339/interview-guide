@@ -75,9 +75,12 @@ final class AgentObservedToolCallback implements ToolCallback {
         AgentMetrics.RunTracker runTracker = runTracker(toolContext);
         try {
             reserveToolCall(runTracker);
-            String result = sanitizeResult(delegate.call(toolInput, toolContext));
-            record("success", startedNanos);
-            audit(runTracker, "success");
+            String rawResult = delegate.call(toolInput, toolContext);
+            boolean rejected = isRejectedResult(rawResult);
+            String result = sanitizeResult(rawResult);
+            String outcome = rejected ? "rejected" : "success";
+            record(outcome, startedNanos);
+            audit(runTracker, outcome);
             return result;
         } catch (RuntimeException error) {
             record("failure", startedNanos);
@@ -119,6 +122,20 @@ final class AgentObservedToolCallback implements ToolCallback {
                 Duration.ofNanos(Math.max(0, System.nanoTime() - startedNanos))
             );
         }
+    }
+
+    /**
+     * AgentContextToolCallbackFactory 将业务拒绝包装在专用边界中返回，不能把这种安全拒绝
+     * 当成工具成功。这里必须在二次净化前判断，因为净化会主动移除旧边界标签。
+     */
+    private boolean isRejectedResult(String result) {
+        if (result == null || result.isBlank()) {
+            return false;
+        }
+        return result.matches(
+            "(?s)^<data-boundary-([0-9a-f]{8})-agent-tool-error>.*"
+                + "</data-boundary-\\1-agent-tool-error>$"
+        );
     }
 
     /** SkillsTool 等外部资料工具没有自己的上下文包装，统一在 Agent 边界再净化一次。 */
