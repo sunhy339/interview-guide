@@ -35,6 +35,7 @@ class AgentContextAssetServiceTest {
     @Mock private PromptSanitizer promptSanitizer;
     @Mock private AgentContextAssetPersistenceService persistenceService;
     @Mock private VectorizeStreamProducer vectorizeStreamProducer;
+    @Mock private AgentAuditService auditService;
 
     @Test
     void uploadOnlyCreatesReviewAssetAndDoesNotStartVectorization() {
@@ -52,7 +53,7 @@ class AgentContextAssetServiceTest {
 
         AgentContextAssetService service = new AgentContextAssetService(
             repository, validationService, hashService, storageService, parseService,
-            promptSanitizer, persistenceService, vectorizeStreamProducer
+            promptSanitizer, persistenceService, vectorizeStreamProducer, auditService
         );
 
         var result = service.upload(file, "user-1");
@@ -60,6 +61,11 @@ class AgentContextAssetServiceTest {
         assertThat(result.reviewStatus()).isEqualTo(AgentContextAssetStatus.READY_FOR_REVIEW);
         assertThat(result.securityFlagged()).isTrue();
         assertThat(result.previewText()).contains("Redis notes");
+        verify(auditService).recordQuietly(
+            "user-1", null, null, null,
+            "CONTEXT_ASSET_UPLOADED_FLAGGED", "context-asset", result.assetId(),
+            AgentContextAssetStatus.READY_FOR_REVIEW.name()
+        );
         verify(vectorizeStreamProducer, never()).sendVectorizeTask(any());
     }
 

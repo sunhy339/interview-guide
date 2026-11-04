@@ -23,7 +23,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 /** 校验并绑定 Agent 的简历、面试报告、上传素材和知识库资源。 */
 @Service
-@RequiredArgsConstructor
 public class AgentContextBindingService {
 
     private final AgentChatSessionRepository sessionRepository;
@@ -32,6 +31,39 @@ public class AgentContextBindingService {
     private final AgentInterviewContextService interviewContextService;
     private final ResumeRepository resumeRepository;
     private final KnowledgeBaseRepository knowledgeBaseRepository;
+    private final AgentAuditService auditService;
+
+    /** 保留无审计器的构造方式，兼容迁移期单元测试和旧内部调用方。 */
+    public AgentContextBindingService(
+        AgentChatSessionRepository sessionRepository,
+        AgentSessionContextRepository contextRepository,
+        AgentContextAssetService assetService,
+        AgentInterviewContextService interviewContextService,
+        ResumeRepository resumeRepository,
+        KnowledgeBaseRepository knowledgeBaseRepository
+    ) {
+        this(sessionRepository, contextRepository, assetService, interviewContextService,
+            resumeRepository, knowledgeBaseRepository, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AgentContextBindingService(
+        AgentChatSessionRepository sessionRepository,
+        AgentSessionContextRepository contextRepository,
+        AgentContextAssetService assetService,
+        AgentInterviewContextService interviewContextService,
+        ResumeRepository resumeRepository,
+        KnowledgeBaseRepository knowledgeBaseRepository,
+        AgentAuditService auditService
+    ) {
+        this.sessionRepository = sessionRepository;
+        this.contextRepository = contextRepository;
+        this.assetService = assetService;
+        this.interviewContextService = interviewContextService;
+        this.resumeRepository = resumeRepository;
+        this.knowledgeBaseRepository = knowledgeBaseRepository;
+        this.auditService = auditService;
+    }
 
     @Transactional
     public AgentContextBindingResponse attach(String agentSessionId, AttachAgentResourceRequest request, String ownerId) {
@@ -75,6 +107,8 @@ public class AgentContextBindingService {
             .sourceMessageId(request.sourceMessageIdAsLong())
             .active(true)
             .build());
+        audit(ownerId, session.getInterviewSessionId(), agentSessionId,
+            "CONTEXT_ATTACHED", resourceId, type);
         return AgentContextBindingResponse.from(context);
     }
 
@@ -101,8 +135,10 @@ public class AgentContextBindingService {
 
     @Transactional
     public void clear(String agentSessionId, String ownerId) {
-        requireSession(agentSessionId, ownerId);
+        AgentChatSessionEntity session = requireSession(agentSessionId, ownerId);
         contextRepository.deactivateAllActive(agentSessionId, LocalDateTime.now());
+        audit(ownerId, session.getInterviewSessionId(), agentSessionId,
+            "CONTEXT_CLEARED", agentSessionId, "success");
     }
 
     private AgentChatSessionEntity requireSession(String agentSessionId, String ownerId) {
@@ -116,6 +152,18 @@ public class AgentContextBindingService {
             return Long.parseLong(value);
         } catch (NumberFormatException error) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, label + "格式错误");
+        }
+    }
+
+    private void audit(
+        String ownerId, String interviewSessionId, String agentSessionId,
+        String action, String resourceId, String result
+    ) {
+        if (auditService != null) {
+            auditService.recordQuietly(
+                ownerId, interviewSessionId, agentSessionId, null,
+                action, "context-binding", resourceId, result
+            );
         }
     }
 }

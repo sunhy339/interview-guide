@@ -42,8 +42,9 @@ public class AgentContextAssetService {
     private final PromptSanitizer promptSanitizer;
     private final AgentContextAssetPersistenceService persistenceService;
     private final VectorizeStreamProducer vectorizeStreamProducer;
+    private final AgentAuditService auditService;
 
-    @Autowired
+    /** 保留旧构造方式，兼容迁移期单元测试和内部调用方。 */
     public AgentContextAssetService(
         AgentContextAssetRepository repository,
         FileValidationService fileValidationService,
@@ -54,6 +55,22 @@ public class AgentContextAssetService {
         AgentContextAssetPersistenceService persistenceService,
         VectorizeStreamProducer vectorizeStreamProducer
     ) {
+        this(repository, fileValidationService, fileHashService, storageService, parseService,
+            promptSanitizer, persistenceService, vectorizeStreamProducer, null);
+    }
+
+    @Autowired
+    public AgentContextAssetService(
+        AgentContextAssetRepository repository,
+        FileValidationService fileValidationService,
+        FileHashService fileHashService,
+        FileStorageService storageService,
+        interview.guide.modules.knowledgebase.service.KnowledgeBaseParseService parseService,
+        PromptSanitizer promptSanitizer,
+        AgentContextAssetPersistenceService persistenceService,
+        VectorizeStreamProducer vectorizeStreamProducer,
+        AgentAuditService auditService
+    ) {
         this.repository = repository;
         this.fileValidationService = fileValidationService;
         this.fileHashService = fileHashService;
@@ -62,6 +79,7 @@ public class AgentContextAssetService {
         this.promptSanitizer = promptSanitizer;
         this.persistenceService = persistenceService;
         this.vectorizeStreamProducer = vectorizeStreamProducer;
+        this.auditService = auditService;
     }
 
     public AgentContextAssetResponse upload(MultipartFile file, String ownerId) {
@@ -111,6 +129,9 @@ public class AgentContextAssetService {
                 .securityNotice(notice)
                 .expiresAt(LocalDateTime.now().plusDays(7))
                 .build());
+            audit(owner, null, saved.getAssetId(),
+                flagged ? "CONTEXT_ASSET_UPLOADED_FLAGGED" : "CONTEXT_ASSET_UPLOADED",
+                saved.getReviewStatus().name());
             return AgentContextAssetResponse.from(saved);
         } catch (RuntimeException error) {
             try {
@@ -166,7 +187,10 @@ public class AgentContextAssetService {
         }
         asset.setReviewStatus(AgentContextAssetStatus.APPROVED_FOR_CONTEXT);
         asset.setReviewedAt(LocalDateTime.now());
-        return AgentContextAssetResponse.from(repository.save(asset));
+        AgentContextAssetEntity saved = repository.save(asset);
+        audit(ownerId, null, saved.getAssetId(), "CONTEXT_ASSET_APPROVED",
+            saved.isSecurityFlagged() ? "security-confirmed" : saved.getReviewStatus().name());
+        return AgentContextAssetResponse.from(saved);
     }
 
     /** 用户明确申请加入 RAG；这里只改变审核状态，不直接复用旧上传接口启动向量化。 */
@@ -178,7 +202,10 @@ public class AgentContextAssetService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "该文件已经进入知识库，无需重复导入");
         }
         asset.setReviewStatus(AgentContextAssetStatus.KB_IMPORT_PENDING);
-        return AgentContextAssetResponse.from(repository.save(asset));
+        AgentContextAssetEntity saved = repository.save(asset);
+        audit(ownerId, null, saved.getAssetId(), "CONTEXT_ASSET_KB_IMPORT_REQUESTED",
+            saved.getReviewStatus().name());
+        return AgentContextAssetResponse.from(saved);
     }
 
     /**
@@ -191,6 +218,8 @@ public class AgentContextAssetService {
         AgentContextAssetPersistenceService.KnowledgeBaseImportPreparation preparation =
             persistenceService.prepareKnowledgeBaseImport(assetId, ownerId, name, category);
         if (!preparation.vectorizationRequired()) {
+            audit(ownerId, null, assetId, "CONTEXT_ASSET_KB_IMPORT_REUSED",
+                preparation.asset().reviewStatus().name());
             return preparation.asset();
         }
         boolean queued;
@@ -202,16 +231,22 @@ public class AgentContextAssetService {
             queued = false;
         }
         if (!queued) {
-            return persistenceService.markVectorizationEnqueueFailed(
+            AgentContextAssetResponse failed = persistenceService.markVectorizationEnqueueFailed(
                 assetId, ownerId, "知识库已创建，但向量化任务暂未投递成功，可稍后重试"
             );
+            audit(ownerId, null, assetId, "CONTEXT_ASSET_KB_IMPORT_FAILED",
+                failed.reviewStatus().name());
+            return failed;
         }
+        audit(ownerId, null, assetId, "CONTEXT_ASSET_KB_IMPORT_COMPLETED",
+            preparation.asset().reviewStatus().name());
         return preparation.asset();
     }
 
     public void reject(String assetId, String ownerId) {
         AgentContextAssetEntity asset = find(assetId, ownerId);
         persistenceService.reject(assetId, ownerId);
+        audit(ownerId, null, assetId, "CONTEXT_ASSET_REJECTED", "REJECTED");
         try {
             storageService.deleteAgentContextAsset(asset.getStorageKey());
         } catch (RuntimeException error) {
@@ -240,5 +275,15 @@ public class AgentContextAssetService {
             throw new BusinessException(ErrorCode.UNAUTHORIZED, "Agent 身份已失效，请刷新页面后重试");
         }
         return ownerId.trim();
+    }
+
+    private void audit(String ownerId, String interviewSessionId, String resourceId,
+                       String action, String result) {
+        if (auditService != null) {
+            auditService.recordQuietly(
+                ownerId, interviewSessionId, null, null,
+                action, "context-asset", resourceId, result
+            );
+        }
     }
 }
