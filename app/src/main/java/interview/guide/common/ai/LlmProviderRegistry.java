@@ -33,6 +33,7 @@ import org.springframework.ai.openai.OpenAiEmbeddingOptions;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -80,7 +81,7 @@ public class LlmProviderRegistry {
             @Autowired(required = false) @Qualifier("interviewSkillsToolCallback") ToolCallback interviewSkillsToolCallback,
              @Autowired(required = false) AgentMetrics agentMetrics,
              @Autowired(required = false) AgentAuditService agentAuditService,
-             @Autowired(required = false) AgentContextToolCallbackFactory agentContextToolCallbackFactory) {
+             @Autowired(required = false) @Lazy AgentContextToolCallbackFactory agentContextToolCallbackFactory) {
         this.properties = properties;
         this.providerRepository = providerRepository;
         this.globalSettingRepository = globalSettingRepository;
