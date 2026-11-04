@@ -9,6 +9,7 @@ import {formatDateOnly} from '../utils/date';
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog';
 import CodeBlock from '../components/CodeBlock';
 import {ChevronLeft, ChevronRight, Edit, MessageSquare, Pin, Plus, Trash2,} from 'lucide-react';
+import { isExternalMarkdownHref, sanitizeMarkdownHref } from './markdownSecurity';
 
 interface KnowledgeBaseQueryPageProps {
   onBack: () => void;
@@ -540,8 +541,23 @@ export default function KnowledgeBaseQueryPage({ onBack, onUpload }: KnowledgeBa
                               ) : (
                                   <div className="prose prose-slate dark:prose-invert prose-sm max-w-none">
                                   <ReactMarkdown
+                                    skipHtml
                                     remarkPlugins={[remarkGfm]}
                                     components={{
+                                      a: ({ href, title, children }) => {
+                                        const safeHref = sanitizeMarkdownHref(href);
+                                        const external = isExternalMarkdownHref(safeHref);
+                                        return (
+                                          <a
+                                            href={safeHref}
+                                            title={title}
+                                            target={external ? '_blank' : undefined}
+                                            rel={external ? 'noreferrer noopener' : undefined}
+                                          >
+                                            {children}
+                                          </a>
+                                        );
+                                      },
                                       // 自定义代码块渲染
                                       code: ({ className, children }) => {
                                         const match = /language-(\w+)/.exec(className || '');

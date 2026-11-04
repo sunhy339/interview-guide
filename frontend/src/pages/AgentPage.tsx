@@ -42,6 +42,7 @@ import { getRetryableRequest, removeLastRunMessages, resolveRetryProviderId, typ
 import { normalizeAgentMarkdown } from './agentMarkdown';
 import { isNearChatBottom } from './agentChatScroll';
 import { detectAgentActionIntent, type AgentActionIntent } from './agentIntent';
+import { isExternalMarkdownHref, sanitizeMarkdownHref } from './markdownSecurity';
 import {
   getStoredAgentThreadId,
   clearStoredAgentSession,
@@ -325,6 +326,7 @@ function AgentMarkdown({ content }: { content: string }) {
   return (
     <div className="agent-markdown prose prose-slate dark:prose-invert prose-sm max-w-none break-words [overflow-wrap:anywhere]">
       <ReactMarkdown
+        skipHtml
         remarkPlugins={[remarkGfm]}
         components={{
           h1: ({ children }) => <h3 className="!mt-0 !mb-3 !text-lg !font-bold !leading-snug text-slate-900 dark:text-white">{children}</h3>,
@@ -336,6 +338,20 @@ function AgentMarkdown({ content }: { content: string }) {
           li: ({ children }) => <li className="leading-7 [&>p]:!my-0">{children}</li>,
           blockquote: ({ children }) => <blockquote className="!my-3 border-l-4 border-primary-300 dark:border-primary-600 bg-primary-50/70 dark:bg-primary-900/20 px-3 py-2 text-slate-600 dark:text-slate-300">{children}</blockquote>,
           hr: () => <hr className="!my-4 border-slate-200 dark:border-slate-600" />,
+          a: ({ href, title, children }) => {
+            const safeHref = sanitizeMarkdownHref(href);
+            const external = isExternalMarkdownHref(safeHref);
+            return (
+              <a
+                href={safeHref}
+                title={title}
+                target={external ? '_blank' : undefined}
+                rel={external ? 'noreferrer noopener' : undefined}
+              >
+                {children}
+              </a>
+            );
+          },
           code: ({ className, children }) => {
             const match = /language-(\w+)/.exec(className || '');
             if (!match) {
