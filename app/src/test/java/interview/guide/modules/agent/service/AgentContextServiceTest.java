@@ -471,6 +471,59 @@ class AgentContextServiceTest {
     }
 
     @Test
+    void consumesTemporaryTurnContextAfterLoadingIt() throws Exception {
+        InterviewHistoryService history = mock(InterviewHistoryService.class);
+        InterviewPersistenceService persistence = mock(InterviewPersistenceService.class);
+        InterviewSkillService skills = mock(InterviewSkillService.class);
+        KnowledgeBaseQueryService rag = mock(KnowledgeBaseQueryService.class);
+        PromptSanitizer sanitizer = mock(PromptSanitizer.class);
+        ObjectMapper objectMapper = mock(ObjectMapper.class);
+        AgentMemoryService memory = mock(AgentMemoryService.class);
+        AgentSessionContextRepository contexts = mock(AgentSessionContextRepository.class);
+        AgentContextAssetRepository assets = mock(AgentContextAssetRepository.class);
+        AgentContextBindingService bindings = mock(AgentContextBindingService.class);
+        AgentContextSummaryService summaries = mock(AgentContextSummaryService.class);
+
+        when(contexts.findByAgentSessionIdAndActiveTrueOrderByAttachedAtDesc("agent-1"))
+            .thenReturn(List.of(AgentSessionContextEntity.builder()
+                .agentSessionId("agent-1")
+                .contextType("FILE")
+                .resourceId("asset-1")
+                .scope("TURN")
+                .active(true)
+                .build()));
+        when(assets.findByAssetIdAndOwnerId("asset-1", "owner-1"))
+            .thenReturn(java.util.Optional.of(AgentContextAssetEntity.builder()
+                .assetId("asset-1")
+                .ownerId("owner-1")
+                .originalFilename("turn-notes.md")
+                .extractedText("仅本轮使用的资料")
+                .reviewStatus(AgentContextAssetStatus.APPROVED_FOR_CONTEXT)
+                .expiresAt(LocalDateTime.now().plusDays(1))
+                .build()));
+        when(memory.remember(anyString(), any(), any(), any()))
+            .thenReturn(AgentMemorySnapshot.empty("owner-1"));
+        when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
+        when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(sanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        AgentContextService service = new AgentContextService(
+            history, persistence, skills, rag, sanitizer, objectMapper, memory,
+            contexts, assets, null, null, summaries
+        );
+        service.setContextBindingService(bindings);
+
+        AgentContextService.AgentContext context = service.build(
+            null,
+            new AgentMessageRequest("review", "分析本轮资料", List.of(), null, null, "agent-1"),
+            List.of()
+        );
+
+        assertThat(context.interviewReport()).contains("仅本轮使用的资料");
+        verify(bindings).consumeTurnContexts("agent-1", "owner-1");
+    }
+
+    @Test
     void loadsSecondaryInterviewReportWhenPrimaryInterviewIsAlreadyInContext() throws Exception {
         InterviewHistoryService history = mock(InterviewHistoryService.class);
         InterviewPersistenceService persistence = mock(InterviewPersistenceService.class);

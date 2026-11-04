@@ -189,4 +189,54 @@ class AgentContextBindingServiceTest {
             "CONTEXT_DETACHED", "context-binding", "2", "RESUME"
         );
     }
+
+    @Test
+    void rejectsUnknownContextScope() {
+        AgentChatSessionEntity session = AgentChatSessionEntity.builder()
+            .agentSessionId("agent-1")
+            .ownerKey("owner-1")
+            .build();
+        when(sessionRepository.findByAgentSessionIdForUpdate("agent-1"))
+            .thenReturn(java.util.Optional.of(session));
+
+        AgentContextBindingService service = new AgentContextBindingService(
+            sessionRepository, contextRepository, assetService, interviewContextService,
+            resumeRepository, knowledgeBaseRepository
+        );
+
+        assertThatThrownBy(() -> service.attach(
+            "agent-1", new AttachAgentResourceRequest("FILE", "asset-1", "NEXT", null), "owner-1"
+        ))
+            .hasMessageContaining("SESSION 或 TURN");
+        verify(contextRepository, never()).save(any());
+    }
+
+    @Test
+    void consumesOnlyTurnScopedContexts() {
+        AgentChatSessionEntity session = AgentChatSessionEntity.builder()
+            .agentSessionId("agent-1")
+            .ownerKey("owner-1")
+            .build();
+        when(sessionRepository.findByAgentSessionId("agent-1"))
+            .thenReturn(java.util.Optional.of(session));
+        when(contextRepository.deactivateActiveByScope(
+            eq("agent-1"), eq("TURN"), any(java.time.LocalDateTime.class)
+        )).thenReturn(2);
+
+        AgentContextBindingService service = new AgentContextBindingService(
+            sessionRepository, contextRepository, assetService, interviewContextService,
+            resumeRepository, knowledgeBaseRepository, auditService
+        );
+
+        service.consumeTurnContexts("agent-1", "owner-1");
+
+        verify(contextRepository).deactivateActiveByScope(
+            eq("agent-1"), eq("TURN"), any(java.time.LocalDateTime.class)
+        );
+        verify(auditService).recordQuietly(
+            "owner-1", null, "agent-1", null,
+            "CONTEXT_TURN_CONSUMED", "context-binding", "agent-1", "2"
+        );
+        verify(contextRepository, never()).deactivateAllActive(any(), any());
+    }
 }

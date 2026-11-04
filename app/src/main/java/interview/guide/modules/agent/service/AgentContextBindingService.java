@@ -74,6 +74,10 @@ public class AgentContextBindingService {
             .orElseThrow(() -> new BusinessException(ErrorCode.FORBIDDEN, "无权访问该 Agent 会话"));
         String type = request.normalizedType();
         String resourceId = request.resourceId().trim();
+        String scope = request.normalizedScope();
+        if (!List.of("SESSION", "TURN").contains(scope)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "上下文作用域只能是 SESSION 或 TURN");
+        }
         String resourceName;
         switch (type) {
             case "INTERVIEW_REPORT" -> {
@@ -121,13 +125,29 @@ public class AgentContextBindingService {
             .interviewSessionId("INTERVIEW_REPORT".equals(type) ? resourceId : null)
             .resourceId(resourceId)
             .resourceName(resourceName)
-            .scope(request.normalizedScope())
+            .scope(scope)
             .sourceMessageId(request.sourceMessageIdAsLong())
             .active(true)
             .build());
         audit(ownerId, session.getInterviewSessionId(), agentSessionId,
             "CONTEXT_ATTACHED", resourceId, type);
         return AgentContextBindingResponse.from(context);
+    }
+
+    /**
+     * 消费本轮临时上下文。该操作独立于模型调用事务，保证临时资料不会因刷新、重启或后续
+     * 对话再次自动进入 Prompt；审计只记录资源引用，不记录正文。
+     */
+    @Transactional
+    public void consumeTurnContexts(String agentSessionId, String ownerId) {
+        AgentChatSessionEntity session = requireSession(agentSessionId, ownerId);
+        int consumed = contextRepository.deactivateActiveByScope(
+            session.getAgentSessionId(), "TURN", LocalDateTime.now()
+        );
+        if (consumed > 0) {
+            audit(ownerId, session.getInterviewSessionId(), agentSessionId,
+                "CONTEXT_TURN_CONSUMED", agentSessionId, String.valueOf(consumed));
+        }
     }
 
     @Transactional

@@ -69,4 +69,18 @@ public interface AgentSessionContextRepository extends JpaRepository<AgentSessio
         @Param("resourceId") String resourceId,
         @Param("detachedAt") LocalDateTime detachedAt
     );
+
+    @Modifying
+    @Query("""
+        UPDATE AgentSessionContextEntity c
+           SET c.active = false, c.detachedAt = :detachedAt
+         WHERE c.agentSessionId = :agentSessionId
+           AND c.scope = :scope
+           AND c.active = true
+        """)
+    int deactivateActiveByScope(
+        @Param("agentSessionId") String agentSessionId,
+        @Param("scope") String scope,
+        @Param("detachedAt") LocalDateTime detachedAt
+    );
 }

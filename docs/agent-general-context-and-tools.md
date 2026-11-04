@@ -105,7 +105,7 @@ agent_session_contexts
   source_message_id
 ```
 
-上下文类型统一为 `RESUME`、`INTERVIEW_REPORT`、`FILE`、`KNOWLEDGE_BASE`。一个会话最多同时保留 8 份 active 资料引用，重复绑定同一资源幂等返回；用户可以单独移除某份资料，也可以一次清除全部上下文。上传文件的原文不复制到会话表。
+上下文类型统一为 `RESUME`、`INTERVIEW_REPORT`、`FILE`、`KNOWLEDGE_BASE`。一个会话最多同时保留 8 份 active 资料引用，重复绑定同一资源幂等返回；`SESSION` 资料持续到主动移除，`TURN` 资料只在下一次 Agent 运行加载一次后立即消费。用户可以单独移除某份资料，也可以一次清除全部上下文。上传文件的原文不复制到会话表。
 
 新增私有上传素材表 `agent_context_assets`：
 
@@ -292,6 +292,7 @@ InterviewScheduleService.createForOwner
 - 多个候选时不会自动猜测；
 - 切换和清除上下文刷新后仍然正确；
 - 用户可以在输入区显式清除当前上下文，清除只解除会话引用，不删除原始简历、面试报告、上传文件或知识库；
+- `TURN` 临时上下文只进入下一次 Agent 运行，运行开始后立即解绑，刷新、重启和后续对话不会重复注入；
 - 缺少当前用户身份时不读取会话摘要、报告、简历、文件或知识库内容；
 - 旧的面试详情进入 Agent 链路不回归；
 - 50 轮以上对话仍保留摘要、最近原文和当前目标；

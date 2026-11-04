@@ -65,6 +65,7 @@ public class AgentContextService {
     private final ResumeRepository resumeRepository;
     private final KnowledgeBaseRepository knowledgeBaseRepository;
     private final AgentContextSummaryService contextSummaryService;
+    private AgentContextBindingService contextBindingService;
 
     public AgentContextService(
         InterviewHistoryService interviewHistoryService,
@@ -106,6 +107,12 @@ public class AgentContextService {
         this.resumeRepository = resumeRepository;
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.contextSummaryService = contextSummaryService;
+    }
+
+    /** 可选注入，保留无 Spring 容器的上下文单元测试构造方式。 */
+    @Autowired(required = false)
+    void setContextBindingService(AgentContextBindingService contextBindingService) {
+        this.contextBindingService = contextBindingService;
     }
 
     /** 兼容当前单元测试和迁移期内部调用方。 */
@@ -241,11 +248,21 @@ public class AgentContextService {
             }
         }
         if (report.isEmpty()) {
+            consumeTurnContexts(agentSessionId, ownerKey(request));
             return primaryInterviewSessionId == null
                 ? "已绑定资料但没有读取到可用内容。不要补写未提供的事实。"
                 : "";
         }
+        consumeTurnContexts(agentSessionId, ownerKey(request));
         return truncate(report.toString(), MAX_REPORT_CHARS);
+    }
+
+    private void consumeTurnContexts(String agentSessionId, String ownerId) {
+        if (contextBindingService == null || agentSessionId == null || agentSessionId.isBlank()
+            || ownerId == null || ownerId.isBlank()) {
+            return;
+        }
+        contextBindingService.consumeTurnContexts(agentSessionId, ownerId);
     }
 
     private void appendInterviewContext(
