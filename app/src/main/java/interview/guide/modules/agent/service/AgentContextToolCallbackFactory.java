@@ -49,6 +49,7 @@ public class AgentContextToolCallbackFactory {
     private static final int MAX_SEARCH_QUERY_CHARS = 512;
     private static final int MAX_TOOL_IDENTIFIER_CHARS = 128;
     private static final int MAX_TOOL_TIME_CHARS = 64;
+    private static final int MAX_SCHEDULE_RESULTS = 20;
 
     private static final String SEARCH_SCHEMA = """
         {"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":10}},"additionalProperties":false}
@@ -395,7 +396,7 @@ public class AgentContextToolCallbackFactory {
         int windowMinutes = integer(input, "windowMinutes", 60, 5, 240);
         List<ScheduleSummary> conflicts = interviewScheduleService.listForOwner(
                 context.ownerKey(), interviewTime.minusMinutes(windowMinutes),
-                interviewTime.plusMinutes(windowMinutes), 50
+                interviewTime.plusMinutes(windowMinutes), MAX_SCHEDULE_RESULTS
             ).stream()
             .filter(item -> item.getStatus() != InterviewStatus.CANCELLED
                 && item.getStatus() != InterviewStatus.COMPLETED)
@@ -670,12 +671,13 @@ public class AgentContextToolCallbackFactory {
     }
 
     private LocalDateTime optionalTime(JsonNode input, String field) {
-        String value = text(input, field);
+        String value = boundedText(input, field, MAX_TOOL_TIME_CHARS,
+            "工具时间字段过长，未执行任何操作");
         return value.isBlank() ? null : parseTime(value, field + "格式应为 yyyy-MM-ddTHH:mm");
     }
 
     private LocalDateTime requiredTime(JsonNode input, String field, String message) {
-        String value = required(input, field, message);
+        String value = required(input, field, message, MAX_TOOL_TIME_CHARS);
         return parseTime(value, field + "格式应为 yyyy-MM-ddTHH:mm");
     }
 

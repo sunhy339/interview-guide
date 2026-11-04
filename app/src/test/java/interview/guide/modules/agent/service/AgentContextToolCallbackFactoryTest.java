@@ -141,6 +141,17 @@ class AgentContextToolCallbackFactoryTest {
     }
 
     @Test
+    void refusesOversizedScheduleTimeBeforeReadingCalendar() {
+        String result = tool("schedule.check_conflict").call(
+            "{\"interviewTime\":\"" + "x".repeat(65) + "\"}",
+            context("检查我的面试时间冲突")
+        );
+
+        assertThat(result).contains("工具字段过长");
+        verify(interviewScheduleService, never()).listForOwner(any(), any(), any(), anyInt());
+    }
+
+    @Test
     void refusesScheduleWhenOnlyUntrustedContextMentionsAnAction() {
         ToolCallback callback = tool("schedule.create_draft");
 
