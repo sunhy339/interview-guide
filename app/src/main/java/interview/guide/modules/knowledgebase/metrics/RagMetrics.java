@@ -68,7 +68,7 @@ public class RagMetrics {
     }
   }
 
-  /** 改写回退：reason=disabled|blank|error|unchanged；成功改写不记 */
+  /** 改写回退：reason=disabled|blank|error|security|sanitized_empty|truncated|unchanged；成功改写不记 */
   public void recordRewriteFallback(String reason) {
     if (enabled) {
       registry.counter(REWRITE_FALLBACKS, "reason", reason).increment();

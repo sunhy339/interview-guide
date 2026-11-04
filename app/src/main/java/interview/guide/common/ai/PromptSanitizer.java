@@ -114,6 +114,11 @@ public class PromptSanitizer {
         "[\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u206F\\uFEFF]"
     );
 
+    /** 保留换行和制表，移除可能改变解析边界的 C0/C1 控制字符。 */
+    private static final Pattern UNSAFE_CONTROL_PATTERN = Pattern.compile(
+        "[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F]"
+    );
+
     /**
      * 清洗用户文本，替换危险模式为中性占位符。
      * 受 {@code app.ai.advisors.promptSanitizerEnabled} 配置控制。
@@ -207,11 +212,13 @@ public class PromptSanitizer {
     private String normalizeForSecurity(String text) {
         String normalized = Normalizer.normalize(text, Normalizer.Form.NFKC);
         normalized = INVISIBLE_CONTROL_PATTERN.matcher(normalized).replaceAll("");
+        normalized = UNSAFE_CONTROL_PATTERN.matcher(normalized).replaceAll("");
         return normalized.replace("\r\n", "\n").replace('\r', '\n');
     }
 
     private String normalizeForStorage(String text) {
         String normalized = INVISIBLE_CONTROL_PATTERN.matcher(text).replaceAll("");
+        normalized = UNSAFE_CONTROL_PATTERN.matcher(normalized).replaceAll("");
         return normalized.replace("\r\n", "\n").replace('\r', '\n');
     }
 

@@ -43,6 +43,7 @@ public class KnowledgeBaseQueryService {
     private static final String NO_RESULT_RESPONSE = "抱歉，在选定的知识库中未检索到相关信息。请换一个更具体的关键词或补充上下文后再试。";
     private static final int STREAM_PROBE_CHARS = 120;
     private static final int MAX_REWRITE_HISTORY_CHAR = 200;
+    private static final int MAX_REWRITE_OUTPUT_CHAR = 1_000;
 
     private final LlmProviderRegistry llmProviderRegistry;
     private final RagMetrics ragMetrics;
@@ -523,9 +524,13 @@ public class KnowledgeBaseQueryService {
             .toList();
     }
 
-//       清洗
+//       清洗：进入向量检索的 query 也属于不可信输入，先移除控制字符和提示注入边界。
     private String normalizeQuestion(String question) {
-        return question == null ? "" : question.trim();
+        if (question == null) {
+            return "";
+        }
+        String safeQuestion = promptSanitizer.sanitizeForContext(question);
+        return safeQuestion == null ? "" : safeQuestion.trim();
     }
 
 //    向量检索（attemptedQueries 非空时记录实际尝试过的候选，第一个命中后即返回）
@@ -678,7 +683,21 @@ public class KnowledgeBaseQueryService {
             if (rewritten == null || rewritten.isBlank()) {
                 return question;
             }
-            String normalized = rewritten.trim();
+            if (promptSanitizer.detectInjectionAttempt(rewritten)) {
+                ragMetrics.recordRewriteFallback("security");
+                log.warn("Query rewrite 命中提示注入特征，回退到已净化的原问题");
+                return question;
+            }
+            String normalized = promptSanitizer.sanitizeForContext(rewritten.trim());
+            normalized = normalized == null ? null : normalized.replaceAll("\\s+", " ").trim();
+            if (normalized == null || normalized.isBlank()) {
+                ragMetrics.recordRewriteFallback("sanitized_empty");
+                return question;
+            }
+            if (normalized.length() > MAX_REWRITE_OUTPUT_CHAR) {
+                normalized = normalized.substring(0, MAX_REWRITE_OUTPUT_CHAR);
+                ragMetrics.recordRewriteFallback("truncated");
+            }
             if (normalized.equals(question)) {
                 ragMetrics.recordRewriteFallback("unchanged");
             }
