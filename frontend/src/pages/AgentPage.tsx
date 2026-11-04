@@ -185,6 +185,12 @@ function formatDurationMillis(value: number) {
   return seconds ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分`;
 }
 
+function promptPrefixLabel(version?: string | null, fingerprint?: string | null) {
+  if (!version && !fingerprint) return null;
+  const shortFingerprint = fingerprint ? `${fingerprint.slice(0, 12)}…` : null;
+  return `${version || '未知版本'}${shortFingerprint ? ` · 指纹 ${shortFingerprint}` : ''}`;
+}
+
 function formatRunStatus(status?: string | null) {
   const labels: Record<string, string> = {
     COMPLETED: '已完成',
@@ -2296,6 +2302,11 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                     <div><span className="dark-text-muted">模型</span><p className="mt-1 truncate font-semibold dark-text" title={run.model || undefined}>{run.model || run.provider || '默认模型'}</p></div>
                     <div><span className="dark-text-muted">费用</span><p className="mt-1 font-semibold dark-text">{run.cost == null ? '未计价' : `${run.currency || ''} ${run.cost}`.trim()}</p></div>
                   </div>
+                  {promptPrefixLabel(run.promptVersion, run.promptFingerprint) ? (
+                    <p className="mt-2 text-[11px] dark-text-muted" title="仅展示安全策略版本和截短指纹，不展示系统提示内容">
+                      Prompt 安全策略：{promptPrefixLabel(run.promptVersion, run.promptFingerprint)}
+                    </p>
+                  ) : null}
                   {href ? <Link to={href} className="mt-3 inline-flex text-xs font-medium text-primary-600 hover:underline dark:text-primary-300">打开这场 Agent 对话</Link> : null}
                 </div>
               );
@@ -2598,6 +2609,11 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                 <p className="mt-2 text-[11px] dark-text-muted">
                   总 Token：{runUsage.totalTokens.toLocaleString()} · 费用：{runUsage.cost == null ? '未配置单价' : `${runUsage.cost} ${runUsage.currency || ''}`.trim()}
                 </p>
+                {promptPrefixLabel(runUsage.promptVersion, runUsage.promptFingerprint) ? (
+                  <p className="mt-1 text-[11px] dark-text-muted" title="仅展示安全策略版本和截短指纹，不展示系统提示内容">
+                    Prompt 安全策略：{promptPrefixLabel(runUsage.promptVersion, runUsage.promptFingerprint)}
+                  </p>
+                ) : null}
               </div>
             )}
             {sources.length > 0 && (
