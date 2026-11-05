@@ -37,14 +37,17 @@ import java.util.function.BiFunction;
 @Component
 public class AgentContextToolCallbackFactory {
 
-    private static final String INTERVIEW_SEARCH = "interview.search";
-    private static final String INTERVIEW_ATTACH = "interview.attach_context";
-    private static final String INTERVIEW_CLEAR = "interview.clear_context";
-    private static final String CONTEXT_LIST = "agent_context.list";
-    private static final String CONTEXT_ASSET_ACTION = "agent_context.asset_action";
-    private static final String SCHEDULE_LIST = "schedule.list";
-    private static final String SCHEDULE_CONFLICT = "schedule.check_conflict";
-    private static final String SCHEDULE_DRAFT = "schedule.create_draft";
+    // OpenAI-compatible tool names only allow letters, digits, '_' and '-'.
+    // Keep the namespace readable without dots so configured providers reject
+    // neither the tool schema nor the complete Agent request.
+    private static final String INTERVIEW_SEARCH = "interview_search";
+    private static final String INTERVIEW_ATTACH = "interview_attach_context";
+    private static final String INTERVIEW_CLEAR = "interview_clear_context";
+    private static final String CONTEXT_LIST = "agent_context_list";
+    private static final String CONTEXT_ASSET_ACTION = "agent_context_asset_action";
+    private static final String SCHEDULE_LIST = "schedule_list";
+    private static final String SCHEDULE_CONFLICT = "schedule_check_conflict";
+    private static final String SCHEDULE_DRAFT = "schedule_create_draft";
     private static final int MAX_TOOL_ASSETS = 20;
     private static final int MAX_SEARCH_QUERY_CHARS = 512;
     private static final int MAX_TOOL_IDENTIFIER_CHARS = 128;

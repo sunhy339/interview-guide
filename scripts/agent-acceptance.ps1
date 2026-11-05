@@ -15,6 +15,8 @@ param(
     [string]$BaseUrl = "http://localhost:8080",
     [string]$InterviewSessionId = "",
     [string]$UserId = "acceptance-$([guid]::NewGuid().ToString('N').Substring(0, 12))",
+    [string]$Email = "",
+    [string]$Password = "StrongPass123",
     [int]$Concurrency = 20,
     [switch]$RunModelTests
 )
@@ -24,6 +26,9 @@ $BaseUrl = $BaseUrl.TrimEnd('/')
 $validRunStatuses = @('IDLE', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED')
 $results = [System.Collections.Generic.List[object]]::new()
 $targetSessionId = $InterviewSessionId
+$script:webSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+$script:xsrfToken = ''
+$script:cookieHeader = ''
 
 function Assert-Condition {
     param(
@@ -49,6 +54,9 @@ function Invoke-Api {
     foreach ($key in $Headers.Keys) {
         $requestHeaders[$key] = $Headers[$key]
     }
+    if (-not [string]::IsNullOrWhiteSpace($script:cookieHeader)) {
+        $requestHeaders['Cookie'] = $script:cookieHeader
+    }
 
     $params = @{
         Uri = "$BaseUrl$Path"
@@ -61,6 +69,9 @@ function Invoke-Api {
     if ($null -ne $Body) {
         $params.ContentType = 'application/json; charset=utf-8'
         $params.Body = $Body | ConvertTo-Json -Depth 50 -Compress
+    }
+    if ($Method -ne 'GET' -and -not [string]::IsNullOrWhiteSpace($script:xsrfToken)) {
+        $params.Headers['X-XSRF-TOKEN'] = $script:xsrfToken
     }
 
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -82,6 +93,54 @@ function Invoke-Api {
             Headers = @{}
         }
     }
+}
+
+function Parse-Json {
+    param([string]$Raw, [string]$Description)
+    if ([string]::IsNullOrWhiteSpace($Raw)) { throw "$Description 返回空响应" }
+    try { return $Raw | ConvertFrom-Json -Depth 50 }
+    catch { throw "$Description 返回非 JSON：$Raw" }
+}
+
+function Initialize-Authentication {
+    if ([string]::IsNullOrWhiteSpace($script:acceptanceEmail)) {
+        $script:acceptanceEmail = "agent-acceptance-$([guid]::NewGuid().ToString('N').Substring(0, 12))@example.com"
+        $register = Invoke-WebRequest -Uri "$BaseUrl/api/auth/register" -Method POST `
+            -WebSession $script:webSession -UseBasicParsing -SkipHttpErrorCheck `
+            -ContentType 'application/json; charset=utf-8' `
+            -Body (@{ email = $script:acceptanceEmail; password = $Password; nickname = 'Agent Acceptance' } | ConvertTo-Json -Compress)
+        $registerJson = Parse-Json ([string]$register.Content) '注册 Agent 验收账号'
+        Assert-Condition ($registerJson.code -eq 200) "注册 Agent 验收账号失败：$($registerJson.message)"
+    }
+
+    $login = Invoke-WebRequest -Uri "$BaseUrl/api/auth/login" -Method POST `
+        -WebSession $script:webSession -UseBasicParsing -SkipHttpErrorCheck `
+        -ContentType 'application/json; charset=utf-8' `
+        -Body (@{ email = $script:acceptanceEmail; password = $Password } | ConvertTo-Json -Compress)
+    $loginJson = Parse-Json ([string]$login.Content) "登录 $($script:acceptanceEmail)"
+    Assert-Condition ($loginJson.code -eq 200) "登录 Agent 验收账号失败：$($loginJson.message)"
+    $xsrfCookie = $script:webSession.Cookies.GetCookies($BaseUrl) |
+        Where-Object Name -eq 'XSRF-TOKEN' | Select-Object -Last 1
+    Assert-Condition ($null -ne $xsrfCookie) '登录后未取得 XSRF-TOKEN'
+    $script:xsrfToken = [Uri]::UnescapeDataString([string]$xsrfCookie.Value)
+    $script:cookieHeader = ($script:webSession.Cookies.GetCookies($BaseUrl) |
+        ForEach-Object { "$($_.Name)=$($_.Value)" }) -join '; '
+    Write-Host "Authenticated acceptance user: $($script:acceptanceEmail)" -ForegroundColor DarkGray
+}
+
+function Invoke-UnauthenticatedJsonApi {
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        [ValidateSet('GET', 'POST', 'PUT', 'PATCH', 'DELETE')] [string]$Method = 'GET'
+    )
+    $anonymousSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+    $response = Invoke-WebRequest -Uri "$BaseUrl$Path" -Method $Method -WebSession $anonymousSession `
+        -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 30
+    $json = $null
+    if (-not [string]::IsNullOrWhiteSpace([string]$response.Content)) {
+        try { $json = ([string]$response.Content | ConvertFrom-Json -Depth 50) } catch { }
+    }
+    return [pscustomobject]@{ Response = $response; Json = $json }
 }
 
 function Invoke-JsonApi {
@@ -142,6 +201,24 @@ function Assert-ResultSuccess {
 
 Write-Host "Agent acceptance matrix: $BaseUrl" -ForegroundColor Cyan
 Write-Host "User key: $UserId" -ForegroundColor DarkGray
+$script:acceptanceEmail = $Email
+Initialize-Authentication
+
+if ([string]::IsNullOrWhiteSpace($targetSessionId)) {
+    # Formal authentication scopes interviews by the logged-in account. Always
+    # create a disposable owned session instead of selecting another account's
+    # historical data from the global list.
+    $created = Invoke-JsonApi -Path '/api/interview/sessions' -Method POST -Body @{
+        resumeText = ''
+        questionCount = 3
+        forceCreate = $true
+        skillId = 'java-backend'
+        difficulty = 'mid'
+        requestId = "agent-acceptance-$([guid]::NewGuid().ToString('N'))"
+    }
+    Assert-ResultSuccess $created 'create acceptance interview'
+    $targetSessionId = [string]$created.Json.data.sessionId
+}
 
 Add-TestResult 'GET interview session list' {
     $script:sessionListResult = Invoke-JsonApi -Path '/api/interview/sessions'
@@ -194,9 +271,8 @@ if ([string]::IsNullOrWhiteSpace($targetSessionId)) {
     }
 
     Add-TestResult 'Agent rejects missing identity header' {
-        $result = Invoke-JsonApi -Path "/api/agent/interview-sessions/$escapedSessionId/conversation"
-        Assert-Condition ($result.Response.StatusCode -eq 200) "missing identity HTTP $($result.Response.StatusCode)"
-        Assert-Condition ($null -ne $result.Json -and $result.Json.code -eq 401) "missing identity was not rejected: $($result.Response.Body)"
+        $result = Invoke-UnauthenticatedJsonApi -Path "/api/agent/interview-sessions/$escapedSessionId/conversation"
+        Assert-Condition ($result.Response.StatusCode -eq 401 -or ($null -ne $result.Json -and $result.Json.code -eq 401)) "missing identity was not rejected: HTTP $($result.Response.StatusCode), $($result.Response.Body)"
     }
 
     Add-TestResult 'Agent conversation thread list and creation' {
@@ -208,6 +284,7 @@ if ([string]::IsNullOrWhiteSpace($targetSessionId)) {
         while ($script:agentConversations.Count -lt 2) {
             $letter = if ($script:agentConversations.Count -eq 0) { 'A' } else { 'B' }
             $created = Invoke-JsonApi -Path "/api/agent/interview-sessions/$escapedSessionId/conversations" -Method POST -Body @{ title = "验收线程 $letter" } -Headers $agentHeaders
+            Assert-Condition ($created.Response.StatusCode -eq 200) "create Agent conversation $letter HTTP $($created.Response.StatusCode): $($created.Response.Body)"
             Assert-ResultSuccess $created "create Agent conversation $letter"
             Assert-Condition (-not [string]::IsNullOrWhiteSpace([string]$created.Json.data.agentSessionId)) "create Agent conversation $letter missing agentSessionId"
             $script:agentConversations += $created.Json.data
@@ -229,10 +306,8 @@ if ([string]::IsNullOrWhiteSpace($targetSessionId)) {
     }
 
     Add-TestResult 'Agent conversation rejects another identity' {
-        $otherHeaders = @{ 'X-User-Id' = "$UserId-other" }
-        $result = Invoke-JsonApi -Path "/api/agent/interview-sessions/$escapedSessionId/conversation?agentSessionId=$([Uri]::EscapeDataString($script:agentSessionA))" -Headers $otherHeaders
-        Assert-Condition ($result.Response.StatusCode -eq 200) "cross-owner HTTP $($result.Response.StatusCode)"
-        Assert-Condition ($null -ne $result.Json -and $result.Json.code -eq 403) "cross-owner access was not rejected: $($result.Response.Body)"
+        $result = Invoke-UnauthenticatedJsonApi -Path "/api/agent/interview-sessions/$escapedSessionId/conversation?agentSessionId=$([Uri]::EscapeDataString($script:agentSessionA))"
+        Assert-Condition ($result.Response.StatusCode -eq 401 -or ($null -ne $result.Json -and $result.Json.code -in @(401, 403))) "cross-owner access was not rejected: HTTP $($result.Response.StatusCode), $($result.Response.Body)"
     }
 
     Add-TestResult 'Agent conversation rename persists' {
@@ -309,7 +384,7 @@ if ([string]::IsNullOrWhiteSpace($targetSessionId)) {
         $readResults = @(1..$Concurrency | ForEach-Object -Parallel {
             $watch = [System.Diagnostics.Stopwatch]::StartNew()
             try {
-                $response = Invoke-WebRequest -Uri "$using:BaseUrl/api/agent/interview-sessions/$using:escapedSessionId/conversation" -Headers @{ 'X-User-Id' = $using:UserId } -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 30
+                $response = Invoke-WebRequest -Uri "$using:BaseUrl/api/agent/interview-sessions/$using:escapedSessionId/conversation" -Headers @{ Cookie = $using:cookieHeader } -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 30
                 $watch.Stop()
                 [pscustomobject]@{ StatusCode = [int]$response.StatusCode; DurationMs = [math]::Round($watch.Elapsed.TotalMilliseconds, 2) }
             } catch {

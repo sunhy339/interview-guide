@@ -57,9 +57,9 @@ class AgentContextToolCallbackFactoryTest {
         assertThat(factory.callbacks())
             .extracting(callback -> callback.getToolDefinition().name())
             .containsExactly(
-                "interview.search", "interview.attach_context", "interview.clear_context",
-                "agent_context.list", "agent_context.asset_action", "schedule.list",
-                "schedule.check_conflict", "schedule.create_draft"
+                "interview_search", "interview_attach_context", "interview_clear_context",
+                "agent_context_list", "agent_context_asset_action", "schedule_list",
+                "schedule_check_conflict", "schedule_create_draft"
             );
         assertThat(factory.callbacks())
             .allSatisfy(callback -> assertThat(callback.getToolDefinition().inputSchema())
@@ -601,8 +601,9 @@ class AgentContextToolCallbackFactoryTest {
     }
 
     private ToolCallback tool(String name) {
+        String providerSafeName = name.replace('.', '_');
         return factory.callbacks().stream()
-            .filter(callback -> name.equals(callback.getToolDefinition().name()))
+            .filter(callback -> providerSafeName.equals(callback.getToolDefinition().name()))
             .findFirst()
             .orElseThrow();
     }
