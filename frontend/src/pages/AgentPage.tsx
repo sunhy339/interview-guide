@@ -24,7 +24,6 @@ import {
   RotateCcw,
   Send,
   Settings2,
-  Sparkles,
   Target,
   Trash2,
   UserRound,
@@ -395,15 +394,16 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const routeSessionId = searchParams.get('sessionId');
   const routeAgentSessionId = searchParams.get('agentSessionId');
-  const storedAgentSessionId = useMemo(() => getStoredAgentThreadId(), []);
+  const storedGeneralAgentSessionId = useMemo(() => getStoredAgentThreadId('general'), []);
+  const storedInterviewAgentSessionId = useMemo(() => getStoredAgentThreadId('interview'), []);
   // /agent 默认是通用 Agent；只有链接显式带 sessionId 时才读取面试报告。
   const sessionId = routeSessionId;
   const needsInterviewContext = Boolean(sessionId) && (isWorkspaceView || view === 'actions' || view === 'memory');
   const isGeneralWorkspace = isWorkspaceView && !sessionId;
   // 地址带有报告 ID 时不使用上一次报告的线程；通用 Agent 使用独立的会话线程。
   const agentSessionId = routeSessionId
-    ? resolveAgentThreadId(routeSessionId, routeAgentSessionId, null, storedAgentSessionId)
-    : routeAgentSessionId || storedAgentSessionId;
+    ? resolveAgentThreadId(routeSessionId, routeAgentSessionId, null, storedInterviewAgentSessionId)
+    : routeAgentSessionId || storedGeneralAgentSessionId;
   const isGeneralAgentSession = !sessionId && Boolean(agentSessionId);
   const [goal, setGoal] = useState<AgentGoal>('review');
   const [providerId, setProviderId] = useState('');
@@ -495,7 +495,9 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     if (routeSessionId) {
       rememberAgentSessionId(routeSessionId);
     }
-    if (routeAgentSessionId) rememberAgentThreadId(routeAgentSessionId);
+    if (routeAgentSessionId) {
+      rememberAgentThreadId(routeAgentSessionId, routeSessionId ? 'interview' : 'general');
+    }
   }, [routeAgentSessionId, routeSessionId]);
 
   const clearReconciliationTimer = useCallback(() => {
@@ -694,7 +696,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                 const fallback = sorted[0];
                 if (fallback && fallback.sessionId !== sessionId) {
                   rememberAgentSessionId(fallback.sessionId);
-                  rememberAgentThreadId(null);
+                  rememberAgentThreadId(null, 'interview');
                   setContextError('当前链接来自其他环境或已失效，已切换到当前账号最近的面试记录。');
                   setSearchParams({ sessionId: fallback.sessionId }, { replace: true });
                   return;
@@ -776,7 +778,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         const resolvedAgentSessionId = conversation.agentSessionId || null;
         if (resolvedAgentSessionId
           && (!routeAgentSessionId || resolvedAgentSessionId !== routeAgentSessionId)) {
-          rememberAgentThreadId(resolvedAgentSessionId);
+          rememberAgentThreadId(resolvedAgentSessionId, 'interview');
           setSearchParams((current) => {
             current.set('sessionId', sessionId);
             current.set('agentSessionId', resolvedAgentSessionId);
@@ -892,7 +894,9 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       ? '集中确认 Agent 草稿，推进专项训练任务'
       : view === 'usage'
         ? '查看 Token、模型调用、耗时、费用和活动轨迹'
-        : '把面试报告转成可执行的复盘和训练动作';
+        : isGeneralWorkspace
+          ? '直接提问，按需添加简历、面试报告或知识库资料'
+          : '把面试报告转成可执行的复盘和训练动作';
   const currentMemoryScope = interview?.skillId?.trim().toLowerCase() || '';
   const applicableMemoryItems = memory?.items.filter((item) => {
     const itemScope = item.jobScope?.trim().toLowerCase() || '';
@@ -1883,20 +1887,20 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
 
   const selectAgentSession = (nextSessionId: string) => {
     if (nextSessionId === sessionId) return;
-    rememberAgentThreadId(null);
+    rememberAgentThreadId(null, 'interview');
     setSearchParams({ sessionId: nextSessionId });
   };
 
   const selectAgentConversation = (nextAgentSessionId: string) => {
     if (nextAgentSessionId === agentSessionId) return;
-    rememberAgentThreadId(nextAgentSessionId);
+    rememberAgentThreadId(nextAgentSessionId, sessionId ? 'interview' : 'general');
     setSearchParams(sessionId
       ? { sessionId, agentSessionId: nextAgentSessionId }
       : { agentSessionId: nextAgentSessionId });
   };
 
   const clearAgentConversation = () => {
-    rememberAgentThreadId(null);
+    rememberAgentThreadId(null, sessionId ? 'interview' : 'general');
     setSearchParams(sessionId ? { sessionId } : {});
   };
 
@@ -1918,7 +1922,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         if (createConversationRequestRef.current?.key === pending.key) {
           createConversationRequestRef.current = null;
         }
-        rememberAgentThreadId(conversation.agentSessionId);
+        rememberAgentThreadId(conversation.agentSessionId, isGeneralWorkspace ? 'general' : 'interview');
         setSearchParams(sessionId
           ? { sessionId, agentSessionId: conversation.agentSessionId }
           : { agentSessionId: conversation.agentSessionId });
@@ -1958,7 +1962,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-bold text-slate-900 dark:text-white">{viewTitle}</h1>
+              <h1 className="text-2xl font-bold text-slate-900 dark:text-white">{isWorkspaceView && isGeneralWorkspace ? '通用 Agent' : viewTitle}</h1>
               <span className="status-badge bg-primary-50 dark:bg-primary-900/30 text-primary-600 dark:text-primary-300 border-primary-100 dark:border-primary-800/50">
                 Agent 已接入
               </span>
@@ -2407,6 +2411,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
           selectedSessionId={sessionId}
           onSelect={selectAgentSession}
           onCreate={() => navigate('/interviews')}
+          onOpenGeneralAgent={() => navigate('/agent')}
           selectedAgentSessionId={agentSessionId}
           onSelectAgentConversation={selectAgentConversation}
           onCreateAgentConversation={createAgentConversation}
@@ -2509,15 +2514,16 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
             )}
           </section>
 
-          <section className="dark-card p-6">
-            <div className="flex items-start justify-between gap-4 mb-5">
+          <details className="dark-card p-6 group">
+            <summary className="flex cursor-pointer list-none items-start justify-between gap-4">
               <div>
-                <p className="text-xs font-semibold text-primary-500 uppercase tracking-wider mb-1">Workflow</p>
-                <h2 className="text-lg font-semibold dark-text">Agent 工作流</h2>
-                <p className="text-sm dark-text-muted mt-1">后端会结合面试报告、Skill 和知识库生成建议。</p>
+                <p className="text-xs font-semibold text-primary-500 uppercase tracking-wider mb-1">Details</p>
+                <h2 className="text-lg font-semibold dark-text">执行详情</h2>
+                <p className="text-sm dark-text-muted mt-1">仅在需要排查任务状态时查看，不影响正常对话。</p>
               </div>
-              <Sparkles className="w-5 h-5 text-primary-500" />
-            </div>
+              <ChevronDown className="w-5 h-5 text-primary-500 transition-transform group-open:rotate-180" />
+            </summary>
+            <div className="mt-5">
             <div className="space-y-3">
               {steps.map((step, index) => (
                 <div key={step.id} className="flex gap-3">
@@ -2657,7 +2663,8 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                 </div>
               </div>
             )}
-          </section>
+            </div>
+          </details>
         </div> : null}
 
         <section className="dark-card overflow-hidden xl:sticky xl:top-10 min-w-0">
@@ -2668,8 +2675,8 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                 <MessageSquare className="w-4 h-4" />
               </div>
               <div>
-                <h2 className="font-semibold dark-text">教练对话</h2>
-                <p className="text-xs dark-text-muted mt-0.5">围绕「{selectedGoal.title}」继续</p>
+                <h2 className="font-semibold dark-text">{isGeneralWorkspace ? '通用 Agent' : '面试复盘对话'}</h2>
+                <p className="text-xs dark-text-muted mt-0.5">{isGeneralWorkspace ? '不绑定面试报告，按需添加资料' : `围绕「${selectedGoal.title}」继续`}</p>
               </div>
             </div>
             <span className={`w-2 h-2 rounded-full ${runStatus === 'running' ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400'}`} />

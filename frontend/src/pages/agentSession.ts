@@ -1,5 +1,14 @@
 const ACTIVE_SESSION_STORAGE_KEY = 'agent-active-interview-session';
-const ACTIVE_AGENT_THREAD_STORAGE_KEY = 'agent-active-thread-session';
+const ACTIVE_GENERAL_AGENT_THREAD_STORAGE_KEY = 'agent-active-general-thread-session';
+const ACTIVE_INTERVIEW_AGENT_THREAD_STORAGE_KEY = 'agent-active-interview-thread-session';
+
+export type AgentThreadScope = 'general' | 'interview';
+
+function threadStorageKey(scope: AgentThreadScope) {
+  return scope === 'general'
+    ? ACTIVE_GENERAL_AGENT_THREAD_STORAGE_KEY
+    : ACTIVE_INTERVIEW_AGENT_THREAD_STORAGE_KEY;
+}
 
 /** 页面切换时保留当前 Agent 绑定的面试报告；使用 sessionStorage 避免跨浏览器会话串用。 */
 export function getStoredAgentSessionId(): string | null {
@@ -25,7 +34,8 @@ export function clearStoredAgentSession(): void {
   if (typeof window === 'undefined') return;
   try {
     window.sessionStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
-    window.sessionStorage.removeItem(ACTIVE_AGENT_THREAD_STORAGE_KEY);
+    window.sessionStorage.removeItem(ACTIVE_GENERAL_AGENT_THREAD_STORAGE_KEY);
+    window.sessionStorage.removeItem(ACTIVE_INTERVIEW_AGENT_THREAD_STORAGE_KEY);
   } catch {
     // 当前 URL 仍然可以作为最终状态来源。
   }
@@ -56,20 +66,24 @@ export function resolveAgentThreadId(
   return null;
 }
 
-export function getStoredAgentThreadId(): string | null {
+export function getStoredAgentThreadId(scope: AgentThreadScope = 'interview'): string | null {
   if (typeof window === 'undefined') return null;
   try {
-    return window.sessionStorage.getItem(ACTIVE_AGENT_THREAD_STORAGE_KEY);
+    return window.sessionStorage.getItem(threadStorageKey(scope));
   } catch {
     return null;
   }
 }
 
-export function rememberAgentThreadId(agentSessionId: string | null): void {
+export function rememberAgentThreadId(
+  agentSessionId: string | null,
+  scope: AgentThreadScope = 'interview',
+): void {
   if (typeof window === 'undefined') return;
   try {
-    if (agentSessionId) window.sessionStorage.setItem(ACTIVE_AGENT_THREAD_STORAGE_KEY, agentSessionId);
-    else window.sessionStorage.removeItem(ACTIVE_AGENT_THREAD_STORAGE_KEY);
+    const key = threadStorageKey(scope);
+    if (agentSessionId) window.sessionStorage.setItem(key, agentSessionId);
+    else window.sessionStorage.removeItem(key);
   } catch {
     // 当前 URL 仍然是线程状态的最终来源。
   }

@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { resolveAgentSessionId, resolveAgentThreadId } from './agentSession.ts';
+import {
+  clearStoredAgentSession,
+  getStoredAgentThreadId,
+  rememberAgentThreadId,
+  resolveAgentSessionId,
+  resolveAgentThreadId,
+} from './agentSession.ts';
 
 test('URL 中的面试会话优先于页面保存的会话', () => {
   assert.equal(resolveAgentSessionId('from-url', 'from-storage'), 'from-url');
@@ -34,4 +40,36 @@ test('URL 中明确指定的 Agent 线程优先', () => {
     resolveAgentThreadId('last-session', 'thread-url', 'last-session', 'thread-storage'),
     'thread-url',
   );
+});
+
+test('通用 Agent 和面试报告线程使用独立的恢复位置', () => {
+  const values = new Map<string, string>();
+  const originalWindow = (globalThis as { window?: unknown }).window;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      sessionStorage: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => values.set(key, value),
+        removeItem: (key: string) => values.delete(key),
+      },
+    },
+  });
+
+  try {
+    rememberAgentThreadId('general-thread', 'general');
+    rememberAgentThreadId('interview-thread', 'interview');
+
+    assert.equal(getStoredAgentThreadId('general'), 'general-thread');
+    assert.equal(getStoredAgentThreadId('interview'), 'interview-thread');
+
+    clearStoredAgentSession();
+    assert.equal(getStoredAgentThreadId('general'), null);
+    assert.equal(getStoredAgentThreadId('interview'), null);
+  } finally {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: originalWindow,
+    });
+  }
 });

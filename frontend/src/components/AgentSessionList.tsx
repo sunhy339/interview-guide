@@ -12,6 +12,7 @@ interface AgentSessionListProps {
   agentConversationDisabled?: boolean;
   onSelect: (sessionId: string) => void;
   onCreate: () => void;
+  onOpenGeneralAgent?: () => void;
   selectedAgentSessionId?: string | null;
   onSelectAgentConversation?: (agentSessionId: string) => void;
   onCreateAgentConversation?: () => Promise<AgentConversationSummary | void>;
@@ -54,6 +55,7 @@ export default function AgentSessionList({
   agentConversationDisabled = false,
   onSelect,
   onCreate,
+  onOpenGeneralAgent,
   selectedAgentSessionId = null,
   onSelectAgentConversation,
   onCreateAgentConversation,
@@ -219,28 +221,52 @@ export default function AgentSessionList({
           : '先选择面试报告，再在同一份报告下切换多个 Agent 对话；每个对话都有独立历史和运行状态。'}
       </p>
 
-      <button
-        type="button"
-        onClick={onCreate}
-        className="btn-primary w-full mt-4 inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-sm"
-      >
-        <Plus className="w-4 h-4" />
-        {generalMode ? '选择面试报告' : '从面试记录新建'}
-      </button>
+      {generalMode && onCreateAgentConversation ? (
+        <button
+          type="button"
+          onClick={() => void createAgentConversation()}
+          disabled={agentConversationDisabled || creatingConversation}
+          className="btn-primary w-full mt-4 inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-sm disabled:opacity-50"
+        >
+          {creatingConversation ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageSquare className="w-4 h-4" />}
+          {creatingConversation ? '创建中...' : '新建通用 Agent 对话'}
+        </button>
+      ) : null}
 
-      {(generalMode || selectedSessionId) && onCreateAgentConversation && (
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={onCreate}
+          className={`${generalMode ? 'btn-secondary' : 'btn-primary'} inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs`}
+        >
+          <Plus className="w-3.5 h-3.5" />
+          {generalMode ? '引用面试报告' : '选择面试记录'}
+        </button>
+        {!generalMode && onOpenGeneralAgent ? (
+          <button
+            type="button"
+            onClick={onOpenGeneralAgent}
+            className="btn-secondary inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs"
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+            通用 Agent
+          </button>
+        ) : null}
+      </div>
+
+      {!generalMode && selectedSessionId && onCreateAgentConversation ? (
         <button
           type="button"
           onClick={() => void createAgentConversation()}
           // 新建线程不属于当前线程的执行操作；当前线程运行时也必须允许用户创建并切换其他线程。
           disabled={agentConversationDisabled || creatingConversation}
           className="btn-secondary w-full mt-2 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-sm disabled:opacity-50"
-          title={agentConversationDisabled && !disabled && !generalMode ? '请先选择一份有效的面试报告' : undefined}
+          title={agentConversationDisabled && !disabled ? '请先选择一份有效的面试报告' : undefined}
         >
           {creatingConversation ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageSquare className="w-4 h-4" />}
-          {creatingConversation ? '创建中...' : '新建 Agent 对话'}
+          {creatingConversation ? '创建中...' : '新建面试复盘对话'}
         </button>
-      )}
+      ) : null}
 
       <div className="mt-4 space-y-2 max-h-[min(55vh,560px)] overflow-y-auto pr-1 scrollbar-thin">
         {loading ? (
