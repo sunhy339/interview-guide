@@ -16,6 +16,14 @@ test('识别明天下午三点的复习时间', () => {
   assert.equal(suggestScheduleTime('明天下午3点复习', now), '2026-10-28T15:00');
 });
 
+test('识别安排明天中午面试会议的自然语言意图', () => {
+  const intent = detectAgentActionIntent('帮我安排一下明天12点的一个面试会议', now);
+  assert.deepEqual(intent, {
+    type: 'schedule',
+    suggestedTime: '2026-10-28T12:00',
+  });
+});
+
 test('普通复盘请求和取消安排不会误触发动作', () => {
   assert.equal(detectAgentActionIntent('请复盘一下这场面试'), null);
   assert.equal(detectAgentActionIntent('不要安排复习日程'), null);

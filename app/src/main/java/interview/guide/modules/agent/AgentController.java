@@ -612,6 +612,23 @@ public class AgentController {
         ));
     }
 
+    /** 通用 Agent 只生成待确认的面试日程草稿，不要求先绑定面试报告。 */
+    @PostMapping("/api/agent/sessions/{agentSessionId}/actions/interview-schedule-draft")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 10)
+    public Result<AgentActionResponse> proposeGeneralInterviewScheduleDraft(
+        @PathVariable String agentSessionId,
+        @Valid @RequestBody CreateAgentScheduleDraftRequest request,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        String identity = authIdentityService.requireIdentity(ownerKey);
+        conversationService.assertAccess(null, agentSessionId, identity);
+        return Result.success(actionService.proposeInterviewScheduleDraft(
+            null, agentSessionId, identity, request.companyName(), request.position(),
+            request.interviewTime(), request.interviewType(), request.meetingLink(),
+            request.roundNumber(), request.interviewer(), request.notes(), request.idempotencyKey()
+        ));
+    }
+
     /** 只生成待确认的长期记忆草稿，确认后才写入结构化记忆。 */
     @PostMapping("/api/agent/interview-sessions/{sessionId}/conversations/{agentSessionId}/actions/memory-draft")
     @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 20)

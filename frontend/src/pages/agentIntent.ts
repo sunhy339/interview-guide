@@ -91,7 +91,9 @@ export function detectAgentActionIntent(message: string, now = new Date()): Agen
   }
   const asksForSchedule = /(安排|预约|加入日程|排个|排一下|提醒我|设置).{0,12}(复习|练习|巩固|日程|时间|准备面试)/.test(normalized)
     || /(复习|练习|巩固|准备面试).{0,12}(下周|明天|后天|周末|今晚|日程|时间)/.test(normalized);
-  if (!asksForSchedule) return null;
+  const asksForInterviewMeeting = /(安排|预约|创建|添加).{0,16}(面试会议|面试|会议|日程)/.test(normalized)
+    && /(下周|明天|后天|周末|今晚|晚上|\d{1,2}月\d{1,2}日|\d{1,2}(?:点|时|:))/.test(normalized);
+  if (!asksForSchedule && !asksForInterviewMeeting) return null;
   return {
     type: 'schedule',
     suggestedTime: suggestScheduleTime(normalized, now),

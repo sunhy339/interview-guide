@@ -250,20 +250,95 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
     });
   });
 
+  test('切换 Agent 对话会保留未发送的输入草稿，并隐藏快捷动作区', async ({ page }) => {
+    await page.goto('/agent?mode=interview&sessionId=interview-1&agentSessionId=thread-a');
+    const input = page.getByPlaceholder('输入你的问题，按需添加上下文...');
+    await input.fill('这段内容切换会话后仍然要保留');
+    await page.getByText('第二轮训练', { exact: true }).click();
+    await page.getByText('第一轮复盘', { exact: true }).click();
+    await expect(input).toHaveValue('这段内容切换会话后仍然要保留');
+    await expect(page.getByLabel('Agent 快捷动作')).not.toBeVisible();
+    await expect(page.getByText('保存为长期记忆', { exact: true })).not.toBeVisible();
+  });
+
+  test('通用 Agent 可以从自然语言生成面试会议待确认草稿', async ({ page }) => {
+    await page.addInitScript(() => {
+      sessionStorage.removeItem('agent-active-general-thread-session');
+      sessionStorage.removeItem('agent-active-interview-session');
+      sessionStorage.removeItem('agent-active-thread-session');
+    });
+    const generalConversation = {
+      ...conversation('general-1', '通用对话', '已收到你的面试会议安排请求。'),
+      interviewSessionId: null,
+      goal: 'review',
+      messages: [{ role: 'assistant', content: '已收到你的面试会议安排请求。' }],
+    };
+    await page.route('**/api/agent/sessions', async route => {
+      if (route.request().method() === 'POST') {
+        await route.fulfill({
+          contentType: 'application/json',
+          body: envelope({ agentSessionId: 'general-1', interviewSessionId: null, title: '通用对话', runStatus: 'IDLE', createdAt: '2026-10-24T09:05:00', updatedAt: '2026-10-24T09:05:00' }),
+        });
+        return;
+      }
+      await route.fulfill({ contentType: 'application/json', body: envelope([]) });
+    });
+    await page.route('**/api/agent/sessions/general-1', async route => {
+      await route.fulfill({ contentType: 'application/json', body: envelope(generalConversation) });
+    });
+    await page.route('**/api/agent/sessions/general-1/messages/stream', async route => {
+      const body = [
+        ['agent-step', { type: 'step', step: 'context', status: 'completed' }],
+        ['agent-delta', { type: 'delta', content: '已收到你的面试会议安排请求。' }],
+        ['agent-done', { type: 'done' }],
+      ].map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join('');
+      await route.fulfill({ contentType: 'text/event-stream', body });
+    });
+    await page.route('**/api/agent/sessions/general-1/actions/interview-schedule-draft', async route => {
+      const payload = route.request().postDataJSON() as { interviewTime: string };
+      expect(payload.interviewTime).toMatch(/T12:00$/);
+      await route.fulfill({
+        contentType: 'application/json',
+        body: envelope({
+          actionId: 'general-schedule-1',
+          interviewSessionId: null,
+          agentSessionId: 'general-1',
+          toolId: 'interview.schedule.create',
+          riskLevel: 'BUSINESS_WRITE',
+          status: 'PROPOSED',
+          title: '安排面试日程',
+          previewText: '确认后创建面试日程',
+          draftContent: `主题：面试会议\n岗位：面试\n时间：${payload.interviewTime}`,
+          resultSummary: null,
+        }),
+      });
+    });
+
+    await page.goto('/agent');
+    await expect(page.locator('h1', { hasText: '通用 Agent' })).toBeVisible();
+    const input = page.getByPlaceholder('输入你的问题，按需添加上下文...');
+    await input.fill('帮我安排一下明天12点的一个面试会议');
+    await input.press('Enter');
+    await expect(page.getByLabel('面试日程草稿表单')).toBeVisible();
+    await expect(page.getByLabel('面试时间')).toHaveValue(/T12:00$/);
+    await page.getByRole('button', { name: '生成待确认日程' }).click();
+    await expect(page.getByText('面试日程草稿已生成，请先检查时间和内容再确认')).toBeVisible();
+  });
+
   test('切换页面、刷新和多线程都保持会话隔离', async ({ page }) => {
     const trainingTaskRequests: string[] = [];
     page.on('request', request => {
       if (request.url().includes('/api/agent/training-tasks')) trainingTaskRequests.push(request.url());
     });
-    await page.goto('/agent?sessionId=interview-1&agentSessionId=thread-a');
+    await page.goto('/agent?mode=interview&sessionId=interview-1&agentSessionId=thread-a');
     await expect(page.getByText('线程 A 的复盘内容')).toBeVisible();
     await expect(page.getByLabel('Agent 动作草稿')).not.toBeVisible();
     expect(trainingTaskRequests).toHaveLength(0);
-    await expect(page.getByRole('region', { name: 'Agent Loop 轨迹' })).toContainText('已读取面试报告');
+    await expect(page.getByPlaceholder('输入你的问题，按需添加上下文...')).toBeVisible();
     const managementOverview = page.getByRole('region', { name: 'Agent 管理入口' });
     const agentNavigation = page.getByRole('navigation', { name: 'Agent 页面导航' });
     await expect(managementOverview).toBeVisible();
-    await expect(managementOverview.getByRole('link', { name: /记忆管理/ })).toHaveAttribute('href', /\/agent\/memory\?sessionId=interview-1&agentSessionId=thread-a/);
+    await expect(managementOverview.getByRole('link', { name: /记忆管理/ })).toHaveAttribute('href', /\/agent\/memory\?mode=interview&sessionId=interview-1&agentSessionId=thread-a/);
     await agentNavigation.getByRole('link', { name: '用量与活动', exact: true }).click();
     await expect(page.getByRole('region', { name: 'Agent 累计用量' })).toContainText('2,000');
     await expect(page.getByRole('region', { name: 'Agent 累计用量' })).toContainText('pixel · USD 0.30');
@@ -291,39 +366,39 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
     page.on('request', request => {
       if (request.url().includes('/api/agent/training-tasks')) trainingTaskRequests.push(request.url());
     });
-    await page.goto('/agent?sessionId=interview-1&agentSessionId=thread-a');
+    await page.goto('/agent?mode=interview&sessionId=interview-1&agentSessionId=thread-a');
     const agentNavigation = page.getByRole('navigation', { name: 'Agent 页面导航' });
 
     await agentNavigation.getByRole('link', { name: '记忆管理', exact: true }).click();
-    await expect(page).toHaveURL(/\/agent\/memory\?sessionId=interview-1&agentSessionId=thread-a/);
+    await expect(page).toHaveURL(/\/agent\/memory\?mode=interview&sessionId=interview-1&agentSessionId=thread-a/);
     await expect(page.getByRole('heading', { name: '记忆管理' })).toBeVisible();
     await expect(page.getByRole('region', { name: 'Agent 长期记忆' })).toContainText('Redis 缓存');
     await expect(page.getByRole('region', { name: '本场记忆应用预览' })).toContainText('本场生效');
     await expect(page.getByRole('region', { name: '本场记忆应用预览' })).toContainText('java-backend');
-    await expect(page.getByPlaceholder('问问你的面试教练...')).not.toBeVisible();
+    await expect(page.getByPlaceholder('输入你的问题，按需添加上下文...')).not.toBeVisible();
 
     await agentNavigation.getByRole('link', { name: '动作与训练', exact: true }).click();
-    await expect(page).toHaveURL(/\/agent\/actions\?sessionId=interview-1&agentSessionId=thread-a/);
+    await expect(page).toHaveURL(/\/agent\/actions\?mode=interview&sessionId=interview-1&agentSessionId=thread-a/);
     await expect(page.getByRole('heading', { name: '动作与训练', exact: true })).toBeVisible();
     await expect(page.getByLabel('Agent 动作草稿')).toBeVisible();
     await expect.poll(() => trainingTaskRequests.length).toBeGreaterThan(0);
-    await expect(agentNavigation.getByRole('link', { name: '对话工作台', exact: true })).toHaveAttribute('href', /\/agent\?sessionId=interview-1&agentSessionId=thread-a/);
+    await expect(agentNavigation.getByRole('link', { name: '对话工作台', exact: true })).toHaveAttribute('href', /\/agent\?mode=interview&sessionId=interview-1&agentSessionId=thread-a/);
 
     await agentNavigation.getByRole('link', { name: '用量与活动', exact: true }).click();
-    await expect(page).toHaveURL(/\/agent\/usage\?sessionId=interview-1&agentSessionId=thread-a/);
+    await expect(page).toHaveURL(/\/agent\/usage\?mode=interview&sessionId=interview-1&agentSessionId=thread-a/);
     await expect(page.getByRole('heading', { name: '用量与活动' })).toBeVisible();
     await expect(page.getByRole('region', { name: 'Agent 累计用量' })).toContainText('2,000');
     await expect(page.getByRole('region', { name: 'Agent 最近活动' })).toContainText('运行完成');
     await expect(page.getByRole('region', { name: 'Agent 最近活动' })).toContainText('Java 后端高并发面试');
   });
 
-  test('新建 Agent 对话后立即选中并显示在列表中', async ({ page }) => {
-    await page.goto('/agent?sessionId=interview-1&agentSessionId=thread-a');
-    await page.getByRole('button', { name: '新建 Agent 对话' }).click();
+  test('新建面试复盘对话后立即选中并显示在列表中', async ({ page }) => {
+    await page.goto('/agent?mode=interview&sessionId=interview-1&agentSessionId=thread-a');
+    await page.getByRole('button', { name: '新建面试复盘对话' }).click();
 
     await expect(page).toHaveURL(/agentSessionId=thread-new/);
     await expect(page.getByText('新 Agent 对话', { exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: '新建 Agent 对话' })).toBeEnabled();
+    await expect(page.getByRole('button', { name: '新建面试复盘对话' })).toBeEnabled();
   });
 
   test('当前线程执行时仍可新建其他 Agent 对话', async ({ page }) => {
@@ -340,8 +415,8 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
       await route.fulfill({ contentType: 'application/json', body: envelope(current) });
     });
 
-    await page.goto('/agent?sessionId=interview-1&agentSessionId=thread-a');
-    const createButton = page.getByRole('button', { name: '新建 Agent 对话' });
+    await page.goto('/agent?mode=interview&sessionId=interview-1&agentSessionId=thread-a');
+    const createButton = page.getByRole('button', { name: '新建面试复盘对话' });
     await expect(createButton).toBeEnabled();
     await createButton.click();
 
@@ -362,8 +437,8 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
       await route.fallback();
     });
 
-    await page.goto('/agent?sessionId=interview-1&agentSessionId=thread-a');
-    await page.getByRole('button', { name: '新建 Agent 对话' }).click();
+    await page.goto('/agent?mode=interview&sessionId=interview-1&agentSessionId=thread-a');
+    await page.getByRole('button', { name: '新建面试复盘对话' }).click();
 
     await expect(page).toHaveURL(/\/login\?redirect=/);
     await expect(page.getByRole('heading', { name: 'AI Interview' })).toBeVisible();
@@ -377,9 +452,9 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
       });
     });
 
-    await page.goto('/agent?sessionId=missing');
+    await page.goto('/agent?mode=interview&sessionId=missing');
 
-    const createButton = page.getByRole('button', { name: '新建 Agent 对话' });
+    const createButton = page.getByRole('button', { name: '新建面试复盘对话' });
     await expect(page).toHaveURL(/sessionId=interview-1/);
     await expect(createButton).toBeEnabled();
     await createButton.click();
@@ -401,7 +476,7 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
       }
     });
 
-    await page.goto('/agent?sessionId=missing');
+    await page.goto('/agent?mode=interview&sessionId=missing');
 
     await expect(page).toHaveURL(/\/interview-hub$/);
   });
@@ -417,8 +492,8 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
       }
     });
 
-    await page.goto('/agent?sessionId=interview-1&agentSessionId=thread-a');
-    const createButton = page.getByRole('button', { name: '新建 Agent 对话' });
+    await page.goto('/agent?mode=interview&sessionId=interview-1&agentSessionId=thread-a');
+    const createButton = page.getByRole('button', { name: '新建面试复盘对话' });
     await Promise.all([createButton.click(), createButton.click()]);
 
     await expect(page).toHaveURL(/agentSessionId=thread-new/);
@@ -460,12 +535,14 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
       });
     });
 
-    await page.goto('/agent?sessionId=interview-1');
-    await expect(page.getByRole('button', { name: '新建 Agent 对话' })).toBeVisible();
+    await page.goto('/agent?mode=interview&sessionId=interview-1');
+    await expect(page.getByRole('button', { name: '新建面试复盘对话' })).toBeVisible();
     await expect(page.getByText('还没有 Agent 对话，点击上方按钮新建。')).toBeVisible();
     expect(createRequests).toBe(0);
 
-    await page.getByRole('button', { name: '开始执行' }).click();
+    const input = page.getByPlaceholder('输入你的问题，按需添加上下文...');
+    await input.fill('请复盘这场面试');
+    await input.press('Enter');
     await expect(page).toHaveURL(/agentSessionId=thread-auto/);
     await expect(page.getByText('自动建立线程后的回答')).toBeVisible();
     expect(createRequests).toBe(1);
@@ -487,8 +564,8 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
       await route.fulfill({ contentType: 'application/json', body: envelope(created) });
     });
 
-    await page.goto('/agent?sessionId=interview-1&agentSessionId=thread-a');
-    const createButton = page.getByRole('button', { name: '新建 Agent 对话' });
+    await page.goto('/agent?mode=interview&sessionId=interview-1&agentSessionId=thread-a');
+    const createButton = page.getByRole('button', { name: '新建面试复盘对话' });
     await createButton.click();
     await expect(page.locator('p.text-rose-500').filter({ hasText: /失败|不可用|请求/ })).toBeVisible();
     await expect(createButton).toBeEnabled();
@@ -500,20 +577,20 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
     expect(idempotencyKeys[0]).toBe(idempotencyKeys[1]);
   });
 
-  test('从其他页面返回 Agent 时恢复保存的面试报告和线程', async ({ page }) => {
+  test('直接返回 Agent 时保持通用对话，不自动带入上一次面试报告', async ({ page }) => {
     await page.addInitScript(() => {
       sessionStorage.setItem('agent-active-interview-session', 'interview-1');
       sessionStorage.setItem('agent-active-thread-session', 'thread-b');
     });
 
     await page.goto('/agent');
-    await expect(page).toHaveURL(/sessionId=interview-1/);
-    await expect(page).toHaveURL(/agentSessionId=thread-b/);
-    await expect(page.getByText('线程 B 的训练内容')).toBeVisible();
+    await expect(page).not.toHaveURL(/sessionId=/);
+    await expect(page.locator('h1', { hasText: '通用 Agent' })).toBeVisible();
+    await expect(page.getByText('线程 B 的训练内容')).not.toBeVisible();
     await expect(page.getByText('线程 A 的复盘内容')).not.toBeVisible();
   });
 
-  test('直接打开 Agent 时自动选中最近面试报告并显示新建入口', async ({ page }) => {
+  test('直接打开 Agent 时显示通用对话和新建入口', async ({ page }) => {
     await page.addInitScript(() => {
       sessionStorage.removeItem('agent-active-interview-session');
       sessionStorage.removeItem('agent-active-thread-session');
@@ -521,17 +598,18 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
 
     await page.goto('/agent');
 
-    await expect(page).toHaveURL(/sessionId=interview-1/);
-    await expect(page.getByText('线程 A 的复盘内容')).toBeVisible();
-    await expect(page.getByRole('button', { name: '新建 Agent 对话' })).toBeEnabled();
+    await expect(page).not.toHaveURL(/sessionId=/);
+    await expect(page.locator('h1', { hasText: '通用 Agent' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '新建对话' })).toBeEnabled();
   });
 
   test('执行任务时展示 Loop 事件并保留最终回答', async ({ page }) => {
-    await page.goto('/agent?sessionId=interview-1&agentSessionId=thread-a');
-    await expect(page.getByRole('button', { name: '开始执行' })).toBeEnabled();
-    await page.getByRole('button', { name: '开始执行' }).click();
+    await page.goto('/agent?mode=interview&sessionId=interview-1&agentSessionId=thread-a');
+    const input = page.getByPlaceholder('输入你的问题，按需添加上下文...');
+    await input.fill('请开始本场面试复盘');
+    await input.press('Enter');
     await expect(page.getByText('Loop 已完成，建议优先补充故障定位案例。')).toBeVisible();
-    await expect(page.getByRole('region', { name: 'Agent Loop 轨迹' })).toContainText('已读取面试报告；识别到 1 个待关注项。');
+    await expect(page.getByPlaceholder('输入你的问题，按需添加上下文...')).toBeVisible();
   });
 
   test('自然语言安排复习时自动打开日程草稿并等待确认', async ({ page }) => {
@@ -549,7 +627,7 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
           toolId: 'interview.schedule.create',
           riskLevel: 'BUSINESS_WRITE',
           status: 'PROPOSED',
-          title: '安排复习日程',
+          title: '安排面试日程',
           previewText: '确认后创建复习日程',
           draftContent: `主题：${payload.companyName}\n岗位：${payload.position}\n时间：${payload.interviewTime}`,
           resultSummary: null,
@@ -557,15 +635,15 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
       });
     });
 
-    await page.goto('/agent?sessionId=interview-1&agentSessionId=thread-a');
-    const input = page.getByPlaceholder('问问你的面试教练...');
+    await page.goto('/agent?mode=interview&sessionId=interview-1&agentSessionId=thread-a');
+    const input = page.getByPlaceholder('输入你的问题，按需添加上下文...');
     await input.fill('帮我安排明天下午3点复习 Redis');
     await input.press('Enter');
 
-    await expect(page.getByLabel('复习日程草稿表单')).toBeVisible();
-    await expect(page.getByLabel('复习时间')).toHaveValue(/T15:00$/);
+    await expect(page.getByLabel('面试日程草稿表单')).toBeVisible();
+    await expect(page.getByLabel('面试时间')).toHaveValue(/T15:00$/);
     await page.getByRole('button', { name: '生成待确认日程' }).click();
-    await expect(page.getByLabel('Agent 动作提示')).toContainText('复习日程草稿已生成');
+    await expect(page.getByLabel('Agent 动作提示')).toContainText('面试日程草稿已生成');
     await page.route('**/api/agent/interview-sessions/interview-1/actions*', async route => {
       await route.fulfill({
         contentType: 'application/json',
@@ -576,7 +654,7 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
           toolId: 'interview.schedule.create',
           riskLevel: 'BUSINESS_WRITE',
           status: 'PROPOSED',
-          title: '安排复习日程',
+          title: '安排面试日程',
           previewText: '确认后创建复习日程',
           draftContent: '主题：Java 后端高并发面试',
           resultSummary: null,
@@ -585,7 +663,7 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
     });
     await page.getByLabel('Agent 动作提示').getByRole('link', { name: '去处理动作' }).click();
     const scheduleAction = page.getByLabel('Agent 动作草稿');
-    await expect(scheduleAction.getByText('安排复习日程', { exact: true })).toBeVisible();
+    await expect(scheduleAction.getByText('安排面试日程', { exact: true })).toBeVisible();
     await expect(scheduleAction.getByText('待确认', { exact: true })).toBeVisible();
   });
 
@@ -611,8 +689,8 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
       });
     });
 
-    await page.goto('/agent?sessionId=interview-1&agentSessionId=thread-a');
-    const input = page.getByPlaceholder('问问你的面试教练...');
+    await page.goto('/agent?mode=interview&sessionId=interview-1&agentSessionId=thread-a');
+    const input = page.getByPlaceholder('输入你的问题，按需添加上下文...');
     await input.fill('帮我创建一个训练任务，重点练 Redis');
     await input.press('Enter');
 
@@ -638,56 +716,6 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
     const taskAction = page.getByLabel('Agent 动作草稿');
     await expect(taskAction.getByText('创建训练任务', { exact: true })).toBeVisible();
     await expect(taskAction.getByText('待确认', { exact: true })).toBeVisible();
-  });
-
-  test('快捷动作可以基于最近回答生成待确认训练任务', async ({ page }) => {
-    await page.route('**/api/agent/interview-sessions/interview-1/conversations/thread-a/actions/training-task-draft', async route => {
-      const payload = route.request().postDataJSON() as { content: string; idempotencyKey: string };
-      expect(payload.content).toBe('线程 A 的复盘内容');
-      expect(payload.idempotencyKey).toMatch(/^task:thread-a:\d+$/);
-      await route.fulfill({
-        contentType: 'application/json',
-        body: envelope({
-          actionId: 'quick-task-action-1',
-          interviewSessionId: 'interview-1',
-          agentSessionId: 'thread-a',
-          toolId: 'training.task.create',
-          riskLevel: 'BUSINESS_WRITE',
-          status: 'PROPOSED',
-          title: '创建训练任务',
-          previewText: '确认后加入训练任务列表',
-          draftContent: '重点练习 Redis 缓存穿透与击穿',
-          resultSummary: null,
-        }),
-      });
-    });
-
-    await page.goto('/agent?sessionId=interview-1&agentSessionId=thread-a');
-    const quickActions = page.getByLabel('Agent 快捷动作');
-    await quickActions.getByRole('button', { name: '创建训练任务' }).click();
-
-    await expect(page.getByLabel('Agent 动作提示')).toContainText('训练任务草稿已生成');
-    await page.route('**/api/agent/interview-sessions/interview-1/actions*', async route => {
-      await route.fulfill({
-        contentType: 'application/json',
-        body: envelope([{
-          actionId: 'quick-task-action-1',
-          interviewSessionId: 'interview-1',
-          agentSessionId: 'thread-a',
-          toolId: 'training.task.create',
-          riskLevel: 'BUSINESS_WRITE',
-          status: 'PROPOSED',
-          title: '创建训练任务',
-          previewText: '确认后加入训练任务列表',
-          draftContent: '重点练习 Redis 缓存穿透与击穿',
-          resultSummary: null,
-        }]),
-      });
-    });
-    await page.getByLabel('Agent 动作提示').getByRole('link', { name: '去处理动作' }).click();
-    const actionDraft = page.getByLabel('Agent 动作草稿');
-    await expect(actionDraft.getByText('创建训练任务', { exact: true })).toBeVisible();
-    await expect(actionDraft.getByText('待确认', { exact: true })).toBeVisible();
   });
 
   test('已创建的训练任务可以进入专项面试并自动推进状态', async ({ page }) => {
@@ -744,7 +772,7 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
       });
     });
 
-    await page.goto('/agent/actions?sessionId=interview-1&agentSessionId=thread-a');
+    await page.goto('/agent/actions?mode=interview&sessionId=interview-1&agentSessionId=thread-a');
     const tasks = page.getByLabel('Agent 训练任务');
     await expect(tasks.getByText('补 Redis 缓存', { exact: true })).toBeVisible();
     const startTaskButton = tasks.getByRole('button', { name: '开始专项面试' });
@@ -811,7 +839,7 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
       });
     });
 
-    await page.goto('/agent/actions?sessionId=interview-1&agentSessionId=thread-a');
+    await page.goto('/agent/actions?mode=interview&sessionId=interview-1&agentSessionId=thread-a');
     await page.getByRole('button', { name: '开始专项练习' }).click();
     await expect.poll(() => createPayload).not.toBeNull();
     expect(createPayload).toMatchObject({
@@ -843,8 +871,10 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
       await route.fulfill({ contentType: 'text/event-stream', body });
     });
 
-    await page.goto('/agent?sessionId=interview-1&agentSessionId=thread-a');
-    await page.getByRole('button', { name: '开始执行' }).click();
+    await page.goto('/agent?mode=interview&sessionId=interview-1&agentSessionId=thread-a');
+    const input = page.getByPlaceholder('输入你的问题，按需添加上下文...');
+    await input.fill('请复盘这场面试');
+    await input.press('Enter');
     await expect(page.getByText('模型服务暂时不可用，请稍后重试').first()).toBeVisible();
     await expect(page.getByRole('button', { name: '重试执行' })).toBeEnabled();
 
@@ -856,7 +886,7 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
   });
 
   test('可以编辑和删除单条长期记忆', async ({ page }) => {
-    await page.goto('/agent/memory?sessionId=interview-1&agentSessionId=thread-a');
+    await page.goto('/agent/memory?mode=interview&sessionId=interview-1&agentSessionId=thread-a');
     await expect(page.getByLabel('编辑记忆：Redis 缓存')).toBeVisible();
     await expect(page.getByText('有效至', { exact: false })).toBeVisible();
 
@@ -891,7 +921,7 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
       }) });
     });
 
-    await page.goto('/agent/memory?sessionId=interview-1&agentSessionId=thread-a');
+    await page.goto('/agent/memory?mode=interview&sessionId=interview-1&agentSessionId=thread-a');
     await expect(page.getByRole('region', { name: 'Agent 长期记忆' })).toContainText('Redis 缓存');
     await expect(page.getByText('暂无长期记忆，完成一次 Agent 复盘后会自动积累。')).not.toBeVisible();
     expect(memoryRequests).toBeGreaterThanOrEqual(4);
@@ -914,7 +944,7 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
       await route.fulfill({ contentType: 'application/json', body: envelope([]) });
     });
 
-    await page.goto('/agent?sessionId=interview-1');
+    await page.goto('/agent?mode=interview&sessionId=interview-1');
     await expect(page.getByText('还没有 Agent 对话，点击上方按钮新建。')).toBeVisible();
     expect(actionRequests).toBe(0);
   });

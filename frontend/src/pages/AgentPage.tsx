@@ -279,10 +279,6 @@ function compactMemoryDraft(content: string) {
     .slice(0, 160);
 }
 
-function compactResumeEditDraft(content: string) {
-  return content.replace(/\u0000/g, '').trim().slice(0, 12_000);
-}
-
 function defaultScheduleTime() {
   const next = new Date(Date.now() + 24 * 60 * 60 * 1000);
   next.setMinutes(0, 0, 0);
@@ -476,10 +472,10 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const [trainingTaskBusyId, setTrainingTaskBusyId] = useState<string | null>(null);
   const [messages, setMessages] = useState<AgentMessage[]>([createWelcomeMessage()]);
   const [input, setInput] = useState('');
-  const latestAssistantMessage = useMemo(
-    () => [...messages].reverse().find((message) => message.role === 'assistant' && message.id !== 1 && message.content.trim()),
-    [messages],
-  );
+  const draftInputsRef = useRef<Record<string, string>>({});
+  const inputDraftKey = agentSessionId
+    || (isGeneralWorkspace ? 'general:new' : `interview:new:${sessionId || 'none'}`);
+  const draftKeyRef = useRef(inputDraftKey);
   const abortRef = useRef<AbortController | null>(null);
   const reconciliationTimerRef = useRef<number | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
@@ -633,6 +629,8 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
 
   useEffect(() => {
     // 同一个页面内切换会话时，先清掉上一份报告的本地状态，避免旧消息和步骤闪现到新会话。
+    draftInputsRef.current[draftKeyRef.current] = input;
+    draftKeyRef.current = inputDraftKey;
     activeAgentSessionIdRef.current = agentSessionId;
     abortRef.current?.abort();
     abortRef.current = null;
@@ -654,11 +652,11 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     setEditingActionContent('');
     setSteps(createInitialSteps());
     setMessages([createWelcomeMessage()]);
-    setInput('');
+    setInput(draftInputsRef.current[inputDraftKey] || '');
     if (createConversationRequestRef.current?.sessionId !== sessionId) {
       createConversationRequestRef.current = null;
     }
-  }, [agentSessionId, clearReconciliationTimer, sessionId]);
+  }, [agentSessionId, clearReconciliationTimer, inputDraftKey, sessionId]);
 
   useEffect(() => {
     // 面试上下文属于报告，不属于 Agent 线程；同一份报告切换线程时必须保留它。
@@ -701,7 +699,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                   rememberAgentSessionId(fallback.sessionId);
                   rememberAgentThreadId(null, 'interview');
                   setContextError('当前链接来自其他环境或已失效，已切换到当前账号最近的面试记录。');
-                  setSearchParams({ sessionId: fallback.sessionId }, { replace: true });
+                  setSearchParams({ mode: 'interview', sessionId: fallback.sessionId }, { replace: true });
                   return;
                 }
                 if (fallback) {
@@ -964,12 +962,11 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       return;
     }
 
+    const draftKeyAtStart = draftKeyRef.current;
     let targetAgentSessionId = agentSessionId;
     if (!targetAgentSessionId) {
       try {
-        const created = isGeneralWorkspace
-          ? await agentApi.createGeneralConversation(undefined, createRequestId())
-          : await createAgentConversation();
+        const created = await createAgentConversation();
         targetAgentSessionId = created?.agentSessionId || null;
       } catch (error: unknown) {
         setRunError(getErrorMessage(error) || '新建 Agent 对话失败，请稍后重试');
@@ -987,6 +984,10 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     const actionIntent = options?.actionIntent
       ?? (options?.retrying ? lastRunActionIntentRef.current : null);
     lastRunActionIntentRef.current = actionIntent;
+    if (actionIntent?.type === 'schedule') {
+      // 先展示可编辑草稿，不依赖 SSE 完成回调，避免回答已恢复但表单因连接中断没有出现。
+      openScheduleDraft({ id: Date.now(), role: 'assistant', content }, actionIntent.suggestedTime);
+    }
     const runRequest: AgentRunRequest = {
       goal: runGoal,
       message: content,
@@ -1006,6 +1007,10 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     clearReconciliationTimer();
     abortRef.current = controller;
 
+    delete draftInputsRef.current[draftKeyAtStart];
+    delete draftInputsRef.current[draftKeyRef.current];
+    draftKeyRef.current = targetAgentSessionId;
+    delete draftInputsRef.current[targetAgentSessionId];
     setInput('');
     setRunError('');
     setRunNotice('');
@@ -1071,13 +1076,6 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         void loadAgentActions();
         if (!actionIntent) autoProposeGoalAction(conversation, runGoal);
         autoProposeActionIntent(conversation, actionIntent);
-        if (actionIntent?.type === 'schedule') {
-          const assistantMessage = [...conversation.messages].reverse()
-            .find((message) => message.role === 'assistant' && message.content.trim());
-          if (assistantMessage && !assistantMessage.content.includes('本次任务未完成')) {
-            openScheduleDraft({ id: Date.now(), role: 'assistant', content: assistantMessage.content }, actionIntent.suggestedTime);
-          }
-        }
       }).catch(() => undefined);
     };
 
@@ -1331,26 +1329,6 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     void loadTrainingTasks();
   }, [loadTrainingTasks, view]);
 
-  const saveDraftAction = (message: AgentMessage, kind: 'plan' | 'practice') => {
-    if (!sessionId || !agentSessionId || message.role !== 'assistant' || !message.content.trim()) {
-      setActionNotice('当前 Agent 会话还未建立，暂时不能保存动作草稿');
-      return;
-    }
-    const isPractice = kind === 'practice';
-    setActionNotice(`正在生成待确认的${isPractice ? '练习题' : '训练计划'}草稿...`);
-    const request = isPractice
-      ? agentApi.proposePracticeQuestionsDraft
-      : agentApi.proposeTrainingPlanDraft;
-    void request(
-      sessionId, agentSessionId, message.content, stableActionKey(kind, agentSessionId, message.content),
-    )
-      .then((action) => {
-        setActions((current) => [action, ...current.filter((item) => item.actionId !== action.actionId)]);
-        setActionNotice(`${isPractice ? '练习题' : '训练计划'}草稿已生成，请在下方确认后保存`);
-      })
-      .catch((error: unknown) => setActionNotice(getErrorMessage(error) || `${isPractice ? '练习题' : '训练计划'}草稿生成失败，请稍后重试`));
-  };
-
   const autoProposeGoalAction = (conversation: AgentConversationResponse, runGoal: AgentGoal) => {
     if ((runGoal !== 'plan' && runGoal !== 'practice') || !conversation.agentSessionId || !sessionId) return;
     const assistantMessage = [...conversation.messages]
@@ -1423,139 +1401,32 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       .catch((error: unknown) => setActionNotice(getErrorMessage(error) || '动作草稿生成失败，可稍后手动生成'));
   };
 
-  const saveMemoryAction = (message: AgentMessage) => {
-    if (!sessionId || !agentSessionId || message.role !== 'assistant' || !message.content.trim()) {
-      setActionNotice('当前 Agent 会话还未建立，暂时不能保存长期记忆');
-      return;
-    }
-    const content = compactMemoryDraft(message.content);
-    if (!content) {
-      setActionNotice('这条回答没有可保存的记忆内容');
-      return;
-    }
-    const category = goal === 'plan' ? 'goal' : 'weakness';
-    setActionNotice('正在生成待确认的长期记忆草稿...');
-    void agentApi.proposeMemoryDraft(
-      sessionId,
-      agentSessionId,
-      content,
-      category,
-      interview?.skillId || undefined,
-      `memory:${agentSessionId}:${message.id}`,
-    )
-      .then((action) => {
-        setActions((current) => [action, ...current.filter((item) => item.actionId !== action.actionId)]);
-        setActionNotice('长期记忆草稿已生成，请确认后保存');
-      })
-      .catch((error: unknown) => setActionNotice(getErrorMessage(error) || '长期记忆草稿生成失败，请稍后重试'));
-  };
-
-  const saveTitleAction = (message: AgentMessage) => {
-    if (!sessionId || !agentSessionId || message.role !== 'assistant' || !message.content.trim()) {
-      setActionNotice('当前 Agent 会话还未建立，暂时不能建议面试名称');
-      return;
-    }
-    const fallback = `${selectedGoal.title} · ${interview?.title || '本场面试'}`;
-    const title = suggestInterviewTitle(message.content, fallback);
-    setActionNotice('正在生成待确认的面试名称...');
-    void agentApi.proposeInterviewTitleDraft(
-      sessionId,
-      agentSessionId,
-      title,
-      `title:${agentSessionId}:${message.id}`,
-    )
-      .then((action) => {
-        setActions((current) => [action, ...current.filter((item) => item.actionId !== action.actionId)]);
-        setActionNotice('面试名称草稿已生成，请确认后应用');
-      })
-      .catch((error: unknown) => setActionNotice(getErrorMessage(error) || '面试名称草稿生成失败，请稍后重试'));
-  };
-
-  const saveTrainingTaskAction = (message: AgentMessage) => {
-    if (!sessionId || !agentSessionId || message.role !== 'assistant' || !message.content.trim()) {
-      setActionNotice('当前 Agent 会话还未建立，暂时不能创建训练任务');
-      return;
-    }
-    setActionNotice('正在生成待确认的训练任务...');
-    void agentApi.proposeTrainingTaskDraft(
-      sessionId,
-      agentSessionId,
-      message.content,
-      `task:${agentSessionId}:${message.id}`,
-    )
-      .then((action) => {
-        setActions((current) => [action, ...current.filter((item) => item.actionId !== action.actionId)]);
-        setActionNotice('训练任务草稿已生成，请确认后创建');
-      })
-      .catch((error: unknown) => setActionNotice(getErrorMessage(error) || '训练任务草稿生成失败，请稍后重试'));
-  };
-
-  const saveReportExportAction = (message: AgentMessage) => {
-    if (!sessionId || !agentSessionId || message.role !== 'assistant') {
-      setActionNotice('当前 Agent 会话还未建立，暂时不能导出面试报告');
-      return;
-    }
-    setActionNotice('正在生成待确认的报告导出动作...');
-    void agentApi.proposeInterviewReportExportDraft(
-      sessionId,
-      agentSessionId,
-      `export-report:${agentSessionId}:${message.id}`,
-    )
-      .then((action) => {
-        setActions((current) => [action, ...current.filter((item) => item.actionId !== action.actionId)]);
-        setActionNotice('报告导出动作已生成，请确认后下载');
-      })
-      .catch((error: unknown) => setActionNotice(getErrorMessage(error) || '报告导出动作生成失败，请稍后重试'));
-  };
-
-  const saveResumeEditAction = (message: AgentMessage) => {
-    if (!sessionId || !agentSessionId || message.role !== 'assistant' || !message.content.trim()) {
-      setActionNotice('当前 Agent 会话还未建立，暂时不能生成简历优化版');
-      return;
-    }
-    const content = compactResumeEditDraft(message.content);
-    if (!content) {
-      setActionNotice('这条回答没有可保存的简历优化内容');
-      return;
-    }
-    setActionNotice('正在生成待确认的简历优化编辑版...');
-    void agentApi.proposeResumeEditDraft(
-      sessionId,
-      agentSessionId,
-      content,
-      `resume-edit:${agentSessionId}:${message.id}`,
-    )
-      .then((action) => {
-        setActions((current) => [action, ...current.filter((item) => item.actionId !== action.actionId)]);
-        setActionNotice('简历优化编辑版已生成，请确认后保存');
-      })
-      .catch((error: unknown) => setActionNotice(getErrorMessage(error) || '简历优化编辑版生成失败，请稍后重试'));
-  };
-
   const openScheduleDraft = (message: AgentMessage, suggestedTime?: string) => {
-    if (!sessionId || !agentSessionId || message.role !== 'assistant' || !message.content.trim()) {
-      setActionNotice('当前 Agent 会话还未建立，暂时不能安排复习日程');
+    const activeSessionId = agentSessionId || activeAgentSessionIdRef.current;
+    if ((!isGeneralWorkspace && !sessionId) || !activeSessionId || message.role !== 'assistant' || !message.content.trim()) {
+      setActionNotice('当前 Agent 会话还未建立，暂时不能安排面试日程');
       return;
     }
-    const fallbackTitle = interview?.title || '本场面试复习';
+    const fallbackTitle = interview?.title || '面试会议';
     setScheduleDraftForm({
       messageId: message.id,
       companyName: fallbackTitle,
-      position: interview?.skillId || '面试复盘',
+      position: interview?.skillId || '面试',
       interviewTime: suggestedTime || defaultScheduleTime(),
-      notes: `基于 Agent 复盘安排：${message.content.trim().replace(/\s+/g, ' ').slice(0, 1800)}`,
+      notes: `${isGeneralWorkspace ? '基于 Agent 对话安排' : '基于 Agent 复盘安排'}：${message.content.trim().replace(/\s+/g, ' ').slice(0, 1800)}`,
     });
-    setActionNotice('请填写复习日程后生成待确认动作');
+    setActionNotice('请填写面试日程后生成待确认动作');
   };
 
   const saveScheduleAction = () => {
-    if (!sessionId || !agentSessionId || !scheduleDraftForm) {
-      setActionNotice('请先填写复习日程');
+    const activeSessionId = agentSessionId || activeAgentSessionIdRef.current;
+    if ((!isGeneralWorkspace && !sessionId) || !activeSessionId || !scheduleDraftForm) {
+      setActionNotice('请先填写面试日程');
       return;
     }
     const { messageId, companyName, position, interviewTime, notes } = scheduleDraftForm;
     if (!companyName.trim() || !position.trim() || !interviewTime) {
-      setActionNotice('公司或主题、岗位和复习时间不能为空');
+      setActionNotice('公司或主题、岗位和面试时间不能为空');
       return;
     }
     const payload = {
@@ -1565,16 +1436,19 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       interviewType: 'OTHER',
       roundNumber: 1,
       notes: notes.trim().slice(0, 2000),
-      idempotencyKey: `schedule:${agentSessionId}:${messageId}:${interviewTime}:${position.trim()}`,
+      idempotencyKey: `schedule:${activeSessionId}:${messageId}:${interviewTime}:${position.trim()}`,
     };
-    setActionNotice('正在生成待确认的复习日程...');
-    void agentApi.proposeInterviewScheduleDraft(sessionId, agentSessionId, payload)
+    setActionNotice('正在生成待确认的面试日程...');
+    const request = isGeneralWorkspace
+      ? agentApi.proposeGeneralInterviewScheduleDraft(activeSessionId, payload)
+      : agentApi.proposeInterviewScheduleDraft(sessionId!, activeSessionId, payload);
+    void request
       .then((action) => {
         setActions((current) => [action, ...current.filter((item) => item.actionId !== action.actionId)]);
         setScheduleDraftForm(null);
-        setActionNotice('复习日程草稿已生成，请先检查时间和内容再确认');
+        setActionNotice('面试日程草稿已生成，请先检查时间和内容再确认');
       })
-      .catch((error: unknown) => setActionNotice(getErrorMessage(error) || '复习日程草稿生成失败，请稍后重试'));
+      .catch((error: unknown) => setActionNotice(getErrorMessage(error) || '面试日程草稿生成失败，请稍后重试'));
   };
 
   const confirmAgentAction = (actionId: string) => {
@@ -2717,70 +2591,6 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                     {message.role === 'assistant' ? (
                       <>
                         <AgentMarkdown content={message.content} />
-                        {message.id !== 1
-                          && message.content.trim()
-                          && !message.content.includes('本次任务未完成') ? (
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <button
-                              onClick={() => saveDraftAction(message, goal === 'practice' ? 'practice' : 'plan')}
-                              disabled={runStatus === 'running' || !agentSessionId}
-                              className="inline-flex items-center gap-1.5 rounded-lg border border-primary-200 bg-white/80 px-2.5 py-1.5 text-xs font-medium text-primary-700 transition-colors hover:border-primary-400 hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-primary-700 dark:bg-slate-800/70 dark:text-primary-300 dark:hover:bg-primary-900/30"
-                            >
-                              <ClipboardCheck className="w-3.5 h-3.5" />
-                              {goal === 'practice' ? '保存为练习题草稿' : '保存为训练计划草稿'}
-                            </button>
-                            <button
-                              onClick={() => saveMemoryAction(message)}
-                              disabled={runStatus === 'running' || !agentSessionId}
-                              className="inline-flex items-center gap-1.5 rounded-lg border border-primary-200 bg-white/80 px-2.5 py-1.5 text-xs font-medium text-primary-700 transition-colors hover:border-primary-400 hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-primary-700 dark:bg-slate-800/70 dark:text-primary-300 dark:hover:bg-primary-900/30"
-                            >
-                              <CheckCircle2 className="w-3.5 h-3.5" />
-                              保存为长期记忆
-                            </button>
-                            <button
-                              onClick={() => saveTitleAction(message)}
-                              disabled={runStatus === 'running' || !agentSessionId}
-                              className="inline-flex items-center gap-1.5 rounded-lg border border-primary-200 bg-white/80 px-2.5 py-1.5 text-xs font-medium text-primary-700 transition-colors hover:border-primary-400 hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-primary-700 dark:bg-slate-800/70 dark:text-primary-300 dark:hover:bg-primary-900/30"
-                            >
-                              <Pencil className="w-3.5 h-3.5" />
-                              建议面试名称
-                            </button>
-                            <button
-                              onClick={() => saveTrainingTaskAction(message)}
-                              disabled={runStatus === 'running' || !agentSessionId}
-                              className="inline-flex items-center gap-1.5 rounded-lg border border-primary-200 bg-white/80 px-2.5 py-1.5 text-xs font-medium text-primary-700 transition-colors hover:border-primary-400 hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-primary-700 dark:bg-slate-800/70 dark:text-primary-300 dark:hover:bg-primary-900/30"
-                            >
-                              <Target className="w-3.5 h-3.5" />
-                              创建训练任务
-                            </button>
-                            <button
-                              onClick={() => saveReportExportAction(message)}
-                              disabled={runStatus === 'running' || !agentSessionId}
-                              className="inline-flex items-center gap-1.5 rounded-lg border border-primary-200 bg-white/80 px-2.5 py-1.5 text-xs font-medium text-primary-700 transition-colors hover:border-primary-400 hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-primary-700 dark:bg-slate-800/70 dark:text-primary-300 dark:hover:bg-primary-900/30"
-                            >
-                              <Download className="w-3.5 h-3.5" />
-                              导出面试报告
-                            </button>
-                                    <button
-                                      onClick={() => openScheduleDraft(message)}
-                                      disabled={runStatus === 'running' || !agentSessionId}
-                                      className="inline-flex items-center gap-1.5 rounded-lg border border-primary-200 bg-white/80 px-2.5 py-1.5 text-xs font-medium text-primary-700 transition-colors hover:border-primary-400 hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-primary-700 dark:bg-slate-800/70 dark:text-primary-300 dark:hover:bg-primary-900/30"
-                                    >
-                                      <Clock3 className="w-3.5 h-3.5" />
-                                      安排复习日程
-                                    </button>
-                            {interview?.resumeId ? (
-                              <button
-                                onClick={() => saveResumeEditAction(message)}
-                                disabled={runStatus === 'running' || !agentSessionId}
-                                className="inline-flex items-center gap-1.5 rounded-lg border border-primary-200 bg-white/80 px-2.5 py-1.5 text-xs font-medium text-primary-700 transition-colors hover:border-primary-400 hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-primary-700 dark:bg-slate-800/70 dark:text-primary-300 dark:hover:bg-primary-900/30"
-                              >
-                                <FileText className="w-3.5 h-3.5" />
-                                生成简历优化版
-                              </button>
-                            ) : null}
-                          </div>
-                        ) : null}
                       </>
                     ) : (
                       <p className="whitespace-pre-wrap">{message.content}</p>
@@ -2811,95 +2621,30 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
 
           <div className="px-6 pb-6">
             {isWorkspaceView ? <>
-            <div className="flex flex-wrap gap-2 mb-3">
-              {['我最该先补什么？', '帮我追问这一题', '给我一个练习计划'].map((prompt) => (
-                <button key={prompt} onClick={() => setInput(prompt)} className="text-xs px-3 py-1.5 rounded-full border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-300 hover:border-primary-300 hover:text-primary-600 dark:hover:text-primary-300 transition-colors">
-                  {prompt}
-                </button>
-              ))}
-            </div>
-            <div className="mb-3 rounded-xl border border-primary-100 bg-primary-50/50 p-3 dark:border-primary-900/60 dark:bg-primary-900/10" aria-label="Agent 快捷动作">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <p className="text-xs font-semibold text-primary-800 dark:text-primary-200">快捷动作</p>
-                  <p className="mt-1 text-[11px] text-primary-700/80 dark:text-primary-300/80">
-                    作用于最近一条 Agent 回答，生成草稿后仍需你确认才会执行。
-                  </p>
-                </div>
-                {!latestAssistantMessage ? <span className="text-[11px] text-slate-400">完成一次回答后可用</span> : null}
-              </div>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => latestAssistantMessage && saveDraftAction(latestAssistantMessage, goal === 'practice' ? 'practice' : 'plan')}
-                  disabled={!latestAssistantMessage || runStatus === 'running' || !agentSessionId}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-primary-200 bg-white/80 px-2.5 py-1.5 text-xs font-medium text-primary-700 transition-colors hover:border-primary-400 hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-primary-700 dark:bg-slate-800/70 dark:text-primary-300 dark:hover:bg-primary-900/30"
-                >
-                  <ClipboardCheck className="h-3.5 w-3.5" />
-                  {goal === 'practice' ? '生成练习题草稿' : '生成训练计划草稿'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => latestAssistantMessage && saveTrainingTaskAction(latestAssistantMessage)}
-                  disabled={!latestAssistantMessage || runStatus === 'running' || !agentSessionId}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-primary-200 bg-white/80 px-2.5 py-1.5 text-xs font-medium text-primary-700 transition-colors hover:border-primary-400 hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-primary-700 dark:bg-slate-800/70 dark:text-primary-300 dark:hover:bg-primary-900/30"
-                >
-                  <Target className="h-3.5 w-3.5" />
-                  创建训练任务
-                </button>
-                <button
-                  type="button"
-                  onClick={() => latestAssistantMessage && saveMemoryAction(latestAssistantMessage)}
-                  disabled={!latestAssistantMessage || runStatus === 'running' || !agentSessionId}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-primary-200 bg-white/80 px-2.5 py-1.5 text-xs font-medium text-primary-700 transition-colors hover:border-primary-400 hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-primary-700 dark:bg-slate-800/70 dark:text-primary-300 dark:hover:bg-primary-900/30"
-                >
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                  保存为长期记忆
-                </button>
-                <button
-                  type="button"
-                  onClick={() => latestAssistantMessage && saveTitleAction(latestAssistantMessage)}
-                  disabled={!latestAssistantMessage || runStatus === 'running' || !agentSessionId}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-primary-200 bg-white/80 px-2.5 py-1.5 text-xs font-medium text-primary-700 transition-colors hover:border-primary-400 hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-primary-700 dark:bg-slate-800/70 dark:text-primary-300 dark:hover:bg-primary-900/30"
-                >
-                  <Pencil className="h-3.5 w-3.5" />
-                  修改面试名称
-                </button>
-                <button
-                  type="button"
-                  onClick={() => latestAssistantMessage && saveReportExportAction(latestAssistantMessage)}
-                  disabled={!latestAssistantMessage || runStatus === 'running' || !agentSessionId}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-primary-200 bg-white/80 px-2.5 py-1.5 text-xs font-medium text-primary-700 transition-colors hover:border-primary-400 hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-primary-700 dark:bg-slate-800/70 dark:text-primary-300 dark:hover:bg-primary-900/30"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  导出面试报告
-                </button>
-                <button
-                  type="button"
-                  onClick={() => latestAssistantMessage && openScheduleDraft(latestAssistantMessage)}
-                  disabled={!latestAssistantMessage || runStatus === 'running' || !agentSessionId}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-primary-200 bg-white/80 px-2.5 py-1.5 text-xs font-medium text-primary-700 transition-colors hover:border-primary-400 hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-primary-700 dark:bg-slate-800/70 dark:text-primary-300 dark:hover:bg-primary-900/30"
-                >
-                  <Clock3 className="h-3.5 w-3.5" />
-                  安排复习日程
-                </button>
-                {interview?.resumeId ? (
+            {(runNotice || runError) ? (
+              <div className={`mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border px-3 py-2.5 text-xs ${runError
+                ? 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/60 dark:bg-rose-900/20 dark:text-rose-300'
+                : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-900/20 dark:text-amber-300'}`}>
+                <span>{runError || runNotice}</span>
+                {runStatus === 'error' && lastRunRequestRef.current ? (
                   <button
                     type="button"
-                    onClick={() => latestAssistantMessage && saveResumeEditAction(latestAssistantMessage)}
-                    disabled={!latestAssistantMessage || runStatus === 'running' || !agentSessionId}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-primary-200 bg-white/80 px-2.5 py-1.5 text-xs font-medium text-primary-700 transition-colors hover:border-primary-400 hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-primary-700 dark:bg-slate-800/70 dark:text-primary-300 dark:hover:bg-primary-900/30"
+                    onClick={startRun}
+                    className="shrink-0 rounded-lg border border-current px-2.5 py-1 font-medium hover:bg-white/60 dark:hover:bg-slate-800/50"
                   >
-                    <FileText className="h-3.5 w-3.5" />
-                    生成简历优化版
+                    重试执行
                   </button>
                 ) : null}
               </div>
-            </div>
+            ) : null}
             <div className="relative">
               <textarea
                 value={input}
-                onChange={(event) => setInput(event.target.value)}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setInput(value);
+                  draftInputsRef.current[draftKeyRef.current] = value;
+                }}
                 onKeyDown={handleKeyDown}
                 maxLength={MAX_AGENT_MESSAGE_CHARS}
                 rows={3}
@@ -2939,10 +2684,10 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
               </div>
               {actionNotice ? <p className="mt-2 text-xs text-primary-700 dark:text-primary-300">{actionNotice}</p> : null}
               {scheduleDraftForm ? (
-                <div className="mt-3 rounded-xl border border-primary-200 bg-primary-50/70 p-3 dark:border-primary-800 dark:bg-primary-900/20" aria-label="复习日程草稿表单">
+                <div className="mt-3 rounded-xl border border-primary-200 bg-primary-50/70 p-3 dark:border-primary-800 dark:bg-primary-900/20" aria-label="面试日程草稿表单">
                   <div className="flex items-center justify-between gap-2">
                     <div>
-                      <p className="text-xs font-semibold text-primary-800 dark:text-primary-200">安排复习日程</p>
+                      <p className="text-xs font-semibold text-primary-800 dark:text-primary-200">安排面试日程</p>
                       <p className="mt-1 text-[11px] text-primary-700/80 dark:text-primary-300/80">先填写并生成预览，确认后才会写入面试日程。</p>
                     </div>
                     <button
@@ -2974,7 +2719,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                       />
                     </label>
                     <label className="text-[11px] text-slate-500 dark:text-slate-300">
-                      复习时间
+                      面试时间
                       <input
                         type="datetime-local"
                         value={scheduleDraftForm.interviewTime}

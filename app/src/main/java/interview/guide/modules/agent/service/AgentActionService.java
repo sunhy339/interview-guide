@@ -57,8 +57,8 @@ public class AgentActionService {
     private static final String REPORT_EXPORT_PREVIEW = "确认后校验当前面试归属并下载 PDF 报告，不修改面试内容。";
     private static final String RESUME_EDITOR_TITLE = "简历优化编辑版";
     private static final String RESUME_EDITOR_PREVIEW = "确认后保存为当前简历的 AI 编辑版草稿，原始上传文件不被覆盖；可继续手动修改、应用或导出。";
-    private static final String INTERVIEW_SCHEDULE_TITLE = "安排复习日程";
-    private static final String INTERVIEW_SCHEDULE_PREVIEW = "确认后在现有面试日程中创建一条复习安排，仅属于当前用户，不修改面试报告。";
+    private static final String INTERVIEW_SCHEDULE_TITLE = "安排面试日程";
+    private static final String INTERVIEW_SCHEDULE_PREVIEW = "确认后在面试日程中创建一条面试安排，仅属于当前用户，不修改面试报告。";
     private static final int MAX_OWNER_KEY = 64;
     private static final int MAX_IDEMPOTENCY_KEY = 128;
     private static final int MAX_CONTENT = 12_000;
@@ -178,7 +178,7 @@ public class AgentActionService {
         );
     }
 
-    /** 生成待确认的复习日程草稿；确认后才写入现有面试日程。 */
+    /** 生成待确认的面试日程草稿；确认后才写入面试日程。 */
     @Transactional
     public AgentActionResponse proposeInterviewScheduleDraft(
         String interviewSessionId,
@@ -200,7 +200,7 @@ public class AgentActionService {
         String normalizedCompany = sanitizeRequiredText(companyName, "公司或面试主题不能为空", 255);
         String normalizedPosition = sanitizeRequiredText(position, "复习岗位不能为空", 255);
         if (interviewTime == null) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "复习时间不能为空");
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "面试时间不能为空");
         }
         String normalizedType = sanitizeOptionalText(interviewType, 64);
         String normalizedLink = sanitizeOptionalText(meetingLink, 1000);
@@ -944,12 +944,12 @@ public class AgentActionService {
         });
         String company = requireScheduleValue(values, "主题", "公司或面试主题不能为空", 255);
         String position = requireScheduleValue(values, "岗位", "复习岗位不能为空", 255);
-        String timeValue = requireScheduleValue(values, "时间", "复习时间不能为空", 64);
+        String timeValue = requireScheduleValue(values, "时间", "面试时间不能为空", 64);
         LocalDateTime time;
         try {
             time = LocalDateTime.parse(timeValue);
         } catch (RuntimeException error) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "复习时间格式应为 yyyy-MM-ddTHH:mm");
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "面试时间格式应为 yyyy-MM-ddTHH:mm");
         }
         int round = 1;
         String roundValue = values.get("轮次");
