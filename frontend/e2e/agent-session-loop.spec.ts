@@ -295,8 +295,16 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
       await route.fulfill({ contentType: 'text/event-stream', body });
     });
     await page.route('**/api/agent/sessions/general-1/actions/interview-schedule-draft', async route => {
-      const payload = route.request().postDataJSON() as { interviewTime: string };
+      const payload = route.request().postDataJSON() as {
+        companyName: string;
+        position: string;
+        interviewTime: string;
+        notes: string;
+      };
       expect(payload.interviewTime).toMatch(/T12:00$/);
+      expect(payload.companyName).toBe('浪速公司');
+      expect(payload.position).toBe('agent开发工程师');
+      expect(payload.notes).toContain('北京时间（Asia/Shanghai）');
       await route.fulfill({
         contentType: 'application/json',
         body: envelope({
@@ -321,6 +329,10 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
     await input.press('Enter');
     await expect(page.getByLabel('面试日程草稿表单')).toBeVisible();
     await expect(page.getByLabel('面试时间')).toHaveValue(/T12:00$/);
+    await input.fill('北京时间，公司是浪速公司，职位是agent开发工程师');
+    await input.press('Enter');
+    await expect(page.getByLabel('公司或面试主题')).toHaveValue('浪速公司');
+    await expect(page.getByLabel('面试岗位')).toHaveValue('agent开发工程师');
     await page.getByRole('button', { name: '生成待确认日程' }).click();
     await expect(page.getByText('面试日程草稿已生成，请先检查时间和内容再确认')).toBeVisible();
   });
