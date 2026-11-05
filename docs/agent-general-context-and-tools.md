@@ -200,6 +200,7 @@ POST /api/agent/context-assets/{assetId}/knowledge-base/confirm
 | `schedule.list` | 查询当前用户指定范围内的日程摘要 | 只读 |
 | `schedule.check_conflict` | 检查目标时间附近是否有未取消日程 | 只读 |
 | `schedule.create_draft` | 生成待确认日程草稿 | 必须确认 |
+| `schedule.cancel_draft` | 结合当前消息和会话历史匹配唯一日程，生成待确认取消草稿 | 必须确认 |
 
 搜索结果只返回当前用户自己的轻量元数据；只有用户明确表达“使用/根据/基于某份面试报告”后，才允许绑定报告，避免无关报告泄漏到 Prompt。服务端会记住本轮搜索候选：唯一候选可以继续绑定，多个候选必须让用户明确提供面试编号或唯一名称，不能由模型默认选择第一条。绑定后的正文仍由后端上下文编排器加载和净化，工具本身不接受 owner 或任意 Repository 参数。
 
@@ -222,6 +223,28 @@ AgentActionService.confirm
   ↓
 InterviewScheduleService.createForOwner
 ```
+
+取消日程使用同一条受控链路，但不会只按当前一句话做字符串匹配：
+
+```text
+用户：帮我取消刚才安排的那个面试
+  ↓
+模型结合当前会话历史提取时间、公司、岗位或日程 ID
+  ↓
+schedule.list / schedule_cancel_draft
+  ↓
+0 条候选：说明未找到并要求补充条件
+多条候选：展示低敏摘要，要求用户选择，禁止默认取第一条
+唯一候选：生成“取消面试日程”待确认动作
+  ↓
+用户确认
+  ↓
+AgentActionService.confirm
+  ↓
+InterviewScheduleService.cancelForOwner（保留历史，仅标记 CANCELLED）
+```
+
+创建、取消和后续补充信息都先进入正常 Agent 会话，用户消息和助手结果统一持久化；前端的自然语言识别只能作为表单兜底，不能绕过 Agent、会话历史、owner 校验或动作确认。当前“面试会议”仍表示应用内的面试日程记录，不会自动创建腾讯会议、飞书、Zoom 房间或发送日历邀请；外部会议接入需要单独的 OAuth/API 或 MCP 适配层。
 
 当前项目的面试日程是本地日程记录，并不等于创建腾讯会议、飞书会议或 Zoom 房间。当前 Tool Callback 只生成日程草稿，仍需在“动作与训练”页确认；外部会议创建需要单独接入 OAuth、第三方 API 或 MCP Connector。
 
@@ -302,5 +325,8 @@ InterviewScheduleService.createForOwner
 - 固定前缀 hash 在只改变用户消息时保持不变；
 - Prompt Cache 不可用时功能不受影响；
 - 日程创建不会绕过确认、owner、幂等和审计；
+- 取消日程会结合当前会话历史，不会只解析单条消息；多个候选不会擅自选择；
+- 创建/补充/取消消息刷新后仍能在同一 Agent 会话中看到；
+- 已取消日程保留历史，已完成面试不能被 Agent 取消；
 - 同一动作重试不会生成重复日程；
 - 任何工具异常只影响当前 Agent 请求，不影响普通面试、简历和 RAG 功能。
