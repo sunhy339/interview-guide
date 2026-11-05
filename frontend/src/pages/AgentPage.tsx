@@ -164,7 +164,13 @@ const createWelcomeMessage = (): AgentMessage => ({
   content: '你好，我是你的 AI 面试教练。你可以直接提问，也可以在输入区添加简历、面试报告或上传文件作为本轮资料。',
 });
 
-const createInitialSteps = (): AgentStep[] => [
+const createInitialSteps = (general = false): AgentStep[] => general ? [
+  { id: 'context', title: '整理当前问题', description: '读取本轮消息和已明确添加的资料', status: 'pending' },
+  { id: 'planning', title: '判断是否需要工具', description: '仅在用户明确需要时查询资料或执行动作', status: 'pending' },
+  { id: 'loop', title: '执行受控 Agent Loop', description: '按有限步骤处理当前请求', status: 'pending' },
+  { id: 'insight', title: '组织回答', description: '围绕当前问题整理可靠信息', status: 'pending' },
+  { id: 'action', title: '直接输出结果', description: '用清晰的 Markdown 回复，不套用面试复盘模板', status: 'pending' },
+] : [
   { id: 'context', title: '整理面试上下文', description: '读取本场面试的问题、回答和评分', status: 'pending' },
   { id: 'planning', title: '规划处理路径', description: '确定是否需要 Skill 或知识库资料支持', status: 'pending' },
   { id: 'loop', title: '执行受控 Agent Loop', description: '按有限步骤调用工具并汇总可验证上下文', status: 'pending' },
@@ -414,7 +420,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const [contextError, setContextError] = useState('');
   const [runStatus, setRunStatus] = useState<RunStatus>('idle');
   const [runError, setRunError] = useState('');
-  const [steps, setSteps] = useState<AgentStep[]>(createInitialSteps);
+  const [steps, setSteps] = useState<AgentStep[]>(() => createInitialSteps(isGeneralWorkspace));
   const [sources, setSources] = useState<AgentSource[]>([]);
   const [loopPlan, setLoopPlan] = useState('');
   const [loopTrace, setLoopTrace] = useState<AgentLoopTraceItem[]>([]);
@@ -633,6 +639,13 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
 
   useEffect(() => {
     // 同一个页面内切换会话时，先清掉上一份报告的本地状态，避免旧消息和步骤闪现到新会话。
+    // 自动创建通用 Agent 线程后，URL 会异步补上 agentSessionId；此时如果当前请求
+    // 已经绑定到同一个线程，不能把 URL 同步误判成“切换会话”而中断刚启动的 SSE。
+    if (agentSessionId
+      && activeAgentSessionIdRef.current === agentSessionId
+      && lastRunRequestRef.current?.agentSessionId === agentSessionId) {
+      return;
+    }
     draftInputsRef.current[draftKeyRef.current] = input;
     draftKeyRef.current = inputDraftKey;
     activeAgentSessionIdRef.current = agentSessionId;
@@ -654,13 +667,13 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     setActionFeedback({});
     setEditingActionId(null);
     setEditingActionContent('');
-    setSteps(createInitialSteps());
+    setSteps(createInitialSteps(isGeneralWorkspace));
     setMessages([createWelcomeMessage()]);
     setInput(draftInputsRef.current[inputDraftKey] || '');
     if (createConversationRequestRef.current?.sessionId !== sessionId) {
       createConversationRequestRef.current = null;
     }
-  }, [agentSessionId, clearReconciliationTimer, inputDraftKey, sessionId]);
+  }, [agentSessionId, clearReconciliationTimer, inputDraftKey, isGeneralWorkspace, sessionId]);
 
   useEffect(() => {
     // 面试上下文属于报告，不属于 Agent 线程；同一份报告切换线程时必须保留它。
@@ -1022,7 +1035,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     setLoopPlan('');
     setLoopTrace([]);
     setRunStatus('running');
-    setSteps(createInitialSteps().map((step, index) => ({
+    setSteps(createInitialSteps(isGeneralWorkspace).map((step, index) => ({
       ...step,
       status: index === 0 ? 'running' : 'pending',
     })));
@@ -1116,6 +1129,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
               const hasScheduleAction = loadedActions.some((action) =>
                 action.toolId === 'interview.schedule.create'
                 || action.toolId === 'interview.schedule.cancel'
+                || action.toolId === 'interview.schedule.update'
               );
               if (hasScheduleAction) {
                 scheduleDraftFormRef.current = null;
@@ -1413,6 +1427,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
 
   const autoProposeActionIntent = (conversation: AgentConversationResponse, actionIntent: AgentActionIntent | null) => {
     if (!actionIntent || actionIntent.type === 'schedule' || actionIntent.type === 'scheduleCancel'
+      || actionIntent.type === 'scheduleUpdate'
       || !conversation.agentSessionId || !sessionId) return;
     const assistantMessage = [...conversation.messages]
       .reverse()
@@ -2563,7 +2578,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                 </button>
               )}
               {(runStatus === 'completed' || runStatus === 'error') && (
-              <button onClick={() => { setRunStatus('idle'); setRunError(''); setRunNotice(''); setSources([]); setRunUsage(null); setSteps(createInitialSteps()); }} className="btn-secondary inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm">
+              <button onClick={() => { setRunStatus('idle'); setRunError(''); setRunNotice(''); setSources([]); setRunUsage(null); setSteps(createInitialSteps(isGeneralWorkspace)); }} className="btn-secondary inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm">
                   <RotateCcw className="w-4 h-4" />
                   清空流程
                 </button>
@@ -2930,7 +2945,9 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                           <Download className="h-3.5 w-3.5" />
                           下载 Markdown
                         </button>
-                        {action.status === 'PROPOSED' && editingActionId !== action.actionId && action.toolId !== 'interview.schedule.cancel' ? (
+                        {action.status === 'PROPOSED' && editingActionId !== action.actionId
+                          && action.toolId !== 'interview.schedule.cancel'
+                          && action.toolId !== 'interview.schedule.update' ? (
                           <button
                             onClick={() => startEditAgentAction(action)}
                             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition-colors hover:border-primary-300 hover:text-primary-600 dark:border-slate-600 dark:text-slate-300 dark:hover:text-primary-300"
@@ -2967,6 +2984,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                                     : isAgentReportExportAction(action) ? '确认导出报告'
                                       : isAgentResumeEditAction(action) ? '确认保存简历版'
                                       : action.toolId === 'interview.schedule.cancel' ? '确认取消面试'
+                                      : action.toolId === 'interview.schedule.update' ? '确认修改面试'
                                       : isAgentScheduleAction(action) ? '确认创建日程'
                                       : '确认保存草稿'}
                           </button>

@@ -49,6 +49,7 @@ public class AgentContextToolCallbackFactory {
     private static final String SCHEDULE_CONFLICT = "schedule_check_conflict";
     private static final String SCHEDULE_DRAFT = "schedule_create_draft";
     private static final String SCHEDULE_CANCEL_DRAFT = "schedule_cancel_draft";
+    private static final String SCHEDULE_UPDATE_DRAFT = "schedule_update_draft";
     private static final int MAX_TOOL_ASSETS = 20;
     private static final int MAX_SEARCH_QUERY_CHARS = 512;
     private static final int MAX_TOOL_IDENTIFIER_CHARS = 128;
@@ -78,6 +79,9 @@ public class AgentContextToolCallbackFactory {
         """;
     private static final String SCHEDULE_CANCEL_SCHEMA = """
         {"type":"object","properties":{"scheduleId":{"type":"integer"},"interviewTime":{"type":"string","description":"本地时间，格式 yyyy-MM-ddTHH:mm"},"companyName":{"type":"string"},"position":{"type":"string"}},"additionalProperties":false}
+        """;
+    private static final String SCHEDULE_UPDATE_SCHEMA = """
+        {"type":"object","properties":{"scheduleId":{"type":"integer"},"currentInterviewTime":{"type":"string","description":"原日程本地时间，格式 yyyy-MM-ddTHH:mm"},"companyName":{"type":"string"},"position":{"type":"string"},"interviewTime":{"type":"string","description":"修改后的本地时间，格式 yyyy-MM-ddTHH:mm"},"interviewType":{"type":"string"},"meetingLink":{"type":"string"},"roundNumber":{"type":"integer","minimum":1,"maximum":20},"interviewer":{"type":"string"},"notes":{"type":"string"}},"additionalProperties":false}
         """;
 
     private final AgentInterviewContextService interviewContextService;
@@ -137,7 +141,10 @@ public class AgentContextToolCallbackFactory {
                 SCHEDULE_SCHEMA, this::scheduleDraft),
             callback(SCHEDULE_CANCEL_DRAFT,
                 "结合当前消息和对话历史查找当前用户要取消的唯一面试日程；匹配唯一时生成待确认取消动作，不直接取消。多个候选必须让用户选择。",
-                SCHEDULE_CANCEL_SCHEMA, this::scheduleCancelDraft)
+                SCHEDULE_CANCEL_SCHEMA, this::scheduleCancelDraft),
+            callback(SCHEDULE_UPDATE_DRAFT,
+                "结合当前消息和对话历史查找当前用户要修改的唯一面试日程；展示修改后的完整草稿并等待确认，不直接修改。多个候选必须让用户选择。",
+                SCHEDULE_UPDATE_SCHEMA, this::scheduleUpdateDraft)
         );
     }
 
@@ -500,6 +507,133 @@ public class AgentContextToolCallbackFactory {
         ));
     }
 
+    private String scheduleUpdateDraft(JsonNode input, ToolContext toolContext) {
+        ToolContextData context = context(toolContext);
+        rejectInjectedToolArguments(
+            input, "companyName", "position", "interviewType", "meetingLink", "interviewer", "notes"
+        );
+
+        Long scheduleId = optionalLong(input, "scheduleId");
+        LocalDateTime currentInterviewTime = optionalTime(input, "currentInterviewTime");
+        requireScheduleUpdateIntent(context.userMessage(), scheduleId, currentInterviewTime);
+        LocalDateTime targetInterviewTime = optionalTime(input, "interviewTime");
+        String companyName = optionalSafeText(input, "companyName", 255);
+        String position = optionalSafeText(input, "position", 255);
+        List<InterviewScheduleDTO> candidates;
+        if (scheduleId != null) {
+            candidates = List.of(interviewScheduleService.getForOwner(scheduleId, context.ownerKey()));
+        } else {
+            LocalDateTime start = currentInterviewTime == null ? null : currentInterviewTime.minusMinutes(1);
+            LocalDateTime end = currentInterviewTime == null ? null : currentInterviewTime.plusMinutes(1);
+            candidates = interviewScheduleService.listForOwner(
+                    context.ownerKey(), start, end, MAX_SCHEDULE_RESULTS
+                ).stream()
+                .filter(this::isMutableSchedule)
+                .filter(schedule -> currentInterviewTime == null
+                    || schedule.getInterviewTime() == null
+                    || !schedule.getInterviewTime().isBefore(currentInterviewTime.minusMinutes(1))
+                    && !schedule.getInterviewTime().isAfter(currentInterviewTime.plusMinutes(1)))
+                .filter(schedule -> matchesScheduleText(schedule.getCompanyName(), companyName))
+                .filter(schedule -> matchesScheduleText(schedule.getPosition(), position))
+                .toList();
+        }
+        if (candidates.isEmpty()) {
+            return emit(Map.of(
+                "status", "NOT_FOUND",
+                "message", "没有找到符合条件且仍可修改的面试日程；请补充原日程时间、公司或岗位。"
+            ));
+        }
+        if (candidates.size() > 1) {
+            return emit(Map.of(
+                "status", "SELECTION_REQUIRED",
+                "message", "找到多个可修改的面试日程，请让用户选择具体的一条后再生成修改动作。",
+                "schedules", candidates.stream().map(ScheduleSummary::from).toList()
+            ));
+        }
+        InterviewScheduleDTO existing = candidates.getFirst();
+        InterviewScheduleDTO updated = copySchedule(existing);
+        if (targetInterviewTime != null) updated.setInterviewTime(targetInterviewTime);
+        String targetCompany = optionalSafeText(input, "companyName", 255);
+        if (targetCompany != null) updated.setCompanyName(targetCompany);
+        String targetPosition = optionalSafeText(input, "position", 255);
+        if (targetPosition != null) updated.setPosition(targetPosition);
+        String targetType = optionalSafeText(input, "interviewType", 64);
+        if (targetType != null) updated.setInterviewType(targetType);
+        String targetLink = optionalSafeText(input, "meetingLink", 1000);
+        if (targetLink != null) updated.setMeetingLink(targetLink);
+        Integer targetRound = optionalInteger(input, "roundNumber", 1, 20);
+        if (targetRound != null) updated.setRoundNumber(targetRound);
+        String targetInterviewer = optionalSafeText(input, "interviewer", 255);
+        if (targetInterviewer != null) updated.setInterviewer(targetInterviewer);
+        String targetNotes = optionalSafeText(input, "notes", 2000);
+        if (targetNotes != null) updated.setNotes(targetNotes);
+        if (sameSchedule(existing, updated)) {
+            return emit(Map.of(
+                "status", "NO_CHANGE",
+                "message", "没有识别到需要修改的字段，请提供新的时间、岗位、链接或备注。"
+            ));
+        }
+
+        AgentActionResponse action = actionService.proposeInterviewScheduleUpdateDraft(
+            context.interviewSessionId(), context.agentSessionId(), context.ownerKey(), updated, null
+        );
+        return emit(Map.of(
+            "status", "ACTION_PROPOSED",
+            "message", "已生成面试日程修改草稿；用户确认后才会保存，修改时间时会标记为已改期。",
+            "action", action
+        ));
+    }
+
+    private boolean isMutableSchedule(InterviewScheduleDTO schedule) {
+        return schedule != null && schedule.getStatus() != InterviewStatus.CANCELLED
+            && schedule.getStatus() != InterviewStatus.COMPLETED;
+    }
+
+    private void requireScheduleUpdateIntent(
+        String message, Long scheduleId, LocalDateTime currentInterviewTime
+    ) {
+        requireUserIntent(message, "修改", "改期", "改到", "调整", "更换", "更新");
+        if (containsAny(message,
+            "不要修改", "别修改", "无需修改", "不用修改", "如何修改", "怎么修改",
+            "能不能修改", "是否修改", "可以修改吗", "修改权限"
+        )) {
+            throw new BusinessException(
+                ErrorCode.BAD_REQUEST,
+                "需要用户明确、直接确认修改该面试日程，未执行任何 Agent 操作"
+            );
+        }
+        if (!containsAny(message, "面试", "日程", "预约", "会议", "它", "这个", "那个", "刚才")
+            && scheduleId == null && currentInterviewTime == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "请明确要修改的面试或面试日程");
+        }
+    }
+
+    private InterviewScheduleDTO copySchedule(InterviewScheduleDTO source) {
+        InterviewScheduleDTO copy = new InterviewScheduleDTO();
+        copy.setId(source.getId());
+        copy.setCompanyName(source.getCompanyName());
+        copy.setPosition(source.getPosition());
+        copy.setInterviewTime(source.getInterviewTime());
+        copy.setInterviewType(source.getInterviewType());
+        copy.setMeetingLink(source.getMeetingLink());
+        copy.setRoundNumber(source.getRoundNumber());
+        copy.setInterviewer(source.getInterviewer());
+        copy.setNotes(source.getNotes());
+        copy.setStatus(source.getStatus());
+        return copy;
+    }
+
+    private boolean sameSchedule(InterviewScheduleDTO left, InterviewScheduleDTO right) {
+        return java.util.Objects.equals(left.getCompanyName(), right.getCompanyName())
+            && java.util.Objects.equals(left.getPosition(), right.getPosition())
+            && java.util.Objects.equals(left.getInterviewTime(), right.getInterviewTime())
+            && java.util.Objects.equals(left.getInterviewType(), right.getInterviewType())
+            && java.util.Objects.equals(left.getMeetingLink(), right.getMeetingLink())
+            && java.util.Objects.equals(left.getRoundNumber(), right.getRoundNumber())
+            && java.util.Objects.equals(left.getInterviewer(), right.getInterviewer())
+            && java.util.Objects.equals(left.getNotes(), right.getNotes());
+    }
+
     private boolean isCancelableSchedule(InterviewScheduleDTO schedule) {
         return schedule != null && schedule.getStatus() != InterviewStatus.CANCELLED
             && schedule.getStatus() != InterviewStatus.COMPLETED;
@@ -760,6 +894,22 @@ public class AgentContextToolCallbackFactory {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "工具字段 " + field + " 必须是正整数");
         }
         return value.longValue();
+    }
+
+    private Integer optionalInteger(JsonNode input, String field, int min, int max) {
+        if (input == null || input.get(field) == null || input.get(field).isNull()) return null;
+        JsonNode value = input.get(field);
+        if (!value.isIntegralNumber() || !value.canConvertToInt()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "工具字段 " + field + " 必须是整数");
+        }
+        int parsed = value.intValue();
+        if (parsed < min || parsed > max) {
+            throw new BusinessException(
+                ErrorCode.BAD_REQUEST,
+                "工具字段 " + field + " 必须在" + min + "和" + max + "之间"
+            );
+        }
+        return parsed;
     }
 
     private String required(JsonNode input, String field, String message, int maxChars) {

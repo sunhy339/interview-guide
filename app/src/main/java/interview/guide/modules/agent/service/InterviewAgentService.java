@@ -33,6 +33,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.Set;
@@ -334,6 +335,7 @@ public class InterviewAgentService {
                     recoveredRun.agentSessionId()
                 );
                 request = resolveProviderForRun(request);
+                request = normalizeRequestMode(recoveredRun.interviewSessionId(), request);
                 AgentContextService.AgentContext context;
                 AuthUserContext.set(recoveredRun.ownerKey());
                 try {
@@ -510,7 +512,11 @@ public class InterviewAgentService {
                             return () -> {
                                 AgentMetrics.ModelCallTracker modelCall = agentMetrics.startModelCall(providerId, runTracker);
                                 try {
-                                    ChatClient chatClient = llmProviderRegistry.getAgentChatClient(providerId);
+                                    ChatClient chatClient = shouldEnableAgentTools(
+                                        context, request, userIntentMessage
+                                    )
+                                        ? llmProviderRegistry.getAgentChatClient(providerId)
+                                        : llmProviderRegistry.getPlainChatClient(providerId);
                                     var promptSpec = chatClient.prompt().system(prompt.systemPrompt());
                                     if (!prompt.history().isEmpty()) {
                                         promptSpec = promptSpec.messages(prompt.history());
@@ -562,6 +568,21 @@ public class InterviewAgentService {
                         preparedMessage.assistantMessageId(), preparedMessage.runId(), context.sources(),
                         runTracker, taskHandle
                     );
+                    boolean generalRequest = "general".equalsIgnoreCase(request.goal());
+                    boolean hasOptionalSource = context.sources().stream()
+                        .anyMatch(source -> source != null
+                            && ("skill".equalsIgnoreCase(source.kind())
+                                || "rag".equalsIgnoreCase(source.kind())));
+                    List<AgentStreamEvent> preparationEvents = new ArrayList<>();
+                    preparationEvents.add(AgentStreamEvent.step("insight", "running"));
+                    // 通用问题没有显式资料时不虚构“检索相关知识”步骤；只有用户绑定/请求了
+                    // Skill 或知识库，或者处于面试复盘模式，才展示证据检索阶段。
+                    if (!generalRequest || hasOptionalSource) {
+                        preparationEvents.add(AgentStreamEvent.step("retrieval", "running"));
+                        preparationEvents.add(AgentStreamEvent.step("retrieval", "completed"));
+                    }
+                    preparationEvents.add(AgentStreamEvent.sources(context.sources()));
+                    preparationEvents.add(AgentStreamEvent.step("action", "running"));
                     return Flux.concat(
                         Flux.just(
                             AgentStreamEvent.plan(safePlan),
@@ -579,13 +600,7 @@ public class InterviewAgentService {
                                     iteration.durationMillis(), iteration.failureReason()
                                 )
                             )),
-                        Flux.just(
-                            AgentStreamEvent.step("insight", "running"),
-                            AgentStreamEvent.step("retrieval", "running"),
-                            AgentStreamEvent.step("retrieval", "completed"),
-                            AgentStreamEvent.sources(context.sources()),
-                            AgentStreamEvent.step("action", "running")
-                        ),
+                        Flux.fromIterable(preparationEvents),
                         response,
                         Flux.just(AgentStreamEvent.step("loop", "completed"))
                     );
@@ -636,10 +651,78 @@ public class InterviewAgentService {
     }
 
     private AgentMessageRequest normalizeRequestMode(String sessionId, AgentMessageRequest request) {
-        if (request == null || (sessionId != null && !sessionId.isBlank())) {
+        if (request == null) {
             return request;
         }
-        return "general".equalsIgnoreCase(request.goal()) ? request : request.withGoal("general");
+        if ("general".equalsIgnoreCase(request.goal())) {
+            return request;
+        }
+        // 面试会话 ID 只用于归属和历史路由，不能再被当成“本轮必须读取报告”的授权。
+        // 报告上下文必须来自明确的复盘请求或当前 Agent 会话中的显式绑定。
+        return explicitlyTargetsInterview(request) ? request : request.withGoal("general");
+    }
+
+    /**
+     * 判断本轮是否明确要求使用面试语境。
+     *
+     * <p>不能仅依据旧会话保存的 goal=review 或路径中的 interviewSessionId 判断，
+     * 否则“学习 Agent”“解释 Tool Calling”这类普通问题会被错误套上复盘模板，
+     * 还会触发不必要的 Skill/RAG 组装。日程类请求也明确走通用 Agent，由工具自行处理。</p>
+     */
+    static boolean explicitlyTargetsInterview(AgentMessageRequest request) {
+        if (request == null || request.message() == null) {
+            return false;
+        }
+        String message = request.message().replaceAll("\\s+", " ").trim();
+        if (message.isBlank()) {
+            return false;
+        }
+        String normalized = message.toLowerCase(Locale.ROOT);
+        if (normalized.matches(".*(安排|预约|取消|改期|改到|调整).{0,16}(面试|会议|日程|预约).*")
+            || normalized.matches(".*(面试|会议|日程|预约).{0,16}(安排|预约|取消|改期|改到|调整).*")) {
+            return false;
+        }
+        return normalized.contains("面试报告")
+            || normalized.contains("本场面试")
+            || normalized.contains("本次面试")
+            || normalized.matches(".*(?:本场|本次|这场|当前|这次).{0,10}(面试|报告).*")
+            || normalized.matches(".*(?:面试|报告).{0,10}(表现|回答|评分|复盘|失分|优势|薄弱|改进).*")
+            || normalized.contains("这份报告")
+            || normalized.contains("面试复盘")
+            || normalized.contains("复盘")
+            || normalized.contains("面试表现")
+            || normalized.contains("评分")
+            || normalized.contains("失分")
+            || normalized.contains("薄弱点")
+            || normalized.contains("面试官")
+            || normalized.contains("根据这场面试")
+            || normalized.contains("针对这场面试");
+    }
+
+    /**
+     * 普通问答使用无工具 ChatClient，避免模型在没有业务意图时自行触发 Skill、MCP
+     * 或日程工具。需要查询资料、绑定上下文或执行日程动作时才开启受控工具集。
+     */
+    private boolean shouldEnableAgentTools(
+        AgentContextService.AgentContext context,
+        AgentMessageRequest request,
+        String message
+    ) {
+        if (request == null || !"general".equalsIgnoreCase(request.goal())) {
+            return true;
+        }
+        String normalized = message == null ? "" : message.replaceAll("\\s+", " ").trim()
+            .toLowerCase(Locale.ROOT);
+        if (normalized.isBlank()) {
+            return false;
+        }
+        return normalized.matches(".*(?:查询|搜索|查找|列出|查看).{0,20}(面试|报告|日程|会议|简历|资料|文件|知识库).*")
+            || normalized.matches(".*(?:绑定|引用|添加|使用|关联|清除|解绑).{0,20}(面试|报告|简历|资料|文件|知识库|上下文).*")
+            || normalized.matches(".*(?:根据|基于|结合|参考).{0,20}(面试|报告|简历|资料|文件|知识库|上下文).*")
+            || normalized.matches(".*(?:安排|预约|创建|取消|撤销|改期|改到|修改|调整|更新).{0,20}(面试|会议|日程|预约).*")
+            || normalized.matches(".*(?:面试|会议|日程|预约).{0,20}(安排|预约|创建|取消|撤销|改期|改到|修改|调整|更新).*")
+            || normalized.matches(".*(?:加入|导入|审核|确认).{0,20}(知识库|上下文|文件).*")
+            || normalized.matches(".*(?:调用|接入|连接|配置|执行).{0,20}(mcp|工具|tool|tool_call).*");
     }
 
     private AgentConversationService.PreparedMessage prepareMessage(

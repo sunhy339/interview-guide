@@ -1,6 +1,7 @@
 export type AgentActionIntent =
   | { type: 'schedule'; suggestedTime?: string; companyName?: string; position?: string; timeZone?: string }
   | { type: 'scheduleCancel' }
+  | { type: 'scheduleUpdate' }
   | { type: 'trainingTask' }
   | { type: 'memory' }
   | { type: 'title' }
@@ -92,6 +93,10 @@ export function detectAgentActionIntent(message: string, now = new Date()): Agen
   if (/(取消|撤销|删掉|去掉).{0,16}(面试|会议|日程|预约)/.test(normalized)
     || /(面试|会议|日程|预约).{0,16}(取消|撤销|删掉|去掉)/.test(normalized)) {
     return { type: 'scheduleCancel' };
+  }
+  if (/(修改|改期|改到|调整|更换|更新).{0,16}(面试|会议|日程|预约)/.test(normalized)
+    || /(面试|会议|日程|预约).{0,16}(修改|改期|改到|调整|更换|更新)/.test(normalized)) {
+    return { type: 'scheduleUpdate' };
   }
   if (!normalized || /(不要|不用|无需|取消).{0,6}(安排|预约|日程|导出|下载|保存|创建|修改|重命名|任务|简历|记忆)/.test(normalized)) return null;
   if (/(导出|下载).{0,8}(报告|面试报告|pdf)/i.test(normalized)

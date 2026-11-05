@@ -344,6 +344,50 @@ class AgentActionServiceTest {
     }
 
     @Test
+    @DisplayName("确认修改面试日程动作时使用当前用户归属并更新结构化字段")
+    void confirmsInterviewScheduleUpdateAction() {
+        AgentActionService service = new AgentActionService(
+            repository, auditService, memoryService, interviewPersistenceService,
+            trainingTaskService, resumeEditorService, interviewScheduleService
+        );
+        InterviewScheduleDTO schedule = new InterviewScheduleDTO();
+        schedule.setId(27L);
+        schedule.setCompanyName("浪速公司");
+        schedule.setPosition("Agent 开发工程师");
+        schedule.setInterviewTime(LocalDateTime.of(2026, 11, 6, 12, 0));
+        schedule.setStatus(InterviewStatus.PENDING);
+        when(repository.findByOwnerKeyAndIdempotencyKey("user-1", "update-1"))
+            .thenReturn(Optional.empty());
+        when(interviewScheduleService.getForOwner(27L, "user-1")).thenReturn(schedule);
+        when(repository.findByActionIdForUpdate(any())).thenAnswer(invocation ->
+            Optional.of(updateAction("update-action-1", "user-1", 27L))
+        );
+        when(repository.save(any(AgentActionRequestEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        when(interviewScheduleService.updateForOwner(any(), any(), any())).thenReturn(schedule);
+
+        InterviewScheduleDTO updated = new InterviewScheduleDTO();
+        updated.setId(27L);
+        updated.setCompanyName("浪速公司");
+        updated.setPosition("Agent 开发工程师");
+        updated.setInterviewTime(LocalDateTime.of(2026, 11, 6, 15, 0));
+        updated.setInterviewType("VIDEO");
+        updated.setRoundNumber(2);
+        updated.setNotes("补充系统设计准备");
+        var proposed = service.proposeInterviewScheduleUpdateDraft(
+            null, "agent-1", "user-1", updated, "update-1"
+        );
+        var confirmed = service.confirm(proposed.actionId(), "user-1");
+
+        assertThat(proposed.toolId()).isEqualTo("interview.schedule.update");
+        assertThat(proposed.draftContent()).contains("2026-11-06T15:00", "轮次：2");
+        assertThat(confirmed.status()).isEqualTo(AgentActionStatus.SUCCEEDED);
+        verify(interviewScheduleService).updateForOwner(
+            org.mockito.ArgumentMatchers.eq(27L), any(), org.mockito.ArgumentMatchers.eq("user-1")
+        );
+    }
+
+    @Test
     @DisplayName("日程动作的结构化字段落库前也净化提示注入")
     void sanitizesPromptInjectionInScheduleFieldsBeforePersisting() {
         AgentActionService service = new AgentActionService(
@@ -838,6 +882,21 @@ class AgentActionServiceTest {
         action.setTitle("取消面试日程");
         action.setDraftContent("取消日程：浪速公司 · Agent 开发工程师\n日程 ID：" + scheduleId);
         action.setScheduleId(scheduleId);
+        return action;
+    }
+
+    private AgentActionRequestEntity updateAction(String actionId, String owner, Long scheduleId) {
+        AgentActionRequestEntity action = draft(actionId, owner);
+        action.setToolId("interview.schedule.update");
+        action.setTitle("修改面试日程");
+        action.setDraftContent("修改日程：浪速公司 · Agent 开发工程师\n日程 ID：" + scheduleId);
+        action.setScheduleId(scheduleId);
+        action.setScheduleCompanyName("浪速公司");
+        action.setSchedulePosition("Agent 开发工程师");
+        action.setScheduleInterviewTime(LocalDateTime.of(2026, 11, 6, 15, 0));
+        action.setScheduleInterviewType("VIDEO");
+        action.setScheduleRoundNumber(2);
+        action.setScheduleNotes("补充系统设计准备");
         return action;
     }
 }

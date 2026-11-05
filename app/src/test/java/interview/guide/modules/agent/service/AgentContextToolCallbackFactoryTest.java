@@ -60,7 +60,8 @@ class AgentContextToolCallbackFactoryTest {
             .containsExactly(
                 "interview_search", "interview_attach_context", "interview_clear_context",
                 "agent_context_list", "agent_context_asset_action", "schedule_list",
-                "schedule_check_conflict", "schedule_create_draft", "schedule_cancel_draft"
+                "schedule_check_conflict", "schedule_create_draft", "schedule_cancel_draft",
+                "schedule_update_draft"
             );
         assertThat(factory.callbacks())
             .allSatisfy(callback -> assertThat(callback.getToolDefinition().inputSchema())
@@ -534,6 +535,66 @@ class AgentContextToolCallbackFactoryTest {
         assertThat(question).contains("需要用户明确");
         assertThat(negation).contains("需要用户明确");
         verify(interviewScheduleService, never()).listForOwner(any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void scheduleUpdateDraftCanUseScheduleIdForNaturalFollowUp() {
+        InterviewScheduleDTO schedule = new InterviewScheduleDTO();
+        schedule.setId(17L);
+        schedule.setCompanyName("浪速公司");
+        schedule.setPosition("Agent 开发工程师");
+        schedule.setInterviewTime(LocalDateTime.of(2026, 11, 6, 12, 0));
+        schedule.setInterviewType("VIDEO");
+        schedule.setRoundNumber(1);
+        schedule.setStatus(InterviewStatus.PENDING);
+        when(interviewScheduleService.getForOwner(17L, "owner-1")).thenReturn(schedule);
+        when(actionService.proposeInterviewScheduleUpdateDraft(
+            eq(null), eq("agent-1"), eq("owner-1"), any(InterviewScheduleDTO.class), eq(null)
+        )).thenReturn(mock(interview.guide.modules.agent.model.AgentActionResponse.class));
+
+        String result = tool("schedule.update_draft").call(
+            "{\"scheduleId\":17,\"interviewTime\":\"2026-11-06T15:00\"}",
+            context("改到下午3点")
+        );
+
+        assertThat(result).contains("ACTION_PROPOSED");
+        verify(actionService).proposeInterviewScheduleUpdateDraft(
+            eq(null), eq("agent-1"), eq("owner-1"),
+            org.mockito.ArgumentMatchers.argThat(value ->
+                value.getId().equals(17L)
+                    && value.getInterviewTime().equals(LocalDateTime.of(2026, 11, 6, 15, 0))
+            ), eq(null)
+        );
+    }
+
+    @Test
+    void scheduleUpdateDraftDoesNotGuessAmongMultipleMatches() {
+        LocalDateTime interviewTime = LocalDateTime.of(2026, 11, 6, 12, 0);
+        InterviewScheduleDTO first = new InterviewScheduleDTO();
+        first.setId(17L);
+        first.setCompanyName("浪速公司");
+        first.setPosition("Agent 开发工程师");
+        first.setInterviewTime(interviewTime);
+        first.setStatus(InterviewStatus.PENDING);
+        InterviewScheduleDTO second = new InterviewScheduleDTO();
+        second.setId(18L);
+        second.setCompanyName("浪速公司");
+        second.setPosition("Agent 开发工程师");
+        second.setInterviewTime(interviewTime);
+        second.setStatus(InterviewStatus.RESCHEDULED);
+        when(interviewScheduleService.listForOwner(
+            "owner-1", interviewTime.minusMinutes(1), interviewTime.plusMinutes(1), 20
+        )).thenReturn(List.of(first, second));
+
+        String result = tool("schedule.update_draft").call(
+            "{\"currentInterviewTime\":\"2026-11-06T12:00\",\"interviewTime\":\"2026-11-06T15:00\"}",
+            context("帮我把明天12点的面试改到下午3点")
+        );
+
+        assertThat(result).contains("SELECTION_REQUIRED").contains("17").contains("18");
+        verify(actionService, never()).proposeInterviewScheduleUpdateDraft(
+            any(), any(), any(), any(), any()
+        );
     }
 
     @Test

@@ -159,6 +159,12 @@ public class AgentContextService {
         AgentMessageRequest request,
         List<AgentHistoryMessage> effectiveHistory
     ) {
+        // 面试会话 ID 只代表数据归属，不代表本轮自动授权读取报告。
+        // 普通问题由 InterviewAgentService 归一化为 general；这里再次防守，
+        // 避免旧调用方直接传入 sessionId 时重新引入“自动复盘”。
+        if (request == null || "general".equalsIgnoreCase(request.goal())) {
+            return buildGeneralContext(request, effectiveHistory);
+        }
         String trustedOwner = ownerKey(request);
         if (trustedOwner == null || trustedOwner.isBlank()) {
             // memoryKey 属于请求体，不是认证凭证，不能作为跨用户资源的归属依据。

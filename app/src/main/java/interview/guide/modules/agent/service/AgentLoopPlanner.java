@@ -39,9 +39,8 @@ public class AgentLoopPlanner {
             + "2. 结合 Skill 参考资料和可用知识库核对薄弱点。\n"
             + "3. 输出有证据、可执行且格式清晰的面试教练建议。";
     public static final String DEFAULT_GENERAL_PLAN =
-        "1. 确认当前问题和已提供的资料边界。\n"
-            + "2. 整理可用信息并核对必要的知识依据。\n"
-            + "3. 直接输出清晰、可执行的回答。";
+        "1. 整理当前问题并确认资料边界。\n"
+            + "2. 直接输出清晰、可执行的回答。";
     private static final int MAX_PLAN_CHARS = 1_200;
 
     private final LlmProviderRegistry providerRegistry;

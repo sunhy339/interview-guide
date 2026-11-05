@@ -53,6 +53,7 @@ Agent 自身的会话、记忆、审计、用量和 Loop 检查点属于内部�
 9. `resume.draft.apply`：暂缓到草稿预览、确认、审计和回滚链路验收后再开放。
 10. `interview.schedule.create`：已接入首版；Agent 可根据复盘回答生成结构化复习日程草稿，用户确认后写入现有面试日程，支持时间/岗位/备注编辑、owner 隔离、幂等、重试和审计，不修改原始面试报告。
 11. `interview.schedule.cancel`：已接入会话 Tool Callback；Agent 结合当前消息和历史日程匹配唯一面试，生成取消草稿，用户确认后只将日程标记为 `CANCELLED`，保留历史并执行 owner、状态、幂等和审计校验。
+12. `interview.schedule.update`：已接入会话 Tool Callback；Agent 按显式日程 ID、原时间、公司和岗位匹配唯一日程，生成变更前后的待确认草稿，确认后更新本地日程；修改时间会标记为 `RESCHEDULED`，不覆盖面试报告。
 
 第一版动作 API 已固定为以下边界：
 
@@ -64,6 +65,7 @@ Agent 自身的会话、记忆、审计、用量和 Loop 检查点属于内部�
 - `POST .../actions/memory-draft`：生成 `PROPOSED` 状态的长期记忆草稿，服务端保存分类和适用方向元数据；
 - `POST .../actions/interview-title-draft`：生成 `PROPOSED` 状态的面试名称草稿；
 - `POST .../actions/interview-schedule-draft`：生成结构化复习日程草稿，确认后写入现有面试日程；
+- `POST .../actions/interview-schedule-update-draft`：预留给显式表单入口；对话优先使用 `schedule_update_draft` Tool Callback，统一落到同一动作状态机；
 - `PATCH /api/agent/actions/{actionId}`：仅允许用户在 `PROPOSED` 状态下人工编辑草稿；
 - `POST /api/agent/actions/{actionId}/confirm`：明确确认后保存草稿；
 - `POST /api/agent/actions/{actionId}/retry`：仅允许重试 `FAILED` 动作，最多实际执行 3 次；
@@ -80,7 +82,7 @@ Agent 线程或正在运行时按钮会保持不可用。
 
 当用户选择“针对性训练”或“制定训练计划”并完成一轮 Agent 对话后，前端会根据已持久化的最终回答自动提出对应的草稿动作。该动作仍然只是 `PROPOSED`，重复生成使用稳定幂等键，不会自动确认，也不会因为动作草稿失败而把已经完成的 Agent 回答判为失败。用户仍可手动编辑、确认或取消。
 
-对复习日程，Agent 对话优先走后端 Tool Callback，前端仅保留兼容兜底：用户明确说“安排/预约/提醒”并包含时间时，可预填常见的明天、下周、周末和时刻表达；用户补充公司、职位或时区时仍作为正常消息持久化。取消日程必须结合会话历史和当前用户自己的日程候选，唯一匹配后才生成待确认动作；无法确定时要求补充信息，不默认选择。
+对复习日程，Agent 对话优先走后端 Tool Callback，前端仅保留兼容兜底：用户明确说“安排/预约/提醒”并包含时间时，可预填常见的明天、下周、周末和时刻表达；用户补充公司、职位或时区时仍作为正常消息持久化。取消和修改日程必须结合会话历史、显式日程 ID/原时间和当前用户自己的日程候选，唯一匹配后才生成待确认动作；无法确定时要求补充信息，不默认选择。修改请求也支持自然语言追问，例如在上一轮已确定日程后直接说“改到下午三点”。
 
 同一入口也支持明确的训练任务、长期记忆、面试名称、报告导出和简历优化请求。前端只把明确命中的请求映射到已经存在的动作 API；模型回答完成后生成 `PROPOSED` 草稿，确认、取消、编辑和失败重试仍走统一动作状态机。没有关联简历时，简历优化请求只提示原因，不发起写操作；“不要/取消”类表达不会触发动作。
 

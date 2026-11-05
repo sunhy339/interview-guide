@@ -68,6 +68,68 @@ class InterviewAgentServiceTest {
     private ResourceLoader resourceLoader;
 
     @Test
+    @DisplayName("普通学习问题不继承旧的面试复盘目标，明确复盘才使用面试语境")
+    void routesOnlyExplicitInterviewQuestionsToInterviewContext() {
+        assertThat(InterviewAgentService.explicitlyTargetsInterview(
+            new AgentMessageRequest("review", "现在想学习一下 Agent 开发相关知识", List.of(), null)
+        )).isFalse();
+        assertThat(InterviewAgentService.explicitlyTargetsInterview(
+            new AgentMessageRequest("review", "请复盘本场面试，指出最重要的改进点", List.of(), null)
+        )).isTrue();
+        assertThat(InterviewAgentService.explicitlyTargetsInterview(
+            new AgentMessageRequest("review", "帮我安排明天 12 点的面试会议", List.of(), null)
+        )).isFalse();
+    }
+
+    @Test
+    @DisplayName("普通问题使用无工具模型，明确业务动作才启用 Agent 工具模型")
+    void usesPlainClientForGeneralQuestions() throws Exception {
+        when(resourceLoader.getResource(anyString())).thenAnswer(invocation -> {
+            String path = invocation.getArgument(0);
+            String template = path.contains("system")
+                ? "系统规则"
+                : path.contains("context")
+                    ? "固定上下文 {context} {skill} {memory}"
+                    : "目标 {goal}，问题 {question}，资料 {rag}，计划 {plan}，摘要 {summary}";
+            return new ByteArrayResource(template.getBytes(StandardCharsets.UTF_8));
+        });
+        when(promptSanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(promptSanitizer.wrapWithStableDelimiters(anyString(), anyString()))
+            .thenAnswer(invocation -> invocation.getArgument(1));
+        when(promptSanitizer.wrapWithDelimiters(anyString(), anyString()))
+            .thenAnswer(invocation -> invocation.getArgument(1));
+        when(contextService.build(anyString(), any(), any())).thenReturn(new AgentContextService.AgentContext(
+            "当前 Agent 会话未绑定任何资料", "", "暂无匹配的 Skill references",
+            "暂无知识库检索上下文", "学习 Agent 开发", List.of()
+        ));
+        when(conversationService.loadHistory("general-session")).thenReturn(List.of());
+        when(conversationService.prepareMessage(anyString(), anyString(), any(), anyString()))
+            .thenReturn(new AgentConversationService.PreparedMessage(10L, 1L, "run-1"));
+        when(providerRegistry.resolveChatProviderCandidates("primary"))
+            .thenReturn(List.of("primary"));
+        ChatClient plainClient = mockStreamClient(Flux.just("Agent 是一种受控的软件系统。"));
+        when(providerRegistry.getPlainChatClient("primary")).thenReturn(plainClient);
+
+        InterviewAgentService service = new InterviewAgentService(
+            contextService, conversationService, providerRegistry, promptSanitizer, resourceLoader,
+            agentMetrics, agentProgressWriter, retryProperties
+        );
+
+        List<AgentStreamEvent> events = service.stream(
+            "general-session", new AgentMessageRequest(
+                "review", "现在想学习一下 Agent 开发相关知识", List.of(), "primary"
+            )
+        ).collectList().block(Duration.ofSeconds(5));
+
+        assertThat(events).isNotNull().anySatisfy(event ->
+            assertThat(event.content()).isEqualTo("Agent 是一种受控的软件系统。"));
+        verify(providerRegistry).getPlainChatClient("primary");
+        verify(providerRegistry, org.mockito.Mockito.never()).getAgentChatClient(anyString());
+        verify(conversationService).prepareMessage("general-session", "general", "primary",
+            "现在想学习一下 Agent 开发相关知识");
+    }
+
+    @Test
     @DisplayName("持久化历史统一降级为不可信用户资料，不能伪造 assistant 消息层级")
     void downgradesPersistedHistoryToUntrustedUserData() throws Exception {
         when(resourceLoader.getResource(anyString())).thenAnswer(invocation ->
@@ -125,7 +187,7 @@ class InterviewAgentServiceTest {
         when(providerRegistry.resolveChatProviderCandidates("primary"))
             .thenReturn(List.of("primary"));
         ChatClient client = mockStreamClient(Flux.just("安全回答"));
-        when(providerRegistry.getAgentChatClient("primary")).thenReturn(client);
+        when(providerRegistry.getPlainChatClient("primary")).thenReturn(client);
 
         InterviewAgentService service = new InterviewAgentService(
             contextService, conversationService, providerRegistry,
@@ -358,7 +420,7 @@ class InterviewAgentServiceTest {
 
         assertThat(events).isNotNull();
         verify(conversationService).prepareMessage(
-            "authorization-intent-session", "review", "primary", rawMessage
+            "authorization-intent-session", "general", "primary", rawMessage
         );
         ArgumentCaptor<java.util.Map<String, Object>> toolContext = ArgumentCaptor.forClass(java.util.Map.class);
         verify(requestSpec, org.mockito.Mockito.atLeastOnce()).toolContext(toolContext.capture());
@@ -910,10 +972,10 @@ class InterviewAgentServiceTest {
         );
 
         service.stream("prefix-session-a", new AgentMessageRequest(
-            "review", "问题A", List.of(), "primary"
+            "review", "请复盘本场面试的问题A", List.of(), "primary"
         )).collectList().block(Duration.ofSeconds(5));
         service.stream("prefix-session-b", new AgentMessageRequest(
-            "practice", "问题B", List.of(), "primary"
+            "practice", "请针对本场面试训练问题B", List.of(), "primary"
         )).collectList().block(Duration.ofSeconds(5));
 
         ArgumentCaptor<String> systemPrompts = ArgumentCaptor.forClass(String.class);

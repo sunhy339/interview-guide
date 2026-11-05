@@ -74,6 +74,31 @@ public class InterviewScheduleService {
         return toDTO(repository.save(entity));
     }
 
+    /** Agent 修改/改期日程时使用显式 owner，不能依赖当前线程认证上下文。 */
+    @Transactional
+    public InterviewScheduleDTO updateForOwner(Long id, CreateInterviewRequest request, String ownerId) {
+        if (id == null || ownerId == null || ownerId.isBlank()) {
+            throw new BusinessException(ErrorCode.INTERVIEW_SCHEDULE_NOT_FOUND, "面试日程不存在");
+        }
+        InterviewScheduleEntity entity = repository.findByIdAndOwnerId(id, ownerId.trim())
+            .orElseThrow(() -> new BusinessException(
+                ErrorCode.INTERVIEW_SCHEDULE_NOT_FOUND, "面试日程不存在或无权访问"
+            ));
+        if (entity.getStatus() == InterviewStatus.COMPLETED) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "已完成的面试不能修改");
+        }
+        if (entity.getStatus() == InterviewStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "已取消的面试不能修改，请重新创建日程");
+        }
+        boolean timeChanged = request != null && request.getInterviewTime() != null
+            && !request.getInterviewTime().equals(entity.getInterviewTime());
+        BeanUtils.copyProperties(request, entity, "id", "status", "ownerId", "agentActionId");
+        if (timeChanged) {
+            entity.setStatus(InterviewStatus.RESCHEDULED);
+        }
+        return toDTO(repository.save(entity));
+    }
+
     @Transactional
     public void delete(Long id) {
         repository.delete(getByIdOrThrow(id));

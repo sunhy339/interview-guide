@@ -168,7 +168,9 @@ export function isAgentResumeEditAction(action: AgentAction): boolean {
 }
 
 export function isAgentScheduleAction(action: AgentAction): boolean {
-  return action.toolId === 'interview.schedule.create' || action.toolId === 'interview.schedule.cancel';
+  return action.toolId === 'interview.schedule.create'
+    || action.toolId === 'interview.schedule.cancel'
+    || action.toolId === 'interview.schedule.update';
 }
 
 export interface AgentConversationSummary {

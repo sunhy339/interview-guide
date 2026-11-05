@@ -80,6 +80,32 @@ class AgentContextServiceTest {
     }
 
     @Test
+    void generalQuestionDoesNotReadInterviewReportEvenWhenSessionIdIsPresent() throws Exception {
+        InterviewHistoryService history = mock(InterviewHistoryService.class);
+        InterviewSkillService skills = mock(InterviewSkillService.class);
+        KnowledgeBaseQueryService rag = mock(KnowledgeBaseQueryService.class);
+        PromptSanitizer sanitizer = mock(PromptSanitizer.class);
+        ObjectMapper objectMapper = mock(ObjectMapper.class);
+
+        when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(sanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        AgentContextService.AgentContext context = new AgentContextService(
+            history, skills, rag, sanitizer, objectMapper
+        ).build(
+            "session-1",
+            new AgentMessageRequest("general", "我想学习一下 Agent 开发相关知识", List.of(), null),
+            List.of()
+        );
+
+        assertThat(context.interviewReport()).contains("当前 Agent 会话未绑定任何资料");
+        assertThat(context.skillReference()).contains("暂无匹配");
+        assertThat(context.ragContext()).contains("暂无知识库");
+        verify(history, never()).getInterviewDetail("session-1");
+        verify(skills, never()).buildEvaluationReferenceSectionSafe(anyString());
+    }
+
+    @Test
     void sanitizesSkillReferenceBeforePuttingItIntoAgentContext() throws Exception {
         InterviewHistoryService history = mock(InterviewHistoryService.class);
         InterviewSkillService skills = mock(InterviewSkillService.class);

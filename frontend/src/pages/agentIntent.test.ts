@@ -51,6 +51,11 @@ test('识别取消面试日程意图，但不在前端直接执行', () => {
   assert.deepEqual(detectAgentActionIntent('把刚才安排的那个会议取消掉'), { type: 'scheduleCancel' });
 });
 
+test('识别修改或改期面试日程意图，但交给后端确认唯一目标', () => {
+  assert.deepEqual(detectAgentActionIntent('帮我把明天12点的面试改到下午3点'), { type: 'scheduleUpdate' });
+  assert.deepEqual(detectAgentActionIntent('把刚才的会议调整一下'), { type: 'scheduleUpdate' });
+});
+
 test('识别训练任务、记忆、标题、报告和简历动作', () => {
   assert.deepEqual(detectAgentActionIntent('帮我创建一个训练任务，重点练 Redis'), { type: 'trainingTask' });
   assert.deepEqual(detectAgentActionIntent('把这个薄弱点保存到长期记忆'), { type: 'memory' });
