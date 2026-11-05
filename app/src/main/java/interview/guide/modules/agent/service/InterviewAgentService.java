@@ -169,7 +169,8 @@ public class InterviewAgentService {
     private Flux<AgentStreamEvent> streamInternal(
         String sessionId, AgentMessageRequest request, String dataOwnerKey
     ) {
-        AgentMessageRequest resolvedRequest = resolveProviderForRun(request);
+        AgentMessageRequest modeSafeRequest = normalizeRequestMode(sessionId, request);
+        AgentMessageRequest resolvedRequest = resolveProviderForRun(modeSafeRequest);
         return Flux.concat(
             Flux.just(AgentStreamEvent.step("context", "running")),
             Flux.defer(() -> {
@@ -206,16 +207,9 @@ public class InterviewAgentService {
                 AgentContextService.AgentContext context;
                 AuthUserContext.set(dataOwnerKey);
                 try {
-                    String contextSessionId = sessionId;
-                    if ((contextSessionId == null || contextSessionId.isBlank())
-                        && resolvedRequest.agentSessionId() != null
-                        && !resolvedRequest.agentSessionId().isBlank()
-                        && dataOwnerKey != null) {
-                        contextSessionId = agentConversationService
-                            .activeInterviewSessionId(resolvedRequest.agentSessionId(), dataOwnerKey)
-                            .orElse(null);
-                    }
-                    context = agentContextService.build(contextSessionId, resolvedRequest, historyMessages);
+                    // 通用 Agent 永远从 null 报告上下文开始；绑定面试报告只能通过
+                    // 当前会话的显式上下文绑定进入，不能根据线程历史自动恢复旧报告。
+                    context = agentContextService.build(sessionId, resolvedRequest, historyMessages);
                 } finally {
                     AuthUserContext.clear();
                 }
@@ -333,7 +327,9 @@ public class InterviewAgentService {
                     ))
                 );
                 AgentMessageRequest request = new AgentMessageRequest(
-                    recoveredRun.goal() == null || recoveredRun.goal().isBlank() ? "review" : recoveredRun.goal(),
+                    recoveredRun.interviewSessionId() == null
+                        ? "general"
+                        : recoveredRun.goal() == null || recoveredRun.goal().isBlank() ? "review" : recoveredRun.goal(),
                     message, historyMessages, recoveredRun.providerId(), recoveredRun.memoryKey(),
                     recoveredRun.agentSessionId()
                 );
@@ -341,17 +337,8 @@ public class InterviewAgentService {
                 AgentContextService.AgentContext context;
                 AuthUserContext.set(recoveredRun.ownerKey());
                 try {
-                    String contextSessionId = recoveredRun.interviewSessionId();
-                    if ((contextSessionId == null || contextSessionId.isBlank())
-                        && recoveredRun.agentSessionId() != null
-                        && !recoveredRun.agentSessionId().isBlank()
-                        && recoveredRun.ownerKey() != null) {
-                        contextSessionId = agentConversationService
-                            .activeInterviewSessionId(recoveredRun.agentSessionId(), recoveredRun.ownerKey())
-                            .orElse(null);
-                    }
                     context = agentContextService.build(
-                        contextSessionId, request, historyMessages
+                        recoveredRun.interviewSessionId(), request, historyMessages
                     );
                 } finally {
                     AuthUserContext.clear();
@@ -420,13 +407,17 @@ public class InterviewAgentService {
             ),
             planFlux.flatMap(plan -> {
                     AgentLoopEngine loopEngine = new AgentLoopEngine();
+                    boolean hasInterviewReport = context.interviewReport() != null
+                        && !context.interviewReport().isBlank();
                     String safePlan = agentLoopPlanner == null
-                        ? "1. 读取面试报告并确认当前目标"
+                        ? hasInterviewReport
+                            ? "1. 读取面试报告并确认当前目标"
+                            : "1. 整理"
                         : agentLoopPlanner.canonicalPlan(plan, context);
                     // 恢复计划和规划模型输出都先进入规范化结果，再交给 Loop 执行器。
                     // 这样未来即使 steps() 的兼容解析规则扩展，也不会重新接收旧的自由文本。
                     List<String> loopSteps = agentLoopPlanner == null
-                        ? List.of("读取面试报告并确认当前目标")
+                        ? List.of(hasInterviewReport ? "读取面试报告并确认当前目标" : "整理")
                         : agentLoopPlanner.steps(safePlan, context);
                     AgentLoopEngine.ExecutionPolicy loopPolicy = new AgentLoopEngine.ExecutionPolicy(
                         retryProperties.getLoopMaxSteps(),
@@ -642,6 +633,13 @@ public class InterviewAgentService {
         }
         List<String> candidates = llmProviderRegistry.resolveChatProviderCandidates(request.providerId());
         return candidates.isEmpty() ? request : request.withProviderId(candidates.getFirst());
+    }
+
+    private AgentMessageRequest normalizeRequestMode(String sessionId, AgentMessageRequest request) {
+        if (request == null || (sessionId != null && !sessionId.isBlank())) {
+            return request;
+        }
+        return "general".equalsIgnoreCase(request.goal()) ? request : request.withGoal("general");
     }
 
     private AgentConversationService.PreparedMessage prepareMessage(
@@ -1280,6 +1278,14 @@ public class InterviewAgentService {
         String goal = request == null ? "" : request.goal();
         String question = message == null ? "" : message;
         String combined = (goal + "\n" + question).toLowerCase(java.util.Locale.ROOT);
+        if ("general".equalsIgnoreCase(goal)) {
+            return """
+                本轮是通用 Agent 对话，不是面试复盘。
+                1. 使用标准 Markdown，直接回答用户当前问题。
+                2. 只能使用本轮显式提供或已绑定的资料，不要推断未提供的面试经历、分数或表现。
+                3. 没有相关资料时直接说明资料不足，不要输出“本场面试复盘结论”等复盘模板。
+                """;
+        }
         boolean explicitlyNoRag = combined.contains("没有知识库")
             || combined.contains("没有检索") || combined.contains("无知识库")
             || combined.contains("无检索");

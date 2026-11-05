@@ -193,4 +193,22 @@ class AgentLoopPlannerTest {
         assertThat(planner.steps(" \n "))
             .containsExactly("读取面试报告并确认当前目标");
     }
+
+    @Test
+    void neverKeepsInterviewReportStepWhenGeneralContextHasNoReport() {
+        AgentRetryProperties properties = new AgentRetryProperties();
+        properties.setLoopMaxSteps(3);
+        AgentLoopPlanner planner = new AgentLoopPlanner(
+            mock(LlmProviderRegistry.class), mock(PromptSanitizer.class), properties
+        );
+        AgentContextService.AgentContext context = new AgentContextService.AgentContext(
+            "", "", "", "", "", List.of()
+        );
+
+        assertThat(planner.steps(
+            "1. 读取面试报告\n2. 确认当前目标\n3. 输出建议", context
+        )).containsExactly("整理", "确认当前目标", "整理");
+        assertThat(planner.canonicalPlan("ACTION=read_interview_report", context))
+            .isEqualTo("1. 整理");
+    }
 }

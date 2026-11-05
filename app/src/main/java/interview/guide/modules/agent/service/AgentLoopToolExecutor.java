@@ -47,7 +47,7 @@ public final class AgentLoopToolExecutor implements AgentLoopEngine.StepExecutor
     @Override
     public String execute(AgentContextService.AgentContext context, String action, int index) {
         long startedNanos = System.nanoTime();
-        String toolName = resolveToolName(action, index);
+        String toolName = resolveToolName(action, index, context);
         try {
             if (runTracker != null) {
                 runTracker.reserveToolCall();
@@ -62,9 +62,15 @@ public final class AgentLoopToolExecutor implements AgentLoopEngine.StepExecutor
     }
 
     static String resolveToolName(String action, int index) {
+        return resolveToolName(action, index, null);
+    }
+
+    static String resolveToolName(String action, int index, AgentContextService.AgentContext context) {
         String normalized = action == null ? "" : action.toLowerCase(Locale.ROOT);
+        boolean hasInterviewReport = context == null
+            || context.interviewReport() != null && !context.interviewReport().isBlank();
         if (normalized.contains("读取") && normalized.contains("报告")) {
-            return READ_INTERVIEW_REPORT;
+            return hasInterviewReport ? READ_INTERVIEW_REPORT : ORGANIZE_AGENT_CONTEXT;
         }
         if (normalized.contains("核对")
             || normalized.contains("skill")
@@ -75,7 +81,7 @@ public final class AgentLoopToolExecutor implements AgentLoopEngine.StepExecutor
         if (normalized.contains("确认") && normalized.contains("目标")) {
             return CONFIRM_AGENT_GOAL;
         }
-        return index == 0 ? READ_INTERVIEW_REPORT : ORGANIZE_AGENT_CONTEXT;
+        return index == 0 && hasInterviewReport ? READ_INTERVIEW_REPORT : ORGANIZE_AGENT_CONTEXT;
     }
 
     private String observe(String toolName, AgentContextService.AgentContext context) {
@@ -104,7 +110,9 @@ public final class AgentLoopToolExecutor implements AgentLoopEngine.StepExecutor
                 yield "已核对 Skill/RAG 来源：Skill " + skillSources + " 个，知识库 "
                     + ragSources + " 个。";
             }
-            default -> "已整理固定资料边界，未声称使用不存在的外部依据。";
+            default -> safeContext.interviewReport() == null || safeContext.interviewReport().isBlank()
+                ? "已整理通用对话资料边界，本轮没有绑定面试报告。"
+                : "已整理固定资料边界，未声称使用不存在的外部依据。";
         };
     }
 

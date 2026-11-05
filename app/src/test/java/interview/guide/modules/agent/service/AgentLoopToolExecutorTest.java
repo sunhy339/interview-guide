@@ -60,6 +60,20 @@ class AgentLoopToolExecutorTest {
     }
 
     @Test
+    void generalContextCannotExecuteInterviewReportTool() {
+        AgentContextService.AgentContext generalContext = new AgentContextService.AgentContext(
+            "", "", "", "", "", List.of()
+        );
+
+        assertThat(AgentLoopToolExecutor.resolveToolName(
+            "读取面试报告", 0, generalContext
+        )).isEqualTo(AgentLoopToolExecutor.ORGANIZE_AGENT_CONTEXT);
+        assertThat(new AgentLoopToolExecutor(null, null, null)
+            .execute(generalContext, "读取面试报告", 0))
+            .contains("没有绑定面试报告");
+    }
+
+    @Test
     void recordsOnlyLowSensitivityToolIdentityInAudit() {
         AgentMetrics metrics = new AgentMetrics(null, false);
         AgentMetrics.RunTracker tracker = metrics.startRun(4, 2);

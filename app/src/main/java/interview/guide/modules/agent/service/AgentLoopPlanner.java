@@ -38,6 +38,10 @@ public class AgentLoopPlanner {
         "1. 读取本场面试报告并确认当前目标。\n"
             + "2. 结合 Skill 参考资料和可用知识库核对薄弱点。\n"
             + "3. 输出有证据、可执行且格式清晰的面试教练建议。";
+    public static final String DEFAULT_GENERAL_PLAN =
+        "1. 确认当前问题和已提供的资料边界。\n"
+            + "2. 整理可用信息并核对必要的知识依据。\n"
+            + "3. 直接输出清晰、可执行的回答。";
     private static final int MAX_PLAN_CHARS = 1_200;
 
     private final LlmProviderRegistry providerRegistry;
@@ -82,6 +86,9 @@ public class AgentLoopPlanner {
         List<AgentHistoryMessage> history,
         AgentMetrics.RunTracker runTracker
     ) {
+        if (request != null && "general".equalsIgnoreCase(request.goal())) {
+            return DEFAULT_GENERAL_PLAN;
+        }
         if (!retryProperties.isLoopEnabled()) {
             return DEFAULT_PLAN;
         }
@@ -167,9 +174,13 @@ public class AgentLoopPlanner {
      */
     public List<String> steps(String plan, AgentContextService.AgentContext context) {
         if (plan == null || plan.isBlank()) {
-            return List.of("读取面试报告并确认当前目标");
+            return context != null && (context.interviewReport() == null || context.interviewReport().isBlank())
+                ? List.of("整理")
+                : List.of("读取面试报告并确认当前目标");
         }
         int maxSteps = Math.max(1, retryProperties.getLoopMaxSteps());
+        boolean hasInterviewReport = context == null || (context.interviewReport() != null
+            && !context.interviewReport().isBlank());
         boolean hasRagSource = context == null || context.sources().stream()
             .anyMatch(source -> source != null && "rag".equalsIgnoreCase(source.kind()));
         List<String> result = Arrays.stream(plan.split("\\R"))
@@ -178,9 +189,12 @@ public class AgentLoopPlanner {
             .map(String::trim)
             .filter(value -> !value.isBlank())
             .limit(maxSteps)
-            .map(value -> canonicalizeStep(value, hasRagSource))
+            .map(value -> canonicalizeStep(value, hasInterviewReport, hasRagSource))
             .toList();
-        return result.isEmpty() ? List.of("读取面试报告并确认当前目标") : result;
+        return result.isEmpty()
+            ? context != null && (context.interviewReport() == null || context.interviewReport().isBlank())
+                ? List.of("整理") : List.of("读取面试报告并确认当前目标")
+            : result;
     }
 
     /**
@@ -194,7 +208,8 @@ public class AgentLoopPlanner {
         return IntStream.range(0, safeSteps.size())
             .mapToObj(index -> (index + 1) + ". " + safeSteps.get(index))
             .reduce((left, right) -> left + "\n" + right)
-            .orElse("1. 读取面试报告并确认当前目标");
+            .orElse(context != null && (context.interviewReport() == null || context.interviewReport().isBlank())
+                ? "1. 整理" : "1. 读取面试报告并确认当前目标");
     }
 
     /**
@@ -212,13 +227,13 @@ public class AgentLoopPlanner {
      * 规划模型可以用自然语言描述动作，但对外的 Loop 轨迹必须使用有限的审计动作集合。
      * 这样既不会把模型的自由文本误当成工具调用，也能让恢复、评测和前端展示使用稳定标签。
      */
-    private String canonicalizeStep(String value, boolean hasRagSource) {
+    private String canonicalizeStep(String value, boolean hasInterviewReport, boolean hasRagSource) {
         boolean parallel = value.startsWith("[parallel]");
         String action = parallel ? value.substring("[parallel]".length()).trim() : value;
         String explicitTool = explicitTool(action);
         if (explicitTool != null) {
             String selected = switch (explicitTool) {
-                case TOOL_READ_INTERVIEW_REPORT -> "读取面试报告";
+                case TOOL_READ_INTERVIEW_REPORT -> hasInterviewReport ? "读取面试报告" : "整理";
                 case TOOL_CONFIRM_AGENT_GOAL -> "确认当前目标";
                 case TOOL_VERIFY_SKILL_RAG_SOURCES -> hasRagSource
                     ? "核对 Skill/RAG 来源" : "整理";
@@ -230,7 +245,7 @@ public class AgentLoopPlanner {
         String normalized = action.toLowerCase(java.util.Locale.ROOT);
         String canonical = action;
         if (action.contains("读取") && action.contains("报告")) {
-            canonical = "读取面试报告";
+            canonical = hasInterviewReport ? "读取面试报告" : "整理";
         } else if (action.contains("确认") && (action.contains("目标") || action.contains("边界"))) {
             canonical = "确认当前目标";
         } else if (hasRagSource && (normalized.contains("skill") || normalized.contains("rag")

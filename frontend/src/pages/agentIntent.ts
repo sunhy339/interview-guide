@@ -1,5 +1,5 @@
 export type AgentActionIntent =
-  | { type: 'schedule'; suggestedTime: string }
+  | { type: 'schedule'; suggestedTime?: string; companyName?: string; position?: string; timeZone?: string }
   | { type: 'trainingTask' }
   | { type: 'memory' }
   | { type: 'title' }
@@ -18,6 +18,26 @@ function atTime(value: Date, hour: number, minute = 0) {
   const result = new Date(value);
   result.setHours(hour, minute, 0, 0);
   return result;
+}
+
+function cleanDetail(value: string | undefined) {
+  return value?.replace(/[，。,；;。\s]+$/g, '').trim() || undefined;
+}
+
+/** 从补充信息中提取日程字段，避免把“公司是...职位是...”再次交给复盘模型。 */
+export function extractScheduleDetails(message: string) {
+  const normalized = message.replace(/\s+/g, ' ').trim();
+  const companyName = cleanDetail(normalized.match(/公司(?:名称)?\s*(?:是|为|：|:)\s*([^，。,；;\n]+)/)?.[1]);
+  const position = cleanDetail(normalized.match(/(?:职位|岗位)\s*(?:是|为|：|:)\s*([^，。,；;\n]+)/)?.[1]);
+  const timeZone = /北京(?:时间|时区)|中国标准时间|\bCST\b/i.test(normalized)
+    ? 'Asia/Shanghai'
+    : undefined;
+  return { companyName, position, timeZone };
+}
+
+export function isScheduleDetailsMessage(message: string) {
+  const details = extractScheduleDetails(message);
+  return Boolean(details.companyName || details.position || details.timeZone);
 }
 
 function nextMonday(value: Date) {
@@ -93,9 +113,15 @@ export function detectAgentActionIntent(message: string, now = new Date()): Agen
     || /(复习|练习|巩固|准备面试).{0,12}(下周|明天|后天|周末|今晚|日程|时间)/.test(normalized);
   const asksForInterviewMeeting = /(安排|预约|创建|添加).{0,16}(面试会议|面试|会议|日程)/.test(normalized)
     && /(下周|明天|后天|周末|今晚|晚上|\d{1,2}月\d{1,2}日|\d{1,2}(?:点|时|:))/.test(normalized);
-  if (!asksForSchedule && !asksForInterviewMeeting) return null;
+  const details = extractScheduleDetails(normalized);
+  if (!asksForSchedule && !asksForInterviewMeeting
+    && !details.companyName && !details.position && !details.timeZone) return null;
+  const hasExplicitTime = /(下周|明天|后天|周末|今晚|晚上|\d{1,2}月\d{1,2}日|\d{1,2}(?:点|时|:))/.test(normalized);
   return {
     type: 'schedule',
-    suggestedTime: suggestScheduleTime(normalized, now),
+    ...(hasExplicitTime ? { suggestedTime: suggestScheduleTime(normalized, now) } : {}),
+    ...(details.companyName ? { companyName: details.companyName } : {}),
+    ...(details.position ? { position: details.position } : {}),
+    ...(details.timeZone ? { timeZone: details.timeZone } : {}),
   };
 }

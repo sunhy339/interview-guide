@@ -486,8 +486,12 @@ public class AgentLoopEngine {
     public static String defaultObservation(
         AgentContextService.AgentContext context, String action, int index
     ) {
+        boolean hasInterviewReport = context != null && context.interviewReport() != null
+            && !context.interviewReport().isBlank();
         return switch (index) {
-            case 0 -> "已读取面试报告；识别到 " + context.weaknesses().size() + " 个待关注项。";
+            case 0 -> hasInterviewReport
+                ? "已读取面试报告；识别到 " + context.weaknesses().size() + " 个待关注项。"
+                : "已整理通用对话资料边界，本轮没有绑定面试报告。";
             case 1 -> action.contains("核对")
                 ? context.sources().isEmpty()
                     ? "Skill/RAG 未提供可引用来源，本轮回答不得声称使用了外部依据。"

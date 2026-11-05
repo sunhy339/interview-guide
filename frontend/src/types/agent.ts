@@ -1,4 +1,4 @@
-export type AgentGoal = 'review' | 'practice' | 'plan';
+export type AgentGoal = 'general' | 'review' | 'practice' | 'plan';
 
 export interface AgentHistoryMessage {
   role: 'assistant' | 'user';

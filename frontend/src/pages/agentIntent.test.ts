@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { detectAgentActionIntent, suggestScheduleTime } from './agentIntent.ts';
+import { detectAgentActionIntent, extractScheduleDetails, suggestScheduleTime } from './agentIntent.ts';
 
 const now = new Date(2026, 9, 27, 10, 15);
 
@@ -21,6 +21,20 @@ test('识别安排明天中午面试会议的自然语言意图', () => {
   assert.deepEqual(intent, {
     type: 'schedule',
     suggestedTime: '2026-10-28T12:00',
+  });
+});
+
+test('识别面试会议的补充日期、时区、公司和职位信息', () => {
+  assert.deepEqual(extractScheduleDetails('北京时间，公司是浪速公司，职位是agent开发工程师'), {
+    companyName: '浪速公司',
+    position: 'agent开发工程师',
+    timeZone: 'Asia/Shanghai',
+  });
+  assert.deepEqual(detectAgentActionIntent('北京时间，公司是浪速公司，职位是agent开发工程师'), {
+    type: 'schedule',
+    companyName: '浪速公司',
+    position: 'agent开发工程师',
+    timeZone: 'Asia/Shanghai',
   });
 });
 

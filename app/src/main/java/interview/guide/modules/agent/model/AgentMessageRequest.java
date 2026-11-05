@@ -60,4 +60,9 @@ public record AgentMessageRequest(
     public AgentMessageRequest withAgentSessionId(String nextAgentSessionId) {
         return new AgentMessageRequest(goal, message, history, providerId, memoryKey, nextAgentSessionId);
     }
+
+    /** 通用 Agent 不允许沿用面试复盘目标。 */
+    public AgentMessageRequest withGoal(String nextGoal) {
+        return new AgentMessageRequest(nextGoal, message, history, providerId, memoryKey, agentSessionId);
+    }
 }

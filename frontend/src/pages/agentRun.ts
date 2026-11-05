@@ -25,7 +25,7 @@ export function resolveRetryProviderId(currentProviderId: string, previousProvid
 }
 
 function isAgentGoal(value: string | null | undefined): value is AgentGoal {
-  return value === 'review' || value === 'practice' || value === 'plan';
+  return value === 'general' || value === 'review' || value === 'practice' || value === 'plan';
 }
 
 /** 从持久化失败会话中恢复可重试的原始用户请求。 */
@@ -36,7 +36,9 @@ export function getRetryableRequest(conversation: AgentConversationResponse): Ag
   if (!lastUserMessage) return null;
 
   const request: AgentRunRequest = {
-    goal: isAgentGoal(conversation.goal) ? conversation.goal : 'review',
+    goal: conversation.interviewSessionId === null
+      ? 'general'
+      : isAgentGoal(conversation.goal) ? conversation.goal : 'review',
     message: lastUserMessage.content,
     providerId: conversation.providerId || undefined,
   };

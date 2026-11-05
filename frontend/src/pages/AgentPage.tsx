@@ -40,7 +40,7 @@ import CodeBlock from '../components/CodeBlock';
 import { getRetryableRequest, removeLastRunMessages, resolveRetryProviderId, type AgentRunMessageIds, type AgentRunRequest } from './agentRun';
 import { normalizeAgentMarkdown } from './agentMarkdown';
 import { isNearChatBottom } from './agentChatScroll';
-import { detectAgentActionIntent, type AgentActionIntent } from './agentIntent';
+import { detectAgentActionIntent, extractScheduleDetails, isScheduleDetailsMessage, type AgentActionIntent } from './agentIntent';
 import { isExternalMarkdownHref, sanitizeMarkdownHref } from './markdownSecurity';
 import {
   getStoredAgentThreadId,
@@ -142,6 +142,7 @@ interface ScheduleDraftForm {
   companyName: string;
   position: string;
   interviewTime: string;
+  timeZone?: string;
   notes: string;
 }
 
@@ -151,6 +152,7 @@ const MAX_RECONCILIATION_ATTEMPTS = 300;
 const RECONCILIATION_INTERVAL_MS = 3000;
 
 const goalOptions: Array<{ id: AgentGoal; title: string; description: string }> = [
+  { id: 'general', title: '通用对话', description: '直接回答问题，按需使用已添加的资料' },
   { id: 'review', title: '复盘本场面试', description: '分析表现，提炼优势和改进点' },
   { id: 'practice', title: '针对性训练', description: '围绕薄弱知识点生成练习题' },
   { id: 'plan', title: '制定训练计划', description: '拆解目标，安排下一步行动' },
@@ -404,7 +406,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     ? resolveAgentThreadId(routeSessionId, routeAgentSessionId, null, storedInterviewAgentSessionId)
     : (routeSessionId ? storedGeneralAgentSessionId : routeAgentSessionId || storedGeneralAgentSessionId);
   const isGeneralAgentSession = !sessionId && Boolean(agentSessionId);
-  const [goal, setGoal] = useState<AgentGoal>('review');
+  const [goal, setGoal] = useState<AgentGoal>(isGeneralWorkspace ? 'general' : 'review');
   const [providerId, setProviderId] = useState('');
   const [providers, setProviders] = useState<ProviderItem[]>([]);
   const [interview, setInterview] = useState<InterviewDetail | null>(null);
@@ -830,7 +832,9 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         if (cancelled || !conversation.agentSessionId) return;
         rememberRetryableRequest(conversation);
         restoreRunProgress(conversation);
-        if (conversation.goal === 'review' || conversation.goal === 'practice' || conversation.goal === 'plan') {
+        if (isGeneralWorkspace) {
+          setGoal('general');
+        } else if (conversation.goal === 'review' || conversation.goal === 'practice' || conversation.goal === 'plan') {
           setGoal(conversation.goal);
         }
         if (conversation.providerId) setProviderId(conversation.providerId);
@@ -979,7 +983,9 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     }
     activeAgentSessionIdRef.current = targetAgentSessionId;
 
-    const runGoal = options?.goal ?? goal;
+    const runGoal = isGeneralWorkspace
+      ? 'general'
+      : options?.goal ?? goal;
     const runProviderId = options?.providerId ?? providerId;
     const actionIntent = options?.actionIntent
       ?? (options?.retrying ? lastRunActionIntentRef.current : null);
@@ -1401,7 +1407,11 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       .catch((error: unknown) => setActionNotice(getErrorMessage(error) || '动作草稿生成失败，可稍后手动生成'));
   };
 
-  const openScheduleDraft = (message: AgentMessage, suggestedTime?: string) => {
+  const openScheduleDraft = (
+    message: AgentMessage,
+    suggestedTime?: string,
+    details?: Extract<AgentActionIntent, { type: 'schedule' }>,
+  ) => {
     const activeSessionId = agentSessionId || activeAgentSessionIdRef.current;
     if ((!isGeneralWorkspace && !sessionId) || !activeSessionId || message.role !== 'assistant' || !message.content.trim()) {
       setActionNotice('当前 Agent 会话还未建立，暂时不能安排面试日程');
@@ -1410,12 +1420,73 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     const fallbackTitle = interview?.title || '面试会议';
     setScheduleDraftForm({
       messageId: message.id,
-      companyName: fallbackTitle,
-      position: interview?.skillId || '面试',
+      companyName: details?.companyName || fallbackTitle,
+      position: details?.position || interview?.skillId || '面试',
       interviewTime: suggestedTime || defaultScheduleTime(),
-      notes: `${isGeneralWorkspace ? '基于 Agent 对话安排' : '基于 Agent 复盘安排'}：${message.content.trim().replace(/\s+/g, ' ').slice(0, 1800)}`,
+      timeZone: details?.timeZone || 'Asia/Shanghai',
+      notes: `时区：${details?.timeZone === 'Asia/Shanghai' ? '北京时间（Asia/Shanghai）' : details?.timeZone || '北京时间（Asia/Shanghai）'}\n基于 Agent 对话安排：${message.content.trim().replace(/\s+/g, ' ').slice(0, 1750)}`,
     });
-    setActionNotice('请填写面试日程后生成待确认动作');
+    setActionNotice(details?.companyName || details?.position || details?.timeZone
+      ? '已补充面试时间、时区或岗位信息，请检查后生成待确认日程'
+      : '请填写面试日程后生成待确认动作');
+  };
+
+  const handleScheduleMessage = async (
+    content: string,
+    actionIntent: Extract<AgentActionIntent, { type: 'schedule' }>,
+  ) => {
+    if (runStatus === 'running') return;
+
+    const details = extractScheduleDetails(content);
+    if (scheduleDraftForm && isScheduleDetailsMessage(content)) {
+      setScheduleDraftForm((current) => current ? {
+        ...current,
+        companyName: details.companyName || current.companyName,
+        position: details.position || current.position,
+        timeZone: details.timeZone || current.timeZone,
+        notes: `${current.notes}\n补充信息：${content.trim().replace(/\s+/g, ' ').slice(0, 600)}`.slice(0, 2000),
+      } : current);
+      setMessages((current) => [
+        ...current,
+        { id: Date.now(), role: 'user', content },
+        { id: Date.now() + 1, role: 'assistant', content: '已补充到面试日程草稿，请检查时间和内容后生成待确认日程。' },
+      ]);
+      setActionNotice('已补充面试日程信息，请检查后生成待确认动作');
+      return;
+    }
+
+    let targetAgentSessionId = agentSessionId;
+    if (!targetAgentSessionId) {
+      try {
+        const created = await createAgentConversation();
+        targetAgentSessionId = created?.agentSessionId || null;
+      } catch (error: unknown) {
+        setRunError(getErrorMessage(error) || '新建 Agent 对话失败，请稍后重试');
+        return;
+      }
+    }
+    if (!targetAgentSessionId) {
+      setRunError('新建 Agent 对话失败，请稍后重试');
+      return;
+    }
+
+    activeAgentSessionIdRef.current = targetAgentSessionId;
+    const userMessageId = Date.now();
+    setRunError('');
+    setRunNotice('');
+    setRunStatus('idle');
+    setMessages((current) => [
+      ...current,
+      { id: userMessageId, role: 'user', content },
+      {
+        id: userMessageId + 1,
+        role: 'assistant',
+        content: actionIntent.companyName || actionIntent.position || actionIntent.timeZone
+          ? '已识别为面试会议安排，并提取了你提供的信息。请检查下方日程草稿后生成待确认日程。'
+          : '已识别为面试会议安排。请补充公司、职位和时区信息后生成待确认日程。',
+      },
+    ]);
+    openScheduleDraft({ id: userMessageId + 1, role: 'assistant', content }, actionIntent.suggestedTime, actionIntent);
   };
 
   const saveScheduleAction = () => {
@@ -1705,9 +1776,9 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const startRun = () => {
     if (runStatus === 'error' && lastRunRequestRef.current) {
       const lastRequest = lastRunRequestRef.current;
-      setGoal(lastRequest.goal);
+      setGoal(isGeneralWorkspace ? 'general' : lastRequest.goal);
       streamAgentMessage(lastRequest.message, {
-        goal: lastRequest.goal,
+        goal: isGeneralWorkspace ? 'general' : lastRequest.goal,
         providerId: resolveRetryProviderId(providerId, lastRequest.providerId),
         retrying: true,
       });
@@ -1752,7 +1823,14 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       setRunError(`单条消息不能超过 ${MAX_AGENT_MESSAGE_CHARS} 个字符，请分多次发送`);
       return;
     }
-    streamAgentMessage(content, { actionIntent: detectAgentActionIntent(content) });
+    const actionIntent = detectAgentActionIntent(content);
+    if (actionIntent?.type === 'schedule') {
+      void handleScheduleMessage(content, actionIntent);
+      setInput('');
+      delete draftInputsRef.current[draftKeyRef.current];
+      return;
+    }
+    streamAgentMessage(content, { actionIntent });
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -2694,7 +2772,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                       type="button"
                       onClick={() => setScheduleDraftForm(null)}
                       className="rounded-lg p-1 text-slate-400 hover:bg-white/70 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-200"
-                      aria-label="关闭复习日程表单"
+                      aria-label="关闭面试日程表单"
                     >
                       <XCircle className="h-4 w-4" />
                     </button>
@@ -2710,7 +2788,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                       />
                     </label>
                     <label className="text-[11px] text-slate-500 dark:text-slate-300">
-                      复习岗位
+                      面试岗位
                       <input
                         value={scheduleDraftForm.position}
                         onChange={(event) => setScheduleDraftForm((current) => current ? { ...current, position: event.target.value } : current)}
@@ -2726,6 +2804,9 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                         onChange={(event) => setScheduleDraftForm((current) => current ? { ...current, interviewTime: event.target.value } : current)}
                         className="dark-input mt-1 w-full rounded-lg px-3 py-2 text-xs outline-none"
                       />
+                      <span className="mt-1 block text-[10px] text-slate-400 dark:text-slate-500">
+                        时区：{scheduleDraftForm.timeZone === 'Asia/Shanghai' ? '北京时间（Asia/Shanghai）' : scheduleDraftForm.timeZone || '北京时间（Asia/Shanghai）'}
+                      </span>
                     </label>
                     <label className="text-[11px] text-slate-500 dark:text-slate-300">
                       备注
@@ -2754,7 +2835,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                 </div>
               ) : null}
               {!actionsLoading && actions.length === 0 ? (
-                <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">暂无动作草稿。可从 Agent 回答生成训练计划、长期记忆、面试名称或复习日程。</p>
+                <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">暂无动作草稿。可从 Agent 回答生成训练计划、长期记忆、面试名称或面试日程。</p>
               ) : null}
               {actions.length > 0 ? (
                 <div className="mt-3 space-y-3">
