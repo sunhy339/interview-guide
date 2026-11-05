@@ -112,7 +112,7 @@ export default function Layout() {
       id: 'agent',
       title: '智能助手',
       items: [
-        { id: 'agent', path: ROUTES.agent, label: 'AI 面试教练', icon: Bot, description: '复盘面试，制定训练' },
+        { id: 'agent', path: ROUTES.agent, label: 'AI 面试教练', icon: Bot, description: '直接对话，按需引用资料' },
       ],
     },
     {
@@ -137,6 +137,7 @@ export default function Layout() {
   // 判断当前页面是否匹配导航项
   const isActive = (path: string) => {
     if (path.startsWith('#')) return false;
+    const pathname = path.split('?')[0];
     if (path === '/history') {
       return currentPath === '/history'
         || currentPath === '/'
@@ -152,7 +153,7 @@ export default function Layout() {
     if (path === '/knowledgebase') {
       return currentPath === '/knowledgebase' || currentPath === '/knowledgebase/upload';
     }
-    return currentPath.startsWith(path);
+    return currentPath.startsWith(pathname);
   };
 
   return (

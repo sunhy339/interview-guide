@@ -45,6 +45,7 @@ import { isExternalMarkdownHref, sanitizeMarkdownHref } from './markdownSecurity
 import {
   getStoredAgentThreadId,
   clearStoredAgentSession,
+  isExplicitInterviewAgentMode,
   rememberAgentSessionId,
   rememberAgentThreadId,
   resolveAgentThreadId,
@@ -394,16 +395,18 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const routeSessionId = searchParams.get('sessionId');
   const routeAgentSessionId = searchParams.get('agentSessionId');
+  const explicitInterviewMode = isExplicitInterviewAgentMode(searchParams.get('mode'));
   const storedGeneralAgentSessionId = useMemo(() => getStoredAgentThreadId('general'), []);
   const storedInterviewAgentSessionId = useMemo(() => getStoredAgentThreadId('interview'), []);
   // /agent 默认是通用 Agent；只有链接显式带 sessionId 时才读取面试报告。
-  const sessionId = routeSessionId;
+  // 只有明确选择“面试复盘”时才读取报告；/agent 默认永远是通用对话。
+  const sessionId = explicitInterviewMode ? routeSessionId : null;
   const needsInterviewContext = Boolean(sessionId) && (isWorkspaceView || view === 'actions' || view === 'memory');
   const isGeneralWorkspace = isWorkspaceView && !sessionId;
   // 地址带有报告 ID 时不使用上一次报告的线程；通用 Agent 使用独立的会话线程。
-  const agentSessionId = routeSessionId
+  const agentSessionId = explicitInterviewMode
     ? resolveAgentThreadId(routeSessionId, routeAgentSessionId, null, storedInterviewAgentSessionId)
-    : routeAgentSessionId || storedGeneralAgentSessionId;
+    : (routeSessionId ? storedGeneralAgentSessionId : routeAgentSessionId || storedGeneralAgentSessionId);
   const isGeneralAgentSession = !sessionId && Boolean(agentSessionId);
   const [goal, setGoal] = useState<AgentGoal>('review');
   const [providerId, setProviderId] = useState('');
@@ -492,13 +495,13 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const activeAgentSessionIdRef = useRef<string | null>(agentSessionId);
 
   useEffect(() => {
-    if (routeSessionId) {
+    if (routeSessionId && explicitInterviewMode) {
       rememberAgentSessionId(routeSessionId);
     }
-    if (routeAgentSessionId) {
-      rememberAgentThreadId(routeAgentSessionId, routeSessionId ? 'interview' : 'general');
+    if (routeAgentSessionId && (explicitInterviewMode || !routeSessionId)) {
+      rememberAgentThreadId(routeAgentSessionId, routeSessionId && explicitInterviewMode ? 'interview' : 'general');
     }
-  }, [routeAgentSessionId, routeSessionId]);
+  }, [explicitInterviewMode, routeAgentSessionId, routeSessionId]);
 
   const clearReconciliationTimer = useCallback(() => {
     if (reconciliationTimerRef.current !== null) {
@@ -1888,20 +1891,20 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const selectAgentSession = (nextSessionId: string) => {
     if (nextSessionId === sessionId) return;
     rememberAgentThreadId(null, 'interview');
-    setSearchParams({ sessionId: nextSessionId });
+    setSearchParams({ mode: 'interview', sessionId: nextSessionId });
   };
 
   const selectAgentConversation = (nextAgentSessionId: string) => {
     if (nextAgentSessionId === agentSessionId) return;
     rememberAgentThreadId(nextAgentSessionId, sessionId ? 'interview' : 'general');
     setSearchParams(sessionId
-      ? { sessionId, agentSessionId: nextAgentSessionId }
+      ? { mode: 'interview', sessionId, agentSessionId: nextAgentSessionId }
       : { agentSessionId: nextAgentSessionId });
   };
 
   const clearAgentConversation = () => {
     rememberAgentThreadId(null, sessionId ? 'interview' : 'general');
-    setSearchParams(sessionId ? { sessionId } : {});
+    setSearchParams(sessionId ? { mode: 'interview', sessionId } : {});
   };
 
   const createAgentConversation = async (): Promise<AgentConversationSummary | void> => {
@@ -1924,7 +1927,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         }
         rememberAgentThreadId(conversation.agentSessionId, isGeneralWorkspace ? 'general' : 'interview');
         setSearchParams(sessionId
-          ? { sessionId, agentSessionId: conversation.agentSessionId }
+          ? { mode: 'interview', sessionId, agentSessionId: conversation.agentSessionId }
           : { agentSessionId: conversation.agentSessionId });
         return conversation;
       })
@@ -2420,8 +2423,8 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
           agentConversationDisabled={!isGeneralWorkspace && !interview}
         /> : null}
 
-        <div className={`grid grid-cols-1 ${isWorkspaceView ? 'xl:grid-cols-[minmax(0,1.08fr)_minmax(360px,0.92fr)]' : ''} gap-6 items-start min-w-0`}>
-        {isWorkspaceView ? <div className="space-y-6 min-w-0">
+        <div className="grid grid-cols-1 gap-6 items-start min-w-0">
+        {false && isWorkspaceView && interview ? <div className="space-y-6 min-w-0">
           <section className="dark-card p-6">
             <div className="flex items-start justify-between gap-4 mb-5">
               <div>
@@ -2484,18 +2487,18 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                 <div className="flex flex-wrap items-center gap-3">
                   <div className="flex-1 min-w-[180px] p-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-700">
                     <p className="text-xs dark-text-muted">当前面试</p>
-                    <p className="text-sm font-semibold dark-text mt-1 truncate">#{interview.sessionId.slice(-8)}</p>
-                    <p className="text-xs dark-text-muted mt-1">{formatDate(interview.createdAt)}</p>
+                    <p className="text-sm font-semibold dark-text mt-1 truncate">#{interview?.sessionId.slice(-8)}</p>
+                    <p className="text-xs dark-text-muted mt-1">{formatDate(interview?.createdAt ?? '')}</p>
                   </div>
                   <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-700 min-w-[120px]">
                     <p className="text-xs dark-text-muted">综合评分</p>
-                    <p className={`text-2xl font-bold mt-1 ${getScoreTone(interview.overallScore)}`}>
-                      {interview.overallScore ?? '--'}
+                    <p className={`text-2xl font-bold mt-1 ${getScoreTone(interview?.overallScore ?? null)}`}>
+                      {interview?.overallScore ?? '--'}
                     </p>
                   </div>
                   <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-700 min-w-[120px]">
                     <p className="text-xs dark-text-muted">回答数量</p>
-                    <p className="text-2xl font-bold text-slate-700 dark:text-slate-200 mt-1">{interview.answers.length}</p>
+                    <p className="text-2xl font-bold text-slate-700 dark:text-slate-200 mt-1">{interview?.answers.length ?? 0}</p>
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-2 text-xs">
@@ -2632,21 +2635,21 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-xs font-semibold dark-text">本次运行用量</p>
                   <p className="text-[11px] dark-text-muted">
-                    {[runUsage.provider, runUsage.model].filter(Boolean).join(' · ') || '模型信息暂不可用'}
+                    {[runUsage?.provider, runUsage?.model].filter(Boolean).join(' · ') || '模型信息暂不可用'}
                   </p>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-                  <div><span className="dark-text-muted">输入 Token</span><p className="font-semibold dark-text">{runUsage.promptTokens.toLocaleString()}</p></div>
-                  <div><span className="dark-text-muted">输出 Token</span><p className="font-semibold dark-text">{runUsage.completionTokens.toLocaleString()}</p></div>
-                  <div><span className="dark-text-muted">模型调用</span><p className="font-semibold dark-text">{runUsage.modelCalls} 次</p></div>
-                  <div><span className="dark-text-muted">模型耗时</span><p className="font-semibold dark-text">{(runUsage.durationMillis / 1000).toFixed(1)} 秒</p></div>
+                  <div><span className="dark-text-muted">输入 Token</span><p className="font-semibold dark-text">{runUsage?.promptTokens.toLocaleString()}</p></div>
+                  <div><span className="dark-text-muted">输出 Token</span><p className="font-semibold dark-text">{runUsage?.completionTokens.toLocaleString()}</p></div>
+                  <div><span className="dark-text-muted">模型调用</span><p className="font-semibold dark-text">{runUsage?.modelCalls} 次</p></div>
+                  <div><span className="dark-text-muted">模型耗时</span><p className="font-semibold dark-text">{(runUsage?.durationMillis ?? 0) > 0 ? ((runUsage?.durationMillis ?? 0) / 1000).toFixed(1) : '--'} 秒</p></div>
                 </div>
                 <p className="mt-2 text-[11px] dark-text-muted">
-                  总 Token：{runUsage.totalTokens.toLocaleString()} · 费用：{runUsage.cost == null ? '未配置单价' : `${runUsage.cost} ${runUsage.currency || ''}`.trim()}
+                  总 Token：{runUsage?.totalTokens.toLocaleString()} · 费用：{runUsage?.cost == null ? '未配置单价' : `${runUsage?.cost} ${runUsage?.currency || ''}`.trim()}
                 </p>
-                {promptPrefixLabel(runUsage.promptVersion, runUsage.promptFingerprint) ? (
+                {promptPrefixLabel(runUsage?.promptVersion, runUsage?.promptFingerprint) ? (
                   <p className="mt-1 text-[11px] dark-text-muted" title="仅展示安全策略版本和截短指纹，不展示系统提示内容">
-                    Prompt 安全策略：{promptPrefixLabel(runUsage.promptVersion, runUsage.promptFingerprint)}
+                    Prompt 安全策略：{promptPrefixLabel(runUsage?.promptVersion, runUsage?.promptFingerprint)}
                   </p>
                 ) : null}
               </div>
@@ -2900,7 +2903,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                 onKeyDown={handleKeyDown}
                 maxLength={MAX_AGENT_MESSAGE_CHARS}
                 rows={3}
-                placeholder="问问你的面试教练..."
+                placeholder="输入你的问题，按需添加上下文..."
                 className="dark-input w-full resize-none rounded-xl px-4 py-3 pr-12 text-sm outline-none"
               />
               <button

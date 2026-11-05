@@ -4,6 +4,14 @@ const ACTIVE_INTERVIEW_AGENT_THREAD_STORAGE_KEY = 'agent-active-interview-thread
 
 export type AgentThreadScope = 'general' | 'interview';
 
+/**
+ * Agent 工作台的模式由 URL 显式决定；mode=general 是强制的通用入口，
+ * 即使浏览器还残留旧的面试 sessionId，也不能把请求路由回面试 Agent。
+ */
+export function isExplicitInterviewAgentMode(mode: string | null): boolean {
+  return mode?.trim().toLowerCase() === 'interview';
+}
+
 function threadStorageKey(scope: AgentThreadScope) {
   return scope === 'general'
     ? ACTIVE_GENERAL_AGENT_THREAD_STORAGE_KEY

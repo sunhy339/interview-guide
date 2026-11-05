@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   clearStoredAgentSession,
   getStoredAgentThreadId,
+  isExplicitInterviewAgentMode,
   rememberAgentThreadId,
   resolveAgentSessionId,
   resolveAgentThreadId,
@@ -19,6 +20,13 @@ test('从导航返回 Agent 页面时恢复最近一次面试会话', () => {
 
 test('没有 URL 和保存值时保持空白上下文', () => {
   assert.equal(resolveAgentSessionId(null, null), null);
+});
+
+test('只有显式面试模式才允许读取面试报告参数', () => {
+  assert.equal(isExplicitInterviewAgentMode('interview'), true);
+  assert.equal(isExplicitInterviewAgentMode('INTERVIEW'), true);
+  assert.equal(isExplicitInterviewAgentMode('general'), false);
+  assert.equal(isExplicitInterviewAgentMode(null), false);
 });
 
 test('补回保存的面试报告参数时继续恢复同一 Agent 线程', () => {

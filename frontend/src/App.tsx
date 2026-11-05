@@ -436,7 +436,7 @@ function InterviewDetailPageWrapper() {
           {interview.title?.trim() || `面试详情 #${sessionId!.slice(-8)}`}
         </h1>
          <button
-           onClick={() => navigate(`${ROUTES.agent}?sessionId=${encodeURIComponent(sessionId!)}`)}
+           onClick={() => navigate(ROUTES.agent)}
            className="btn-primary inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm ml-auto"
          >
            <Sparkles className="w-4 h-4" />

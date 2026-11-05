@@ -229,20 +229,20 @@ export default function AgentSessionList({
           className="btn-primary w-full mt-4 inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-sm disabled:opacity-50"
         >
           {creatingConversation ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageSquare className="w-4 h-4" />}
-          {creatingConversation ? '创建中...' : '新建通用 Agent 对话'}
+          {creatingConversation ? '创建中...' : '新建对话'}
         </button>
       ) : null}
 
-      <div className="mt-2 grid grid-cols-2 gap-2">
+      {!generalMode ? <div className="mt-2 grid grid-cols-2 gap-2">
         <button
           type="button"
           onClick={onCreate}
-          className={`${generalMode ? 'btn-secondary' : 'btn-primary'} inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs`}
+          className="btn-primary inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs"
         >
           <Plus className="w-3.5 h-3.5" />
-          {generalMode ? '引用面试报告' : '选择面试记录'}
+          选择面试记录
         </button>
-        {!generalMode && onOpenGeneralAgent ? (
+        {onOpenGeneralAgent ? (
           <button
             type="button"
             onClick={onOpenGeneralAgent}
@@ -252,7 +252,7 @@ export default function AgentSessionList({
             通用 Agent
           </button>
         ) : null}
-      </div>
+      </div> : null}
 
       {!generalMode && selectedSessionId && onCreateAgentConversation ? (
         <button
