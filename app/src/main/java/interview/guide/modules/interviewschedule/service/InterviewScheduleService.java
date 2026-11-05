@@ -86,6 +86,37 @@ public class InterviewScheduleService {
         return toDTO(repository.save(entity));
     }
 
+    /** Agent 查询指定用户的单条日程，不能依赖当前线程中的认证上下文。 */
+    @Transactional(readOnly = true)
+    public InterviewScheduleDTO getForOwner(Long id, String ownerId) {
+        if (id == null || ownerId == null || ownerId.isBlank()) {
+            throw new BusinessException(ErrorCode.INTERVIEW_SCHEDULE_NOT_FOUND, "面试日程不存在");
+        }
+        return repository.findByIdAndOwnerId(id, ownerId.trim())
+            .map(this::toDTO)
+            .orElseThrow(() -> new BusinessException(
+                ErrorCode.INTERVIEW_SCHEDULE_NOT_FOUND, "面试日程不存在或无权访问"
+            ));
+    }
+
+    /** Agent 取消日程时保留历史记录，只变更状态并再次校验 owner。 */
+    @Transactional
+    public InterviewScheduleDTO cancelForOwner(Long id, String ownerId) {
+        InterviewScheduleEntity entity = repository.findByIdAndOwnerId(
+            id, ownerId == null ? null : ownerId.trim()
+        ).orElseThrow(() -> new BusinessException(
+            ErrorCode.INTERVIEW_SCHEDULE_NOT_FOUND, "面试日程不存在或无权访问"
+        ));
+        if (entity.getStatus() == InterviewStatus.COMPLETED) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "已完成的面试不能取消");
+        }
+        if (entity.getStatus() != InterviewStatus.CANCELLED) {
+            entity.setStatus(InterviewStatus.CANCELLED);
+            entity = repository.save(entity);
+        }
+        return toDTO(entity);
+    }
+
     public List<InterviewScheduleDTO> getAll(String status, LocalDateTime start, LocalDateTime end) {
         List<InterviewScheduleEntity> entities;
         String ownerId = AuthUserContext.currentUserId().orElse(null);

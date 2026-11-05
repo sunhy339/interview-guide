@@ -48,6 +48,7 @@ public class AgentContextToolCallbackFactory {
     private static final String SCHEDULE_LIST = "schedule_list";
     private static final String SCHEDULE_CONFLICT = "schedule_check_conflict";
     private static final String SCHEDULE_DRAFT = "schedule_create_draft";
+    private static final String SCHEDULE_CANCEL_DRAFT = "schedule_cancel_draft";
     private static final int MAX_TOOL_ASSETS = 20;
     private static final int MAX_SEARCH_QUERY_CHARS = 512;
     private static final int MAX_TOOL_IDENTIFIER_CHARS = 128;
@@ -74,6 +75,9 @@ public class AgentContextToolCallbackFactory {
         """;
     private static final String SCHEDULE_SCHEMA = """
         {"type":"object","properties":{"companyName":{"type":"string"},"position":{"type":"string"},"interviewTime":{"type":"string","description":"本地时间，格式 yyyy-MM-ddTHH:mm"},"interviewType":{"type":"string"},"meetingLink":{"type":"string"},"roundNumber":{"type":"integer","minimum":1,"maximum":20},"interviewer":{"type":"string"},"notes":{"type":"string"}},"required":["companyName","position","interviewTime"],"additionalProperties":false}
+        """;
+    private static final String SCHEDULE_CANCEL_SCHEMA = """
+        {"type":"object","properties":{"scheduleId":{"type":"integer"},"interviewTime":{"type":"string","description":"本地时间，格式 yyyy-MM-ddTHH:mm"},"companyName":{"type":"string"},"position":{"type":"string"}},"additionalProperties":false}
         """;
 
     private final AgentInterviewContextService interviewContextService;
@@ -130,7 +134,10 @@ public class AgentContextToolCallbackFactory {
                 SCHEDULE_CONFLICT_SCHEMA, this::checkScheduleConflict),
             callback(SCHEDULE_DRAFT,
                 "根据用户明确提供的时间生成待确认面试日程草稿；只提出动作，不直接创建日程。",
-                SCHEDULE_SCHEMA, this::scheduleDraft)
+                SCHEDULE_SCHEMA, this::scheduleDraft),
+            callback(SCHEDULE_CANCEL_DRAFT,
+                "结合当前消息和对话历史查找当前用户要取消的唯一面试日程；匹配唯一时生成待确认取消动作，不直接取消。多个候选必须让用户选择。",
+                SCHEDULE_CANCEL_SCHEMA, this::scheduleCancelDraft)
         );
     }
 
@@ -440,6 +447,85 @@ public class AgentContextToolCallbackFactory {
         ));
     }
 
+    private String scheduleCancelDraft(JsonNode input, ToolContext toolContext) {
+        ToolContextData context = context(toolContext);
+        requireScheduleCancellationIntent(context.userMessage());
+        rejectInjectedToolArguments(input, "companyName", "position");
+
+        Long scheduleId = optionalLong(input, "scheduleId");
+        LocalDateTime interviewTime = optionalTime(input, "interviewTime");
+        String companyName = optionalSafeText(input, "companyName", 255);
+        String position = optionalSafeText(input, "position", 255);
+        List<InterviewScheduleDTO> candidates;
+        if (scheduleId != null) {
+            candidates = List.of(interviewScheduleService.getForOwner(scheduleId, context.ownerKey()));
+        } else {
+            LocalDateTime start = interviewTime == null ? null : interviewTime.minusMinutes(1);
+            LocalDateTime end = interviewTime == null ? null : interviewTime.plusMinutes(1);
+            candidates = interviewScheduleService.listForOwner(
+                    context.ownerKey(), start, end, MAX_SCHEDULE_RESULTS
+                ).stream()
+                .filter(this::isCancelableSchedule)
+                .filter(schedule -> interviewTime == null
+                    || schedule.getInterviewTime() == null
+                    || !schedule.getInterviewTime().isBefore(interviewTime.minusMinutes(1))
+                    && !schedule.getInterviewTime().isAfter(interviewTime.plusMinutes(1)))
+                .filter(schedule -> matchesScheduleText(schedule.getCompanyName(), companyName))
+                .filter(schedule -> matchesScheduleText(schedule.getPosition(), position))
+                .toList();
+        }
+
+        if (candidates.isEmpty()) {
+            return emit(Map.of(
+                "status", "NOT_FOUND",
+                "message", "没有找到符合条件且仍可取消的面试日程；请补充具体时间、公司或岗位。"
+            ));
+        }
+        if (candidates.size() > 1) {
+            return emit(Map.of(
+                "status", "SELECTION_REQUIRED",
+                "message", "找到多个可取消的面试日程，请让用户选择具体的一条后再生成取消动作。",
+                "schedules", candidates.stream().map(ScheduleSummary::from).toList()
+            ));
+        }
+
+        InterviewScheduleDTO schedule = candidates.getFirst();
+        AgentActionResponse action = actionService.proposeInterviewScheduleCancelDraft(
+            context.interviewSessionId(), context.agentSessionId(), context.ownerKey(), schedule, null
+        );
+        return emit(Map.of(
+            "status", "ACTION_PROPOSED",
+            "message", "已找到唯一匹配的面试日程，并生成待确认取消动作；用户确认后才会取消。",
+            "action", action
+        ));
+    }
+
+    private boolean isCancelableSchedule(InterviewScheduleDTO schedule) {
+        return schedule != null && schedule.getStatus() != InterviewStatus.CANCELLED
+            && schedule.getStatus() != InterviewStatus.COMPLETED;
+    }
+
+    private boolean matchesScheduleText(String actual, String expected) {
+        return expected == null || expected.isBlank()
+            || actual != null && actual.contains(expected);
+    }
+
+    private void requireScheduleCancellationIntent(String message) {
+        requireUserIntent(message, "取消");
+        if (containsAny(message,
+            "不要取消", "别取消", "无需取消", "不用取消", "如何取消", "怎么取消",
+            "能不能取消", "是否取消", "可以取消吗", "取消权限", "取消的方法"
+        )) {
+            throw new BusinessException(
+                ErrorCode.BAD_REQUEST,
+                "需要用户明确、直接确认取消该面试日程，未执行任何 Agent 操作"
+            );
+        }
+        if (!containsAny(message, "面试", "日程", "预约", "会议", "它", "这个", "那个", "刚才")) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "请明确要取消的面试或面试日程");
+        }
+    }
+
     /**
      * 工具参数可能由模型从报告、RAG 或历史消息中提取，不能只信任当前用户的动作意图。
      * 对会产生业务动作的自由文本参数再次做注入检测，避免不可信资料借模型参数进入草稿。
@@ -665,6 +751,15 @@ public class AgentContextToolCallbackFactory {
             );
         }
         return parsed;
+    }
+
+    private Long optionalLong(JsonNode input, String field) {
+        if (input == null || input.get(field) == null || input.get(field).isNull()) return null;
+        JsonNode value = input.get(field);
+        if (!value.isIntegralNumber() || !value.canConvertToLong() || value.longValue() <= 0) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "工具字段 " + field + " 必须是正整数");
+        }
+        return value.longValue();
     }
 
     private String required(JsonNode input, String field, String message, int maxChars) {

@@ -1,5 +1,6 @@
 export type AgentActionIntent =
   | { type: 'schedule'; suggestedTime?: string; companyName?: string; position?: string; timeZone?: string }
+  | { type: 'scheduleCancel' }
   | { type: 'trainingTask' }
   | { type: 'memory' }
   | { type: 'title' }
@@ -88,6 +89,10 @@ export function suggestScheduleTime(message: string, now = new Date()) {
 /** 只识别明确的“安排复习”意图，避免普通复盘内容误触发写入流程。 */
 export function detectAgentActionIntent(message: string, now = new Date()): AgentActionIntent | null {
   const normalized = message.replace(/\s+/g, ' ').trim();
+  if (/(取消|撤销|删掉|去掉).{0,16}(面试|会议|日程|预约)/.test(normalized)
+    || /(面试|会议|日程|预约).{0,16}(取消|撤销|删掉|去掉)/.test(normalized)) {
+    return { type: 'scheduleCancel' };
+  }
   if (!normalized || /(不要|不用|无需|取消).{0,6}(安排|预约|日程|导出|下载|保存|创建|修改|重命名|任务|简历|记忆)/.test(normalized)) return null;
   if (/(导出|下载).{0,8}(报告|面试报告|pdf)/i.test(normalized)
     || /(报告|面试报告).{0,8}(导出|下载)/i.test(normalized)) {

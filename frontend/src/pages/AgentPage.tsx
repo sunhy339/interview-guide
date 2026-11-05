@@ -464,6 +464,8 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
   const [actionFeedback, setActionFeedback] = useState<Record<string, string>>({});
   const [scheduleDraftForm, setScheduleDraftForm] = useState<ScheduleDraftForm | null>(null);
+  const scheduleDraftFormRef = useRef<ScheduleDraftForm | null>(null);
+  const scheduleDraftTimeRef = useRef<string | null>(null);
   const [editingActionId, setEditingActionId] = useState<string | null>(null);
   const [editingActionContent, setEditingActionContent] = useState('');
   const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
@@ -990,10 +992,6 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     const actionIntent = options?.actionIntent
       ?? (options?.retrying ? lastRunActionIntentRef.current : null);
     lastRunActionIntentRef.current = actionIntent;
-    if (actionIntent?.type === 'schedule') {
-      // 先展示可编辑草稿，不依赖 SSE 完成回调，避免回答已恢复但表单因连接中断没有出现。
-      openScheduleDraft({ id: Date.now(), role: 'assistant', content }, actionIntent.suggestedTime);
-    }
     const runRequest: AgentRunRequest = {
       goal: runGoal,
       message: content,
@@ -1079,9 +1077,53 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         : agentApi.getConversation(sessionId!, targetAgentSessionId);
       void conversationRequest.then((conversation) => {
         restoreRunProgress(conversation);
-        void loadAgentActions();
+        const actionsRequest = loadAgentActions();
         if (!actionIntent) autoProposeGoalAction(conversation, runGoal);
         autoProposeActionIntent(conversation, actionIntent);
+        if (actionIntent?.type === 'schedule') {
+          const assistantMessage = [...conversation.messages]
+            .reverse()
+            .find((message) => message.role === 'assistant' && message.content.trim());
+          if (assistantMessage && !assistantMessage.content.includes('本次任务未完成')) {
+            // 表单只是兼容兜底；真正的日程动作优先由后端 tool_call 生成。
+            // 先展示可编辑信息，动作列表返回后若已有后端草稿则自动收起，避免用户重复创建。
+            const details = extractScheduleDetails(content);
+            if (scheduleDraftFormRef.current && isScheduleDetailsMessage(content) && !actionIntent.suggestedTime) {
+              setScheduleDraftForm((current) => {
+                if (!current) return current;
+                const updated = {
+                  ...current,
+                  companyName: details.companyName || current.companyName,
+                  position: details.position || current.position,
+                  timeZone: details.timeZone || current.timeZone,
+                  notes: `${current.notes}\n补充信息：${content.trim().replace(/\s+/g, ' ').slice(0, 600)}`.slice(0, 2000),
+                };
+                scheduleDraftFormRef.current = updated;
+                return updated;
+              });
+              setActionNotice('已补充面试日程信息，请检查后生成待确认动作');
+            } else {
+              openScheduleDraft({
+                id: Date.now(),
+                role: 'assistant',
+                content: assistantMessage.content,
+              }, actionIntent.suggestedTime, actionIntent);
+            }
+            const actionListFallback = new Promise<AgentAction[]>((resolve) => {
+              window.setTimeout(() => resolve([]), 800);
+            });
+            void Promise.race([actionsRequest, actionListFallback]).then((loadedActions) => {
+              const hasScheduleAction = loadedActions.some((action) =>
+                action.toolId === 'interview.schedule.create'
+                || action.toolId === 'interview.schedule.cancel'
+              );
+              if (hasScheduleAction) {
+                scheduleDraftFormRef.current = null;
+                setScheduleDraftForm(null);
+              }
+            });
+          }
+        }
       }).catch(() => undefined);
     };
 
@@ -1274,22 +1316,30 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       .finally(() => setUsageRunsLoading(false));
   }, []);
 
-  const loadAgentActions = useCallback(() => {
+  const loadAgentActions = useCallback((): Promise<AgentAction[]> => {
     if (isGeneralAgentSession) {
       setActionsLoading(true);
       return agentApi.listGeneralActions(agentSessionId!)
-        .then((value) => setActions(value))
+        .then((value) => {
+          setActions(value);
+          return value;
+        })
         .catch(() => setActionNotice('待确认动作读取失败，请稍后重试'))
+        .then((value) => value || [])
         .finally(() => setActionsLoading(false));
     }
     if (!sessionId || (isWorkspaceView && (!interview || !agentSessionId))) {
       setActions([]);
-      return Promise.resolve();
+      return Promise.resolve([]);
     }
     setActionsLoading(true);
     return agentApi.listActions(sessionId, agentSessionId)
-      .then((value) => setActions(value))
+      .then((value) => {
+        setActions(value);
+        return value;
+      })
       .catch(() => setActionNotice('待确认动作读取失败，请稍后重试'))
+      .then((value) => value || [])
       .finally(() => setActionsLoading(false));
   }, [agentSessionId, interview, isGeneralAgentSession, isWorkspaceView, sessionId]);
 
@@ -1362,7 +1412,8 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   };
 
   const autoProposeActionIntent = (conversation: AgentConversationResponse, actionIntent: AgentActionIntent | null) => {
-    if (!actionIntent || actionIntent.type === 'schedule' || !conversation.agentSessionId || !sessionId) return;
+    if (!actionIntent || actionIntent.type === 'schedule' || actionIntent.type === 'scheduleCancel'
+      || !conversation.agentSessionId || !sessionId) return;
     const assistantMessage = [...conversation.messages]
       .reverse()
       .find((message) => message.role === 'assistant' && message.content.trim());
@@ -1418,75 +1469,21 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       return;
     }
     const fallbackTitle = interview?.title || '面试会议';
-    setScheduleDraftForm({
+    const interviewTime = suggestedTime || scheduleDraftTimeRef.current || defaultScheduleTime();
+    scheduleDraftTimeRef.current = interviewTime;
+    const draft: ScheduleDraftForm = {
       messageId: message.id,
       companyName: details?.companyName || fallbackTitle,
       position: details?.position || interview?.skillId || '面试',
-      interviewTime: suggestedTime || defaultScheduleTime(),
+      interviewTime,
       timeZone: details?.timeZone || 'Asia/Shanghai',
       notes: `时区：${details?.timeZone === 'Asia/Shanghai' ? '北京时间（Asia/Shanghai）' : details?.timeZone || '北京时间（Asia/Shanghai）'}\n基于 Agent 对话安排：${message.content.trim().replace(/\s+/g, ' ').slice(0, 1750)}`,
-    });
+    };
+    scheduleDraftFormRef.current = draft;
+    setScheduleDraftForm(draft);
     setActionNotice(details?.companyName || details?.position || details?.timeZone
       ? '已补充面试时间、时区或岗位信息，请检查后生成待确认日程'
       : '请填写面试日程后生成待确认动作');
-  };
-
-  const handleScheduleMessage = async (
-    content: string,
-    actionIntent: Extract<AgentActionIntent, { type: 'schedule' }>,
-  ) => {
-    if (runStatus === 'running') return;
-
-    const details = extractScheduleDetails(content);
-    if (scheduleDraftForm && isScheduleDetailsMessage(content)) {
-      setScheduleDraftForm((current) => current ? {
-        ...current,
-        companyName: details.companyName || current.companyName,
-        position: details.position || current.position,
-        timeZone: details.timeZone || current.timeZone,
-        notes: `${current.notes}\n补充信息：${content.trim().replace(/\s+/g, ' ').slice(0, 600)}`.slice(0, 2000),
-      } : current);
-      setMessages((current) => [
-        ...current,
-        { id: Date.now(), role: 'user', content },
-        { id: Date.now() + 1, role: 'assistant', content: '已补充到面试日程草稿，请检查时间和内容后生成待确认日程。' },
-      ]);
-      setActionNotice('已补充面试日程信息，请检查后生成待确认动作');
-      return;
-    }
-
-    let targetAgentSessionId = agentSessionId;
-    if (!targetAgentSessionId) {
-      try {
-        const created = await createAgentConversation();
-        targetAgentSessionId = created?.agentSessionId || null;
-      } catch (error: unknown) {
-        setRunError(getErrorMessage(error) || '新建 Agent 对话失败，请稍后重试');
-        return;
-      }
-    }
-    if (!targetAgentSessionId) {
-      setRunError('新建 Agent 对话失败，请稍后重试');
-      return;
-    }
-
-    activeAgentSessionIdRef.current = targetAgentSessionId;
-    const userMessageId = Date.now();
-    setRunError('');
-    setRunNotice('');
-    setRunStatus('idle');
-    setMessages((current) => [
-      ...current,
-      { id: userMessageId, role: 'user', content },
-      {
-        id: userMessageId + 1,
-        role: 'assistant',
-        content: actionIntent.companyName || actionIntent.position || actionIntent.timeZone
-          ? '已识别为面试会议安排，并提取了你提供的信息。请检查下方日程草稿后生成待确认日程。'
-          : '已识别为面试会议安排。请补充公司、职位和时区信息后生成待确认日程。',
-      },
-    ]);
-    openScheduleDraft({ id: userMessageId + 1, role: 'assistant', content }, actionIntent.suggestedTime, actionIntent);
   };
 
   const saveScheduleAction = () => {
@@ -1517,6 +1514,8 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       .then((action) => {
         setActions((current) => [action, ...current.filter((item) => item.actionId !== action.actionId)]);
         setScheduleDraftForm(null);
+        scheduleDraftFormRef.current = null;
+        scheduleDraftTimeRef.current = null;
         setActionNotice('面试日程草稿已生成，请先检查时间和内容再确认');
       })
       .catch((error: unknown) => setActionNotice(getErrorMessage(error) || '面试日程草稿生成失败，请稍后重试'));
@@ -1824,12 +1823,6 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       return;
     }
     const actionIntent = detectAgentActionIntent(content);
-    if (actionIntent?.type === 'schedule') {
-      void handleScheduleMessage(content, actionIntent);
-      setInput('');
-      delete draftInputsRef.current[draftKeyRef.current];
-      return;
-    }
     streamAgentMessage(content, { actionIntent });
   };
 
@@ -2937,7 +2930,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                           <Download className="h-3.5 w-3.5" />
                           下载 Markdown
                         </button>
-                        {action.status === 'PROPOSED' && editingActionId !== action.actionId ? (
+                        {action.status === 'PROPOSED' && editingActionId !== action.actionId && action.toolId !== 'interview.schedule.cancel' ? (
                           <button
                             onClick={() => startEditAgentAction(action)}
                             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition-colors hover:border-primary-300 hover:text-primary-600 dark:border-slate-600 dark:text-slate-300 dark:hover:text-primary-300"
@@ -2973,6 +2966,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                                   : action.toolId === 'training.task.create' ? '确认创建任务'
                                     : isAgentReportExportAction(action) ? '确认导出报告'
                                       : isAgentResumeEditAction(action) ? '确认保存简历版'
+                                      : action.toolId === 'interview.schedule.cancel' ? '确认取消面试'
                                       : isAgentScheduleAction(action) ? '确认创建日程'
                                       : '确认保存草稿'}
                           </button>

@@ -28,6 +28,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -59,7 +60,7 @@ class AgentContextToolCallbackFactoryTest {
             .containsExactly(
                 "interview_search", "interview_attach_context", "interview_clear_context",
                 "agent_context_list", "agent_context_asset_action", "schedule_list",
-                "schedule_check_conflict", "schedule_create_draft"
+                "schedule_check_conflict", "schedule_create_draft", "schedule_cancel_draft"
             );
         assertThat(factory.callbacks())
             .allSatisfy(callback -> assertThat(callback.getToolDefinition().inputSchema())
@@ -461,6 +462,78 @@ class AgentContextToolCallbackFactoryTest {
 
         assertThat(result).contains("示例公司").contains("Java").contains("READ_ONLY");
         verify(interviewScheduleService).listForOwner("owner-1", null, null, 10);
+    }
+
+    @Test
+    void scheduleCancelDraftUsesUniqueOwnerScopedMatch() {
+        LocalDateTime interviewTime = LocalDateTime.of(2026, 11, 6, 12, 0);
+        InterviewScheduleDTO schedule = new InterviewScheduleDTO();
+        schedule.setId(17L);
+        schedule.setCompanyName("浪速公司");
+        schedule.setPosition("Agent 开发工程师");
+        schedule.setInterviewTime(interviewTime);
+        schedule.setInterviewType("VIDEO");
+        schedule.setStatus(InterviewStatus.PENDING);
+        when(interviewScheduleService.listForOwner(
+            "owner-1", interviewTime.minusMinutes(1), interviewTime.plusMinutes(1), 20
+        )).thenReturn(List.of(schedule));
+        when(actionService.proposeInterviewScheduleCancelDraft(
+            eq(null), eq("agent-1"), eq("owner-1"), eq(schedule), eq(null)
+        )).thenReturn(mock(interview.guide.modules.agent.model.AgentActionResponse.class));
+
+        String result = tool("schedule.cancel_draft").call(
+            "{\"interviewTime\":\"2026-11-06T12:00\",\"companyName\":\"浪速公司\"}",
+            context("帮我取消明天12点的浪速公司面试")
+        );
+
+        assertThat(result).contains("ACTION_PROPOSED");
+        verify(actionService).proposeInterviewScheduleCancelDraft(
+            eq(null), eq("agent-1"), eq("owner-1"), eq(schedule), eq(null)
+        );
+    }
+
+    @Test
+    void scheduleCancelDraftDoesNotGuessAmongMultipleMatches() {
+        LocalDateTime interviewTime = LocalDateTime.of(2026, 11, 6, 12, 0);
+        InterviewScheduleDTO first = new InterviewScheduleDTO();
+        first.setId(17L);
+        first.setCompanyName("浪速公司");
+        first.setPosition("Agent 开发工程师");
+        first.setInterviewTime(interviewTime);
+        first.setStatus(InterviewStatus.PENDING);
+        InterviewScheduleDTO second = new InterviewScheduleDTO();
+        second.setId(18L);
+        second.setCompanyName("浪速公司");
+        second.setPosition("Agent 开发工程师");
+        second.setInterviewTime(interviewTime);
+        second.setStatus(InterviewStatus.RESCHEDULED);
+        when(interviewScheduleService.listForOwner(
+            "owner-1", interviewTime.minusMinutes(1), interviewTime.plusMinutes(1), 20
+        )).thenReturn(List.of(first, second));
+
+        String result = tool("schedule.cancel_draft").call(
+            "{\"interviewTime\":\"2026-11-06T12:00\"}",
+            context("帮我取消明天12点的面试")
+        );
+
+        assertThat(result).contains("SELECTION_REQUIRED").contains("17").contains("18");
+        verify(actionService, never()).proposeInterviewScheduleCancelDraft(
+            any(), any(), any(), any(), any()
+        );
+    }
+
+    @Test
+    void scheduleCancelDraftRejectsQuestionsAndNegations() {
+        String question = tool("schedule.cancel_draft").call(
+            "{}", context("怎么取消我的面试日程")
+        );
+        String negation = tool("schedule.cancel_draft").call(
+            "{}", context("不要取消我的面试日程")
+        );
+
+        assertThat(question).contains("需要用户明确");
+        assertThat(negation).contains("需要用户明确");
+        verify(interviewScheduleService, never()).listForOwner(any(), any(), any(), anyInt());
     }
 
     @Test

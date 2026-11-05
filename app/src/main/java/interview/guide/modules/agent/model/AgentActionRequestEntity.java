@@ -102,6 +102,10 @@ public class AgentActionRequestEntity {
     @Column(name = "schedule_notes", columnDefinition = "TEXT")
     private String scheduleNotes;
 
+    /** 取消日程动作指向的既有日程；创建日程动作为空。 */
+    @Column(name = "schedule_id")
+    private Long scheduleId;
+
     @Column(name = "result_summary", length = 500)
     private String resultSummary;
 

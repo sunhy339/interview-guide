@@ -10,6 +10,8 @@ import interview.guide.modules.agent.model.AgentActionStatus;
 import interview.guide.modules.agent.repository.AgentActionRequestRepository;
 import interview.guide.modules.interview.service.InterviewPersistenceService;
 import interview.guide.modules.interviewschedule.model.CreateInterviewRequest;
+import interview.guide.modules.interviewschedule.model.InterviewScheduleDTO;
+import interview.guide.modules.interviewschedule.model.InterviewStatus;
 import interview.guide.modules.interviewschedule.service.InterviewScheduleService;
 import interview.guide.modules.resume.service.ResumeEditorService;
 import jakarta.transaction.Transactional;
@@ -40,6 +42,7 @@ public class AgentActionService {
     private static final String INTERVIEW_REPORT_EXPORT_TOOL = "interview.report.export";
     private static final String RESUME_EDITOR_SAVE_TOOL = "resume.editor.save";
     private static final String INTERVIEW_SCHEDULE_CREATE_TOOL = "interview.schedule.create";
+    private static final String INTERVIEW_SCHEDULE_CANCEL_TOOL = "interview.schedule.cancel";
     private static final String MEMORY_TOOL = "agent.memory.save";
     private static final String INTERVIEW_TITLE_TOOL = "interview.title.rename";
     private static final String DRAFT_RISK = "DRAFT_WRITE";
@@ -59,6 +62,8 @@ public class AgentActionService {
     private static final String RESUME_EDITOR_PREVIEW = "确认后保存为当前简历的 AI 编辑版草稿，原始上传文件不被覆盖；可继续手动修改、应用或导出。";
     private static final String INTERVIEW_SCHEDULE_TITLE = "安排面试日程";
     private static final String INTERVIEW_SCHEDULE_PREVIEW = "确认后在面试日程中创建一条面试安排，仅属于当前用户，不修改面试报告。";
+    private static final String INTERVIEW_SCHEDULE_CANCEL_TITLE = "取消面试日程";
+    private static final String INTERVIEW_SCHEDULE_CANCEL_PREVIEW = "确认后将匹配到的面试日程标记为已取消，保留历史记录，不删除日程。";
     private static final int MAX_OWNER_KEY = 64;
     private static final int MAX_IDEMPOTENCY_KEY = 128;
     private static final int MAX_CONTENT = 12_000;
@@ -244,6 +249,67 @@ public class AgentActionService {
             .scheduleRoundNumber(normalizedRound)
             .scheduleInterviewer(normalizedInterviewer)
             .scheduleNotes(normalizedNotes)
+            .idempotencyKey(idempotencyKey)
+            .build();
+        return saveProposed(entity);
+    }
+
+    /** 生成取消既有面试日程的待确认动作；不会直接修改日程。 */
+    @Transactional
+    public AgentActionResponse proposeInterviewScheduleCancelDraft(
+        String interviewSessionId,
+        String agentSessionId,
+        String ownerKey,
+        InterviewScheduleDTO schedule,
+        String requestedIdempotencyKey
+    ) {
+        String owner = requireOwner(ownerKey);
+        String interviewId = normalizeOptional(interviewSessionId, 64);
+        String agentId = requireText(agentSessionId, "Agent 会话不能为空", 64);
+        if (schedule == null || schedule.getId() == null) {
+            throw new BusinessException(ErrorCode.INTERVIEW_SCHEDULE_NOT_FOUND, "面试日程不存在");
+        }
+        if (interviewScheduleService == null) {
+            throw new IllegalStateException("面试日程服务未配置");
+        }
+        InterviewScheduleDTO owned = interviewScheduleService.getForOwner(schedule.getId(), owner);
+        if (owned.getStatus() == InterviewStatus.COMPLETED) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "已完成的面试不能取消");
+        }
+        if (owned.getStatus() == InterviewStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "该面试已经取消，无需重复操作");
+        }
+        String idempotencyKey = normalizeIdempotencyKey(requestedIdempotencyKey);
+        if (idempotencyKey == null) {
+            idempotencyKey = digest(owner + "\n" + interviewId + "\n" + agentId
+                + "\n" + INTERVIEW_SCHEDULE_CANCEL_TOOL + "\n" + owned.getId());
+        }
+        AgentActionRequestEntity existing = repository
+            .findByOwnerKeyAndIdempotencyKey(owner, idempotencyKey)
+            .orElse(null);
+        if (existing != null) {
+            return safeResponse(existing);
+        }
+        String company = sanitizeOptionalText(owned.getCompanyName(), 255);
+        String position = sanitizeOptionalText(owned.getPosition(), 255);
+        String summary = "取消日程：" + company + " · " + position
+            + "\n时间：" + owned.getInterviewTime()
+            + "\n日程 ID：" + owned.getId();
+        AgentActionRequestEntity entity = AgentActionRequestEntity.builder()
+            .actionId(UUID.randomUUID().toString())
+            .ownerKey(owner)
+            .interviewSessionId(interviewId)
+            .agentSessionId(agentId)
+            .toolId(INTERVIEW_SCHEDULE_CANCEL_TOOL)
+            .riskLevel("BUSINESS_WRITE")
+            .status(AgentActionStatus.PROPOSED)
+            .title(INTERVIEW_SCHEDULE_CANCEL_TITLE)
+            .previewText(INTERVIEW_SCHEDULE_CANCEL_PREVIEW)
+            .draftContent(summary)
+            .scheduleId(owned.getId())
+            .scheduleCompanyName(company)
+            .schedulePosition(position)
+            .scheduleInterviewTime(owned.getInterviewTime())
             .idempotencyKey(idempotencyKey)
             .build();
         return saveProposed(entity);
@@ -694,6 +760,16 @@ public class AgentActionService {
             interviewScheduleService.createForOwner(
                 request, entity.getOwnerKey(), entity.getActionId()
             );
+            return;
+        }
+        if (INTERVIEW_SCHEDULE_CANCEL_TOOL.equals(entity.getToolId())) {
+            if (interviewScheduleService == null) {
+                throw new IllegalStateException("面试日程服务未配置");
+            }
+            if (entity.getScheduleId() == null) {
+                throw new BusinessException(ErrorCode.INTERVIEW_SCHEDULE_NOT_FOUND, "待取消的面试日程不存在");
+            }
+            interviewScheduleService.cancelForOwner(entity.getScheduleId(), entity.getOwnerKey());
         }
         // 训练计划和练习题的确认结果仍然只保存在动作表，不修改其他业务实体。
     }
@@ -704,6 +780,9 @@ public class AgentActionService {
         sanitizeStoredAction(entity);
         if (entity.getStatus() != AgentActionStatus.PROPOSED) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "只有待确认的 Agent 草稿可以编辑");
+        }
+        if (INTERVIEW_SCHEDULE_CANCEL_TOOL.equals(entity.getToolId())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "取消日程动作不支持修改，请重新查询后生成草稿");
         }
         String updatedContent = INTERVIEW_SCHEDULE_CREATE_TOOL.equals(entity.getToolId())
             ? updateScheduleDraft(entity, content)
@@ -831,6 +910,9 @@ public class AgentActionService {
         }
         if (INTERVIEW_SCHEDULE_CREATE_TOOL.equals(toolId)) {
             return "复习日程已创建，可在面试日程中继续调整；原始面试资料未被修改。";
+        }
+        if (INTERVIEW_SCHEDULE_CANCEL_TOOL.equals(toolId)) {
+            return "面试日程已取消，历史记录已保留；原始面试资料未被修改。";
         }
         return "训练计划草稿已保存，原始面试资料未被修改。";
     }

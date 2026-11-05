@@ -46,6 +46,11 @@ test('普通复盘请求和取消安排不会误触发动作', () => {
   assert.equal(detectAgentActionIntent('不要导出面试报告'), null);
 });
 
+test('识别取消面试日程意图，但不在前端直接执行', () => {
+  assert.deepEqual(detectAgentActionIntent('帮我取消明天12点的面试'), { type: 'scheduleCancel' });
+  assert.deepEqual(detectAgentActionIntent('把刚才安排的那个会议取消掉'), { type: 'scheduleCancel' });
+});
+
 test('识别训练任务、记忆、标题、报告和简历动作', () => {
   assert.deepEqual(detectAgentActionIntent('帮我创建一个训练任务，重点练 Redis'), { type: 'trainingTask' });
   assert.deepEqual(detectAgentActionIntent('把这个薄弱点保存到长期记忆'), { type: 'memory' });

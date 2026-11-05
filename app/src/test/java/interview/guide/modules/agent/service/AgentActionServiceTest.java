@@ -6,6 +6,8 @@ import interview.guide.modules.agent.model.AgentActionStatus;
 import interview.guide.modules.agent.repository.AgentActionRequestRepository;
 import interview.guide.modules.interview.service.InterviewPersistenceService;
 import interview.guide.modules.interviewschedule.service.InterviewScheduleService;
+import interview.guide.modules.interviewschedule.model.InterviewScheduleDTO;
+import interview.guide.modules.interviewschedule.model.InterviewStatus;
 import interview.guide.modules.resume.service.ResumeEditorService;
 import java.util.List;
 import java.util.Optional;
@@ -304,6 +306,41 @@ class AgentActionServiceTest {
         assertThat(confirmed.status()).isEqualTo(AgentActionStatus.SUCCEEDED);
         verify(interviewScheduleService).createForOwner(any(), org.mockito.ArgumentMatchers.eq("user-1"),
             org.mockito.ArgumentMatchers.eq("schedule-action-1"));
+    }
+
+    @Test
+    @DisplayName("确认取消面试日程动作时只变更当前用户的日程状态")
+    void confirmsInterviewScheduleCancellationAction() {
+        AgentActionService service = new AgentActionService(
+            repository, auditService, memoryService, interviewPersistenceService,
+            trainingTaskService, resumeEditorService, interviewScheduleService
+        );
+        InterviewScheduleDTO schedule = new InterviewScheduleDTO();
+        schedule.setId(27L);
+        schedule.setCompanyName("浪速公司");
+        schedule.setPosition("Agent 开发工程师");
+        schedule.setInterviewTime(LocalDateTime.of(2026, 11, 6, 12, 0));
+        schedule.setStatus(InterviewStatus.PENDING);
+        when(repository.findByOwnerKeyAndIdempotencyKey("user-1", "cancel-1"))
+            .thenReturn(Optional.empty());
+        when(interviewScheduleService.getForOwner(27L, "user-1")).thenReturn(schedule);
+        when(repository.findByActionIdForUpdate(any())).thenAnswer(invocation ->
+            Optional.of(cancelAction("cancel-action-1", "user-1", 27L))
+        );
+        when(repository.save(any(AgentActionRequestEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        when(interviewScheduleService.cancelForOwner(27L, "user-1"))
+            .thenReturn(schedule);
+
+        var proposed = service.proposeInterviewScheduleCancelDraft(
+            null, "agent-1", "user-1", schedule, "cancel-1"
+        );
+        var confirmed = service.confirm(proposed.actionId(), "user-1");
+
+        assertThat(proposed.toolId()).isEqualTo("interview.schedule.cancel");
+        assertThat(proposed.draftContent()).contains("浪速公司", "27");
+        assertThat(confirmed.status()).isEqualTo(AgentActionStatus.SUCCEEDED);
+        verify(interviewScheduleService).cancelForOwner(27L, "user-1");
     }
 
     @Test
@@ -792,6 +829,15 @@ class AgentActionServiceTest {
         action.setScheduleInterviewType("OTHER");
         action.setScheduleRoundNumber(1);
         action.setScheduleNotes("复习 Redis 和消息队列");
+        return action;
+    }
+
+    private AgentActionRequestEntity cancelAction(String actionId, String owner, Long scheduleId) {
+        AgentActionRequestEntity action = draft(actionId, owner);
+        action.setToolId("interview.schedule.cancel");
+        action.setTitle("取消面试日程");
+        action.setDraftContent("取消日程：浪速公司 · Agent 开发工程师\n日程 ID：" + scheduleId);
+        action.setScheduleId(scheduleId);
         return action;
     }
 }
