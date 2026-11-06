@@ -1140,7 +1140,7 @@ public class AgentActionService {
     private void audit(AgentActionRequestEntity entity, String action, String result) {
         auditService.recordQuietly(
             entity.getOwnerKey(), entity.getInterviewSessionId(), entity.getAgentSessionId(),
-            null, action, "agent-action", entity.getActionId(), result
+            entity.getRunId(), action, "agent-action", entity.getActionId(), result
         );
     }
 
