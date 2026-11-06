@@ -4,6 +4,7 @@ import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.metrics.AgentRunBudgetExceededException;
 import interview.guide.modules.agent.service.AgentAuditService;
 import interview.guide.modules.agent.service.AgentIntentRouter;
+import interview.guide.modules.agent.service.AgentRunStateService;
 import interview.guide.modules.agent.service.AgentToolDescriptor;
 import interview.guide.common.config.LlmProviderProperties;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -362,6 +363,48 @@ class AgentObservedToolCallbackTest {
             .isInstanceOf(IllegalStateException.class)
             .hasMessage("temporary");
         verify(writeDelegate).call("{}");
+    }
+
+    @Test
+    @DisplayName("Skill 工具调用补充 RunState 的开始和结果摘要轨迹")
+    void recordsSkillToolTraceWithoutPersistingContent() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AgentMetrics metrics = metrics(registry);
+        AgentMetrics.RunTracker run = metrics.startRun(4, 2);
+        metrics.setAuditContext(run, "user-1", "interview-1", "agent-1", "run-1");
+        AgentRunStateService runStateService = mock(AgentRunStateService.class);
+        ToolCallback delegate = mockTool("load_skill", "Redis 技能参考");
+        AgentToolDescriptor skillContract = new AgentToolDescriptor(
+            "load_skill", "v1", AgentIntentRouter.Capability.SKILL,
+            AgentToolDescriptor.RiskLevel.READ_ONLY, false, true,
+            "agent:skill:read", 500, 1, AgentToolDescriptor.RetryPolicy.NONE,
+            AgentToolDescriptor.Idempotency.IDEMPOTENT,
+            AgentToolDescriptor.ResultContract.DATA_BOUNDARY,
+            "{\"type\":\"object\",\"additionalProperties\":true}", delegate
+        );
+        AgentObservedToolCallback observed = new AgentObservedToolCallback(
+            delegate, metrics, null, new PromptSanitizer(new LlmProviderProperties()),
+            skillContract, runStateService
+        );
+        org.springframework.ai.chat.model.ToolContext context =
+            new org.springframework.ai.chat.model.ToolContext(Map.of(
+                AgentMetrics.RUN_TRACKER_TOOL_CONTEXT_KEY, run
+            ));
+        when(delegate.call(eq("{\"skill\":\"java\"}"), eq(context)))
+            .thenReturn("Redis 技能参考");
+
+        observed.call("{\"skill\":\"java\"}", context);
+
+        verify(runStateService).recordToolCall(
+            run, "load_skill", "{\"skill\":\"java\"}"
+        );
+        verify(runStateService).recordToolResult(
+            eq(run), eq("load_skill"),
+            org.mockito.ArgumentMatchers.<String>argThat(
+                value -> value.startsWith("<data-boundary-")
+            ),
+            eq(false)
+        );
     }
 
     private AgentToolDescriptor contract(

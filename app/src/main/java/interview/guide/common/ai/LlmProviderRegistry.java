@@ -9,6 +9,7 @@ import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.service.AgentAuditService;
 import interview.guide.modules.agent.service.AgentContextToolCallbackFactory;
+import interview.guide.modules.agent.service.AgentRunStateService;
 import interview.guide.modules.agent.service.AgentToolDescriptor;
 import interview.guide.modules.agent.service.AgentToolRegistry;
 import interview.guide.modules.llmprovider.model.LlmGlobalSettingEntity;
@@ -74,6 +75,7 @@ public class LlmProviderRegistry {
     private final AgentAuditService agentAuditService;
     private final AgentContextToolCallbackFactory agentContextToolCallbackFactory;
     private AgentToolRegistry agentToolRegistry;
+    private AgentRunStateService agentRunStateService;
 
     @Autowired
     public LlmProviderRegistry(
@@ -103,6 +105,12 @@ public class LlmProviderRegistry {
     @Autowired(required = false)
     void setAgentToolRegistry(AgentToolRegistry agentToolRegistry) {
         this.agentToolRegistry = agentToolRegistry;
+    }
+
+    /** Skill 工具的模型轮次轨迹在迁移期可选接入；业务工具已有同等回调记录。 */
+    @Autowired(required = false)
+    void setAgentRunStateService(AgentRunStateService agentRunStateService) {
+        this.agentRunStateService = agentRunStateService;
     }
 
     public LlmProviderRegistry(
@@ -435,7 +443,7 @@ public class LlmProviderRegistry {
                 ? null : agentToolRegistry.descriptorForSkill(interviewSkillsToolCallback);
             agentTools.add(new AgentObservedToolCallback(
                 interviewSkillsToolCallback, agentMetrics, agentAuditService,
-                new PromptSanitizer(properties), skillContract
+                new PromptSanitizer(properties), skillContract, agentRunStateService
             ));
         }
         if (agentContextToolCallbackFactory != null) {
@@ -452,7 +460,8 @@ public class LlmProviderRegistry {
                     agentAuditService,
                     new PromptSanitizer(properties),
                     agentToolRegistry == null
-                        ? null : agentToolRegistry.descriptor(callback.getToolDefinition().name())))
+                        ? null : agentToolRegistry.descriptor(callback.getToolDefinition().name()),
+                    agentRunStateService))
                 .forEach(agentTools::add);
         }
         if (!agentTools.isEmpty()) {

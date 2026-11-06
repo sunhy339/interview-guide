@@ -2,6 +2,8 @@ package interview.guide.common.ai;
 
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.service.AgentAuditService;
+import interview.guide.modules.agent.service.AgentIntentRouter;
+import interview.guide.modules.agent.service.AgentRunStateService;
 import interview.guide.modules.agent.service.AgentToolDescriptor;
 import java.time.Duration;
 import java.util.concurrent.ExecutionException;
@@ -39,6 +41,7 @@ final class AgentObservedToolCallback implements ToolCallback {
     private final AgentAuditService auditService;
     private final PromptSanitizer promptSanitizer;
     private final AgentToolDescriptor contract;
+    private final AgentRunStateService runStateService;
 
     AgentObservedToolCallback(ToolCallback delegate, AgentMetrics metrics) {
         this(delegate, metrics, null);
@@ -66,11 +69,23 @@ final class AgentObservedToolCallback implements ToolCallback {
         PromptSanitizer promptSanitizer,
         AgentToolDescriptor contract
     ) {
+        this(delegate, metrics, auditService, promptSanitizer, contract, null);
+    }
+
+    AgentObservedToolCallback(
+        ToolCallback delegate,
+        AgentMetrics metrics,
+        AgentAuditService auditService,
+        PromptSanitizer promptSanitizer,
+        AgentToolDescriptor contract,
+        AgentRunStateService runStateService
+    ) {
         this.delegate = delegate;
         this.metrics = metrics;
         this.auditService = auditService;
         this.promptSanitizer = promptSanitizer;
         this.contract = contract;
+        this.runStateService = runStateService;
     }
 
     @Override
@@ -121,11 +136,13 @@ final class AgentObservedToolCallback implements ToolCallback {
         AgentMetrics.RunTracker runTracker = runTracker(toolContext);
         try {
             reserveToolCall(runTracker);
+            recordSkillToolStart(runTracker, toolInput);
             if (isOversizedInput(toolInput)) {
                 String result = sanitizeResult(rejectOversizedInput());
                 record("rejected", startedNanos);
                 audit(runTracker, "rejected");
                 auditSecurityRejection(runTracker);
+                recordSkillToolResult(runTracker, result, false);
                 return result;
             }
             String contractError = validateContract(toolInput);
@@ -134,6 +151,7 @@ final class AgentObservedToolCallback implements ToolCallback {
                 record("rejected", startedNanos);
                 audit(runTracker, "rejected");
                 auditSecurityRejection(runTracker);
+                recordSkillToolResult(runTracker, result, false);
                 return result;
             }
             String rawResult = invokeDelegate(toolInput, toolContext);
@@ -151,11 +169,13 @@ final class AgentObservedToolCallback implements ToolCallback {
             if (rejected) {
                 auditSecurityRejection(runTracker);
             }
+            recordSkillToolResult(runTracker, result, false);
             return result;
         } catch (RuntimeException error) {
             String outcome = error instanceof ToolExecutionTimeoutException ? "timeout" : "failure";
             record(outcome, startedNanos);
             audit(runTracker, outcome);
+            recordSkillToolResult(runTracker, "status:" + outcome, false);
             throw error;
         }
     }
@@ -211,6 +231,29 @@ final class AgentObservedToolCallback implements ToolCallback {
         if (runTracker != null) {
             runTracker.reserveToolCall();
         }
+    }
+
+    /** Skill 通过统一观测包装器接入，补齐业务回调已有的 RunState 工具轨迹。 */
+    private void recordSkillToolStart(AgentMetrics.RunTracker runTracker, String toolInput) {
+        if (runStateService == null || !isSkillContract() || runTracker == null) {
+            return;
+        }
+        runStateService.recordToolCall(runTracker, getToolDefinition().name(), toolInput);
+    }
+
+    private void recordSkillToolResult(
+        AgentMetrics.RunTracker runTracker, String result, boolean pendingApproval
+    ) {
+        if (runStateService == null || !isSkillContract() || runTracker == null) {
+            return;
+        }
+        runStateService.recordToolResult(
+            runTracker, getToolDefinition().name(), result, pendingApproval
+        );
+    }
+
+    private boolean isSkillContract() {
+        return contract != null && contract.capability() == AgentIntentRouter.Capability.SKILL;
     }
 
     private AgentMetrics.RunTracker runTracker(ToolContext toolContext) {
