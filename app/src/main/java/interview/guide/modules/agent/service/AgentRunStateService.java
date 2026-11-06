@@ -73,6 +73,27 @@ public class AgentRunStateService {
         });
     }
 
+    /** 审批结果已提交后，复用原 runId 重新进入可执行状态。 */
+    public void resume(AgentChatSessionEntity session) {
+        runSafely("恢复", session == null ? null : session.getRunId(), () -> {
+            if (session == null || blank(session.getRunId())) {
+                return;
+            }
+            AgentRunStateEntity state = findOrCreate(session.getRunId());
+            state.setOwnerKey(clean(session.getOwnerKey(), 64));
+            state.setInterviewSessionId(clean(session.getInterviewSessionId(), 64));
+            state.setAgentSessionId(clean(session.getAgentSessionId(), 64));
+            state.setAssistantMessageId(session.getActiveMessageId());
+            state.setStatus(AgentRunStatus.RUNNING);
+            state.setPhase(clean("resume", MAX_PHASE));
+            state.setPendingApproval(false);
+            state.setAttempt(value(state.getAttempt()) + 1);
+            state.setFinishedAt(null);
+            heartbeat(state);
+            repository.save(state);
+        });
+    }
+
     public void finish(AgentChatSessionEntity session) {
         runSafely("结束", session == null ? null : session.getRunId(), () -> {
             if (session == null || blank(session.getRunId())) {

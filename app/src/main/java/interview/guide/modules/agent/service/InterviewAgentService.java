@@ -22,6 +22,8 @@ import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxSink;
@@ -415,6 +417,121 @@ public class InterviewAgentService {
         }).subscribeOn(Schedulers.boundedElastic()).subscribe();
     }
 
+    /**
+     * 审批动作已提交后继续同一 Agent Run。
+     *
+     * <p>这里不创建新的用户消息，也不重新要求用户输入原始指令；动作结果作为受信任的
+     * 系统事件交给原上下文，让模型生成下一步答复。通过 AFTER_COMMIT 监听，保证动作事务
+     * 已经成功提交后才启动后台模型调用。</p>
+     */
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    public void handleApprovalResume(AgentConversationService.ApprovalResumeRequest resume) {
+        resumeApprovedRun(resume);
+    }
+
+    public void resumeApprovedRun(AgentConversationService.ApprovalResumeRequest resume) {
+        String activeKey = resume == null || resume.agentSessionId() == null
+            ? resume == null ? null : resume.interviewSessionId()
+            : resume.agentSessionId();
+        if (resume == null || activeKey == null || activeKey.isBlank() || !activeSessions.add(activeKey)) {
+            return;
+        }
+        Mono.fromRunnable(() -> {
+            Sinks.One<Void> cancellationSignal = Sinks.one();
+            cancellationSignals.put(activeKey, cancellationSignal);
+            AgentMetrics.RunTracker runTracker = agentMetrics.startRun(
+                retryProperties.getMaxModelCallsPerRun(), retryProperties.getMaxToolCallsPerRun()
+            );
+            AgentTaskHandle taskHandle = new AgentTaskHandle(
+                resume.assistantMessageId(), resume.runId(), cancellationSignal
+            );
+            activeTasks.put(activeKey, taskHandle);
+            try {
+                String originalUserContent = resume.userContent() == null ? "" : resume.userContent();
+                String approvalMessage = buildApprovalResumeMessage(resume);
+                auditPromptSecurity(
+                    runTracker, originalUserContent, resume.goal(), resume.ownerKey(),
+                    resume.interviewSessionId(), resume.agentSessionId(), resume.runId()
+                );
+                List<AgentHistoryMessage> historyMessages = AgentHistoryPolicy.normalize(
+                    agentConversationService.loadHistory(
+                        resume.interviewSessionId(), resume.agentSessionId(), resume.ownerKey()
+                    )
+                );
+                AgentMessageRequest originalRequest = new AgentMessageRequest(
+                    resume.goal() == null || resume.goal().isBlank() ? "general" : resume.goal(),
+                    originalUserContent, historyMessages, resume.providerId(), resume.memoryKey(),
+                    resume.agentSessionId()
+                );
+                originalRequest = resolveProviderForRun(originalRequest);
+                AgentIntentRouter.Decision originalDecision = agentIntentRouter.route(
+                    originalRequest, originalUserContent, historyMessages,
+                    originalRequest.providerId(), runTracker
+                );
+                originalRequest = agentIntentRouter.applyMode(originalRequest, originalDecision);
+                AgentContextService.AgentContext context;
+                AuthUserContext.set(resume.ownerKey());
+                try {
+                    context = buildContext(
+                        resume.interviewSessionId(), originalRequest, historyMessages, originalDecision
+                    );
+                } finally {
+                    AuthUserContext.clear();
+                }
+
+                // 续跑阶段只消费动作结果，不能再次把原始“安排/取消”意图识别成同一个工具调用。
+                AgentIntentRouter.Decision resumeDecision = new AgentIntentRouter.Decision(
+                    AgentIntentRouter.Route.GENERAL, Set.of(), 1.0d, "审批结果续跑"
+                );
+                AgentMessageRequest modelRequest = originalRequest.withGoal("general");
+                AgentConversationService.PreparedMessage prepared =
+                    new AgentConversationService.PreparedMessage(
+                        resume.assistantMessageId(), null, resume.runId(), resume.agentSessionId()
+                    );
+                persistRunProgress(
+                    resume.assistantMessageId(), "resume", "running", resume.approvalNotice(), resume.runId()
+                );
+                Flux<AgentStreamEvent> workflow = buildWorkflow(
+                    resume.interviewSessionId(), activeKey, modelRequest, approvalMessage, approvalMessage,
+                    historyMessages, context, prepared, cancellationSignal, taskHandle, runTracker,
+                    resumeDecision, null
+                );
+                taskHandle.subscription = workflow.subscribe(
+                    ignored -> { },
+                    error -> log.error("Agent 审批续跑失败: agentSessionId={}", resume.agentSessionId(), error),
+                    () -> log.info("Agent 审批续跑完成: agentSessionId={}", resume.agentSessionId())
+                );
+            } catch (Throwable error) {
+                failPreparedMessage(resume.assistantMessageId(), error, resume.runId());
+                agentProgressWriter.finish(resume.assistantMessageId());
+                agentMetrics.finishRun(runTracker, "failure");
+                activeSessions.remove(activeKey);
+                cancellationSignals.remove(activeKey, cancellationSignal);
+                activeTasks.remove(activeKey, taskHandle);
+                log.warn("Agent 审批续跑准备失败: agentSessionId={}", resume.agentSessionId(), error);
+            }
+        }).subscribeOn(Schedulers.boundedElastic()).subscribe();
+    }
+
+    private String buildApprovalResumeMessage(AgentConversationService.ApprovalResumeRequest resume) {
+        return promptSanitizer.sanitize(
+            "系统审批事件（这是已执行结果，不是用户新指令）：\n"
+                + "动作：" + safeResumeText(resume.actionTitle()) + "\n"
+                + "状态：" + safeResumeText(resume.actionStatus()) + "\n"
+                + "结果：" + safeResumeText(resume.actionResultSummary()) + "\n"
+                + "说明：" + safeResumeText(resume.approvalNotice()) + "\n"
+                + "请继续原任务，向用户说明当前结果；不要再次执行同一个动作。"
+        );
+    }
+
+    private String safeResumeText(String value) {
+        if (value == null || value.isBlank()) {
+            return "未提供";
+        }
+        String safe = promptSanitizer.sanitizeForContext(value);
+        return safe.length() > 2_000 ? safe.substring(0, 2_000) : safe;
+    }
+
     private Flux<AgentStreamEvent> buildWorkflow(
         String sessionId,
         String agentSessionId,
@@ -536,7 +653,10 @@ public class InterviewAgentService {
                     List<Message> compactHistory = buildModelHistory(AgentHistoryPolicy.normalize(
                         historyMessages, CONTEXT_RETRY_HISTORY_CHARS, CONTEXT_RETRY_MESSAGE_CHARS
                     ));
-                    String requiredTool = agentIntentRouter.requiredToolName(userIntentMessage);
+                    String requiredTool = intentDecision != null
+                        && intentDecision.capabilities() != null
+                        && intentDecision.capabilities().contains(AgentIntentRouter.Capability.SCHEDULE)
+                        ? agentIntentRouter.requiredToolName(userIntentMessage) : null;
                     PromptVariant normalPrompt = buildPromptVariant(
                         context, request, message, history, safePlan, loopTrace, false,
                         intentDecision

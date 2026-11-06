@@ -1079,9 +1079,7 @@ public class AgentActionService {
         }
         if (entity.getStatus() == AgentActionStatus.CANCELLED) {
             if (conversationService != null && entity.getRunId() != null) {
-                conversationService.resolveWaitingApproval(
-                    entity.getAgentSessionId(), entity.getRunId(), "用户已取消待确认动作，Agent 运行已结束"
-                );
+                resolveWaitingRun(entity, safeResponse(entity), "用户已取消待确认动作，Agent 正在继续处理");
             }
             return safeResponse(entity);
         }
@@ -1090,9 +1088,7 @@ public class AgentActionService {
         repository.save(entity);
         audit(entity, "ACTION_CANCELLED", AgentActionStatus.CANCELLED.name());
         if (conversationService != null && entity.getRunId() != null) {
-            conversationService.resolveWaitingApproval(
-                entity.getAgentSessionId(), entity.getRunId(), "用户已取消待确认动作，Agent 运行已结束"
-            );
+            resolveWaitingRun(entity, safeResponse(entity), "用户已取消待确认动作，Agent 正在继续处理");
         }
         return safeResponse(entity);
     }
@@ -1101,11 +1097,19 @@ public class AgentActionService {
         AgentActionRequestEntity entity, AgentActionResponse response, String notice
     ) {
         if (conversationService == null || entity == null || response == null
-            || response.status() != AgentActionStatus.SUCCEEDED
+            || (response.status() != AgentActionStatus.SUCCEEDED
+                && response.status() != AgentActionStatus.CANCELLED)
             || entity.getRunId() == null || entity.getRunId().isBlank()) {
             return;
         }
-        conversationService.resolveWaitingApproval(entity.getAgentSessionId(), entity.getRunId(), notice);
+        AgentConversationService.ApprovalResumeRequest resumed = conversationService.prepareApprovalResume(
+            entity.getAgentSessionId(), entity.getRunId(), entity.getOwnerKey(),
+            response.actionId(), response.title(), response.status().name(), response.resultSummary(), notice
+        );
+        if (resumed == null) {
+            // 兼容尚未接入事件监听器的旧调用方和单元测试替身。
+            conversationService.resolveWaitingApproval(entity.getAgentSessionId(), entity.getRunId(), notice);
+        }
     }
 
     private AgentActionRequestEntity findOwnedForUpdate(String actionId, String ownerKey) {

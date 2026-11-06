@@ -26,10 +26,12 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 import tools.jackson.databind.ObjectMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.never;
@@ -62,6 +64,9 @@ class AgentConversationServiceTest {
 
     @Mock
     private AgentRunStateService runStateService;
+
+    @Mock
+    private ApplicationEventPublisher eventPublisher;
 
     @InjectMocks
     private AgentConversationService service;
@@ -629,6 +634,75 @@ class AgentConversationServiceTest {
         )).isTrue();
         assertThat(session.getRunStatus()).isEqualTo(AgentRunStatus.COMPLETED);
         verify(usageService).record(session, null);
+    }
+
+    @Test
+    @DisplayName("审批成功后复用原 runId 创建续答助手消息并发布事件")
+    void preparesApprovalResumeWithoutDuplicatingUserMessage() {
+        AgentChatSessionEntity session = AgentChatSessionEntity.builder()
+            .id(11L)
+            .agentSessionId("agent-1")
+            .runId("run-1")
+            .runStatus(AgentRunStatus.WAITING_USER)
+            .activeMessageId(22L)
+            .ownerKey("user-1")
+            .build();
+        AgentChatMessageEntity user = AgentChatMessageEntity.builder()
+            .id(21L)
+            .session(session)
+            .role(AgentChatMessageEntity.MessageRole.USER)
+            .content("帮我安排明天12点的面试")
+            .sequenceNum(0)
+            .completed(true)
+            .build();
+        AgentChatMessageEntity oldAssistant = AgentChatMessageEntity.builder()
+            .id(22L)
+            .session(session)
+            .role(AgentChatMessageEntity.MessageRole.ASSISTANT)
+            .content("已生成待确认动作")
+            .sequenceNum(1)
+            .completed(true)
+            .build();
+        when(sessionRepository.findByAgentSessionIdForUpdate("agent-1"))
+            .thenReturn(Optional.of(session));
+        when(messageRepository.findBySessionIdAndCompletedTrueOrderBySequenceNumAsc(11L))
+            .thenReturn(List.of(user, oldAssistant));
+        when(messageRepository.findTopBySessionIdOrderBySequenceNumDesc(11L))
+            .thenReturn(Optional.of(oldAssistant));
+        when(messageRepository.save(any(AgentChatMessageEntity.class)))
+            .thenAnswer(invocation -> {
+                AgentChatMessageEntity message = invocation.getArgument(0);
+                if (message.getRole() == AgentChatMessageEntity.MessageRole.ASSISTANT) {
+                    message.setId(23L);
+                }
+                return message;
+            });
+        when(sessionRepository.save(any(AgentChatSessionEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        service.setRunStateService(runStateService);
+        service.setEventPublisher(eventPublisher);
+
+        AgentConversationService.ApprovalResumeRequest request = service.prepareApprovalResume(
+            "agent-1", "run-1", "user-1", "action-1", "安排面试日程", "SUCCEEDED",
+            "日程已创建", "用户已确认并完成 Agent 动作"
+        );
+
+        assertThat(request).isNotNull();
+        assertThat(request.runId()).isEqualTo("run-1");
+        assertThat(request.assistantMessageId()).isEqualTo(23L);
+        assertThat(request.actionId()).isEqualTo("action-1");
+        assertThat(session.getRunStatus()).isEqualTo(AgentRunStatus.RUNNING);
+        assertThat(session.getActiveMessageId()).isEqualTo(23L);
+        verify(runStateService).resume(session);
+        verify(eventPublisher).publishEvent(request);
+        verify(messageRepository).save(argThat(message ->
+            message.getRole() == AgentChatMessageEntity.MessageRole.ASSISTANT
+                && !message.getCompleted()
+                && message.getSequenceNum() == 2
+        ));
+        verify(messageRepository, never()).save(argThat(message ->
+            message.getRole() == AgentChatMessageEntity.MessageRole.USER
+        ));
     }
 
     @Test
