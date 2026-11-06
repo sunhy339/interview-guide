@@ -681,16 +681,15 @@ public class InterviewAgentService {
                     );
                     String loopTrace = loopResult.trace()
                         + "\nLoop 终态：" + loopResult.termination();
-                    List<Message> history = buildModelHistory(historyMessages);
-                    List<Message> compactHistory = buildModelHistory(AgentHistoryPolicy.normalize(
+                    List<AgentHistoryMessage> compactHistory = AgentHistoryPolicy.normalize(
                         historyMessages, CONTEXT_RETRY_HISTORY_CHARS, CONTEXT_RETRY_MESSAGE_CHARS
-                    ));
+                    );
                     String requiredTool = intentDecision != null
                         && intentDecision.capabilities() != null
                         && intentDecision.capabilities().contains(AgentIntentRouter.Capability.SCHEDULE)
                         ? agentIntentRouter.requiredToolName(userIntentMessage) : null;
                     PromptVariant normalPrompt = buildPromptVariant(
-                        context, request, message, history, safePlan, loopTrace, false,
+                        context, request, message, historyMessages, safePlan, loopTrace, false,
                         intentDecision
                     );
                     PromptVariant compactPrompt = buildPromptVariant(
@@ -1747,7 +1746,7 @@ public class InterviewAgentService {
         AgentContextService.AgentContext context,
         AgentMessageRequest request,
         String message,
-        List<Message> history,
+        List<AgentHistoryMessage> history,
         String plan,
         String loopTrace,
         boolean compacted,
@@ -1768,6 +1767,18 @@ public class InterviewAgentService {
         String sessionSummary = compacted
             ? compactPromptText(context.sessionSummary(), 3_000)
             : context.sessionSummary();
+        AgentPromptBudgetPolicy.BudgetedPrompt budgeted = AgentPromptBudgetPolicy.fit(
+            report, skill, memory, rag, sessionSummary, plan, loopTrace, message,
+            history, retryProperties.getContextBudgetTokens()
+        );
+        report = budgeted.report();
+        skill = budgeted.skill();
+        memory = budgeted.memory();
+        rag = budgeted.rag();
+        sessionSummary = budgeted.sessionSummary();
+        plan = budgeted.plan();
+        loopTrace = budgeted.loopTrace();
+        message = budgeted.currentMessage();
         Map<String, Object> fixedContextVariables = Map.of(
             "context", promptSanitizer.wrapWithStableDelimiters(
                 "interview-report", report),
@@ -1795,7 +1806,7 @@ public class InterviewAgentService {
             + buildAnswerFormatInstruction(context, request, message, intentDecision)
             + "\n\n"
             + userPromptTemplate.render(variables);
-        return new PromptVariant(systemPrompt, userPrompt, history);
+        return new PromptVariant(systemPrompt, userPrompt, buildModelHistory(budgeted.history()));
     }
 
     private String buildAnswerFormatInstruction(
