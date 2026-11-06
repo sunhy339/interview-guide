@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
+import java.util.Optional;
 import java.util.HexFormat;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -75,6 +76,11 @@ public class AgentRunStateService {
 
     /** 审批结果已提交后，复用原 runId 重新进入可执行状态。 */
     public void resume(AgentChatSessionEntity session) {
+        resume(session, null, null);
+    }
+
+    /** 审批结果已提交后先落一个可恢复标记，再由事务提交后的事件启动续跑。 */
+    public void resume(AgentChatSessionEntity session, String actionId, String notice) {
         runSafely("恢复", session == null ? null : session.getRunId(), () -> {
             if (session == null || blank(session.getRunId())) {
                 return;
@@ -85,10 +91,49 @@ public class AgentRunStateService {
             state.setAgentSessionId(clean(session.getAgentSessionId(), 64));
             state.setAssistantMessageId(session.getActiveMessageId());
             state.setStatus(AgentRunStatus.RUNNING);
-            state.setPhase(clean("resume", MAX_PHASE));
+            state.setPhase(clean(
+                blank(actionId) ? "resume" : "resume_pending", MAX_PHASE
+            ));
             state.setPendingApproval(false);
+            state.setResumeActionId(clean(actionId, 64));
+            state.setResumeNotice(clean(notice, 500));
             state.setAttempt(value(state.getAttempt()) + 1);
             state.setFinishedAt(null);
+            heartbeat(state);
+            repository.save(state);
+        });
+    }
+
+    /** 返回重启后需要继续处理的审批动作标识；读取失败时不影响主流程。 */
+    public Optional<ApprovalResumeMarker> findPendingApprovalResume(String runId) {
+        if (blank(runId)) {
+            return Optional.empty();
+        }
+        try {
+            return repository.findByRunId(runId)
+                .filter(state -> "resume_pending".equals(state.getPhase())
+                    || "resume".equals(state.getPhase()))
+                .filter(state -> !blank(state.getResumeActionId()))
+                .map(state -> new ApprovalResumeMarker(
+                    state.getResumeActionId(), state.getResumeNotice()
+                ));
+        } catch (RuntimeException error) {
+            log.warn("读取 Agent 审批续跑标记失败: runId={}", runId, error);
+            return Optional.empty();
+        }
+    }
+
+    /** 会话悲观锁确认接管后，将续跑标记推进到执行阶段，避免多实例重复接管。 */
+    public void markResumeStarted(String runId) {
+        runSafely("接管审批续跑", runId, () -> {
+            if (blank(runId)) {
+                return;
+            }
+            AgentRunStateEntity state = findOrCreate(runId);
+            if (!"resume_pending".equals(state.getPhase())) {
+                return;
+            }
+            state.setPhase("resume");
             heartbeat(state);
             repository.save(state);
         });
@@ -105,6 +150,8 @@ public class AgentRunStateService {
             state.setStepIndex(Math.max(0, session.getLoopNextStep()));
             if (session.getRunStatus() != AgentRunStatus.WAITING_USER) {
                 state.setPendingApproval(false);
+                state.setResumeActionId(null);
+                state.setResumeNotice(null);
             }
             state.setAssistantMessageId(session.getActiveMessageId());
             state.setFinishedAt(LocalDateTime.now());
@@ -222,5 +269,8 @@ public class AgentRunStateService {
 
     private int value(Integer value) {
         return value == null ? 0 : Math.max(0, value);
+    }
+
+    public record ApprovalResumeMarker(String actionId, String notice) {
     }
 }

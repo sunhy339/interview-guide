@@ -71,6 +71,13 @@ public class AgentRunStateEntity {
     @Column(name = "tool_result_reference", length = 128)
     private String toolResultReference;
 
+    /** 审批事务已提交但续跑任务尚未启动时，用于重启后找回原动作。 */
+    @Column(name = "resume_action_id", length = 64)
+    private String resumeActionId;
+
+    @Column(name = "resume_notice", length = 500)
+    private String resumeNotice;
+
     @Column(name = "pending_approval", nullable = false)
     private Boolean pendingApproval;
 

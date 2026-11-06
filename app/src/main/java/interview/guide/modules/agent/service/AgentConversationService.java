@@ -2,6 +2,7 @@ package interview.guide.modules.agent.service;
 
 import interview.guide.modules.agent.model.AgentChatMessageEntity;
 import interview.guide.modules.agent.model.AgentChatSessionEntity;
+import interview.guide.modules.agent.model.AgentActionResponse;
 import interview.guide.modules.agent.model.AgentConversationResponse;
 import interview.guide.modules.agent.model.AgentConversationSummary;
 import interview.guide.modules.agent.model.AgentHistoryMessage;
@@ -736,13 +737,13 @@ public class AgentConversationService {
         session.setRunStartedAt(LocalDateTime.now());
         session.setRunFinishedAt(null);
         session.setRunError(null);
-        session.setRunStep("resume");
-        session.setRunStepStatus("running");
+        session.setRunStep("resume_pending");
+        session.setRunStepStatus("waiting");
         session.setRunNotice(safeStoredText(notice, 500));
         session.setActiveMessageId(assistant.getId());
         sessionRepository.save(session);
         if (runStateService != null) {
-            runStateService.resume(session);
+            runStateService.resume(session, actionId, notice);
         }
         audit(session, "RUN_RESUMED", "agent-run", runId, "approval-resume");
         ApprovalResumeRequest request = new ApprovalResumeRequest(
@@ -753,6 +754,110 @@ public class AgentConversationService {
         );
         eventPublisher.publishEvent(request);
         return request;
+    }
+
+    /**
+     * 应用在审批事务提交后、事件监听器启动前崩溃时，接管已经落库的续跑请求。
+     * 会话锁负责多实例互斥；这里只恢复模型回答，不重新执行原业务动作。
+     */
+    @Transactional
+    public ApprovalResumeRequest claimApprovalResume(
+        String agentSessionId, String interviewSessionId, LocalDateTime staleBefore
+    ) {
+        return claimApprovalResume(agentSessionId, interviewSessionId, staleBefore, null);
+    }
+
+    /** 只在候选 runId 仍未变化时接管，避免扫描期间误接管新运行。 */
+    @Transactional
+    public ApprovalResumeRequest claimApprovalResume(
+        String agentSessionId,
+        String interviewSessionId,
+        LocalDateTime staleBefore,
+        String expectedRunId
+    ) {
+        if (runStateService == null) {
+            return null;
+        }
+        AgentChatSessionEntity session = findSessionForUpdate(interviewSessionId, agentSessionId)
+            .orElse(null);
+        if (session == null
+            || session.getRunStatus() != AgentRunStatus.RUNNING
+            || session.getRunStartedAt() == null
+            || session.getRunStartedAt().isAfter(staleBefore)
+            || session.getActiveMessageId() == null
+            || (expectedRunId != null && !expectedRunId.equals(session.getRunId()))
+            || (!"resume_pending".equals(session.getRunStep())
+                && !"resume".equals(session.getRunStep()))) {
+            return null;
+        }
+        AgentRunStateService.ApprovalResumeMarker marker = runStateService
+            .findPendingApprovalResume(session.getRunId())
+            .orElse(null);
+        if (marker == null) {
+            return null;
+        }
+        AgentChatMessageEntity assistant = messageRepository.findById(session.getActiveMessageId())
+            .orElse(null);
+        if (assistant == null || assistant.getCompleted()) {
+            return null;
+        }
+        AgentChatMessageEntity user = messageRepository
+            .findBySessionIdAndCompletedTrueOrderBySequenceNumAsc(session.getId())
+            .stream()
+            .filter(item -> item.getRole() == AgentChatMessageEntity.MessageRole.USER)
+            .filter(item -> item.getSequenceNum() < assistant.getSequenceNum())
+            .reduce((first, second) -> second)
+            .orElse(null);
+        if (user == null || user.getContent() == null || user.getContent().isBlank()) {
+            return null;
+        }
+
+        assistant.setContent("");
+        assistant.setCompleted(false);
+        assistant.setErrorMessage(null);
+        messageRepository.save(assistant);
+        session.setRunStartedAt(LocalDateTime.now());
+        session.setRunFinishedAt(null);
+        session.setRunError(null);
+        session.setRunStep("resume");
+        session.setRunStepStatus("running");
+        session.setRunNotice(safeStoredText(
+            marker.notice() == null ? "应用重启后恢复审批结果" : marker.notice(), 500
+        ));
+        sessionRepository.save(session);
+        runStateService.markResumeStarted(session.getRunId());
+        audit(session, "RUN_RESUMED", "agent-run", session.getRunId(), "approval-recovery");
+        return new ApprovalResumeRequest(
+            session.getInterviewSessionId(), session.getAgentSessionId(), session.getGoal(),
+            session.getProviderId(), session.getOwnerKey(), session.getMemoryKey(),
+            user.getContent(), assistant.getId(), session.getRunId(), marker.notice(),
+            marker.actionId(), null, null, null
+        );
+    }
+
+    /** 恢复扫描先读取候选元数据，确认动作结果后再调用带锁接管接口。 */
+    @Transactional
+    public ApprovalResumeCandidate findApprovalResumeCandidate(
+        String agentSessionId, String interviewSessionId, LocalDateTime staleBefore
+    ) {
+        if (runStateService == null) {
+            return null;
+        }
+        AgentChatSessionEntity session = findSession(interviewSessionId, agentSessionId).orElse(null);
+        if (session == null
+            || session.getRunStatus() != AgentRunStatus.RUNNING
+            || session.getRunStartedAt() == null
+            || session.getRunStartedAt().isAfter(staleBefore)
+            || session.getActiveMessageId() == null
+            || (!"resume_pending".equals(session.getRunStep())
+                && !"resume".equals(session.getRunStep()))) {
+            return null;
+        }
+        return runStateService.findPendingApprovalResume(session.getRunId())
+            .map(marker -> new ApprovalResumeCandidate(
+                session.getRunId(), marker.actionId(), session.getOwnerKey()
+            ))
+            .orElse(null);
     }
 
     /** 持久化当前 Agent 编排阶段，供断线和页面刷新后恢复展示。 */
@@ -1673,6 +1778,20 @@ public class AgentConversationService {
         String actionStatus,
         String actionResultSummary
     ) {
+        public ApprovalResumeRequest withAction(AgentActionResponse action) {
+            if (action == null) {
+                return this;
+            }
+            return new ApprovalResumeRequest(
+                interviewSessionId, agentSessionId, goal, providerId, ownerKey, memoryKey,
+                userContent, assistantMessageId, runId, approvalNotice,
+                action.actionId(), action.title(),
+                action.status() == null ? null : action.status().name(), action.resultSummary()
+            );
+        }
+    }
+
+    public record ApprovalResumeCandidate(String runId, String actionId, String ownerKey) {
     }
 
     public record RecoveredRun(
