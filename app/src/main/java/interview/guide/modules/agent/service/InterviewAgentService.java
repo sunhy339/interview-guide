@@ -552,13 +552,18 @@ public class InterviewAgentService {
                             return () -> {
                                 AgentMetrics.ModelCallTracker modelCall = agentMetrics.startModelCall(providerId, runTracker);
                                 try {
-                                    // 普通问题仍拿到完整的受控 Tool Catalog，由主模型自主决定零次、
-                                    // 一次或多次组合调用；明确的日程变更则只挂载对应的单个草稿工具，
-                                    // 避免把完整目录和强制 tool_choice 一起发送给部分兼容层。
+                                    // 运行时只向模型暴露本轮能力策略允许的工具；普通问题默认
+                                    // 不挂载业务工具，明确资料、Skill 或日程请求才加载对应能力。
                                     // 每个工具仍会在 AgentObservedToolCallback/业务回调内做 owner、
-                                    // 意图和确认校验。
+                                    // 意图和确认校验，工具目录裁剪不是安全边界的替代品。
+                                    AgentIntentRouter.ToolPolicy toolPolicy =
+                                        agentIntentRouter.toolPolicy(intentDecision);
                                     ChatClient chatClient = requiredTool == null
-                                        ? llmProviderRegistry.getAgentChatClient(providerId)
+                                        ? llmProviderRegistry.getAgentChatClient(
+                                            providerId,
+                                            toolPolicy.allowedToolNames(),
+                                            toolPolicy.includeSkills()
+                                        )
                                         : llmProviderRegistry.getAgentChatClient(
                                             providerId, Set.of(requiredTool), false
                                         );

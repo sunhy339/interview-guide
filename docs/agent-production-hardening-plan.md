@@ -72,6 +72,10 @@ contextVersion、attempt、lease、heartbeat、status
 
 ### P1.1 Context Envelope 与结构化摘要
 
+- 当前进度：已完成第一阶段动态工具目录裁剪。普通问答不再默认挂载业务工具或 Skill；
+  CONTEXT/INTERVIEW_REPORT、SKILL 和 SCHEDULE 能力按意图组合加载对应工具族。上下文
+  Token 预算、RAG 按需检索和 Provider Prompt Cache 统计仍待后续实现。
+
 - 以 Token 预算为主、字符预算为安全兜底。
 - 摘要按“已确认事实、决定、待办、用户偏好、当前上下文、来源”组织。
 - 保存摘要覆盖的消息序号、版本和上下文快照版本。

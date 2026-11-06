@@ -418,6 +418,45 @@ public class AgentIntentRouter {
         };
     }
 
+    /**
+     * 将本轮意图转换为运行时能力策略。
+     *
+     * <p>能力策略和工具实现分离：路由器只决定本轮哪些能力可以被模型看见，
+     * 工具回调仍然会在执行时重新校验 owner、用户授权、参数和确认状态。空集合
+     * 明确表示本轮不向模型暴露业务工具，避免普通问答意外拿到完整工具目录。</p>
+     */
+    public ToolPolicy toolPolicy(Decision decision) {
+        if (decision == null || decision.capabilities() == null || decision.capabilities().isEmpty()) {
+            return ToolPolicy.none();
+        }
+        Set<String> tools = new HashSet<>();
+        Set<Capability> capabilities = decision.capabilities();
+        if (capabilities.contains(Capability.CONTEXT)
+            || capabilities.contains(Capability.INTERVIEW_REPORT)) {
+            tools.addAll(CONTEXT_TOOLS);
+        }
+        if (capabilities.contains(Capability.SCHEDULE)) {
+            tools.addAll(SCHEDULE_TOOLS);
+        }
+        return new ToolPolicy(Set.copyOf(tools), capabilities.contains(Capability.SKILL));
+    }
+
+    private static final Set<String> CONTEXT_TOOLS = Set.of(
+        AgentContextToolCallbackFactory.INTERVIEW_SEARCH,
+        AgentContextToolCallbackFactory.INTERVIEW_ATTACH,
+        AgentContextToolCallbackFactory.INTERVIEW_CLEAR,
+        AgentContextToolCallbackFactory.CONTEXT_LIST,
+        AgentContextToolCallbackFactory.CONTEXT_ASSET_ACTION
+    );
+
+    private static final Set<String> SCHEDULE_TOOLS = Set.of(
+        AgentContextToolCallbackFactory.SCHEDULE_LIST,
+        AgentContextToolCallbackFactory.SCHEDULE_CONFLICT,
+        AgentContextToolCallbackFactory.SCHEDULE_DRAFT,
+        AgentContextToolCallbackFactory.SCHEDULE_CANCEL_DRAFT,
+        AgentContextToolCallbackFactory.SCHEDULE_UPDATE_DRAFT
+    );
+
     private static Decision decision(Route route, double confidence, String reason) {
         return decision(route, confidence, reason, defaultCapabilities(route));
     }
@@ -492,6 +531,16 @@ public class AgentIntentRouter {
 
         private static Decision schedule(String reason, double confidence) {
             return AgentIntentRouter.decision(Route.SCHEDULE, confidence, reason);
+        }
+    }
+
+    public record ToolPolicy(Set<String> allowedToolNames, boolean includeSkills) {
+        public ToolPolicy {
+            allowedToolNames = allowedToolNames == null ? Set.of() : Set.copyOf(allowedToolNames);
+        }
+
+        private static ToolPolicy none() {
+            return new ToolPolicy(Set.of(), false);
         }
     }
 }
