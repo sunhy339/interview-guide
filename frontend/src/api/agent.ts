@@ -214,6 +214,19 @@ export const agentApi = {
     );
   },
 
+  getSessionTrace(
+    agentSessionId: string,
+    runId?: string | null,
+    limit = 100,
+  ): Promise<AgentAuditEvent[]> {
+    const query = new URLSearchParams({ limit: String(Math.max(1, Math.min(100, limit))) });
+    if (runId) query.set('runId', runId);
+    return request.get<AgentAuditEvent[]>(
+      `/api/agent/sessions/${encodeURIComponent(agentSessionId)}/trace?${query.toString()}`,
+      { headers: agentHeaders() },
+    );
+  },
+
   getConversation(sessionId: string, agentSessionId?: string | null): Promise<AgentConversationResponse> {
     const query = agentSessionId ? `?agentSessionId=${encodeURIComponent(agentSessionId)}` : '';
     return request.get<AgentConversationResponse>(

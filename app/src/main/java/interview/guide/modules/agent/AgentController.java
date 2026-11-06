@@ -489,6 +489,20 @@ public class AgentController {
         ));
     }
 
+    /** 查询指定 Agent 会话或单次 run 的低敏执行 Trace，不返回 Prompt、回答正文或工具参数。 */
+    @GetMapping("/api/agent/sessions/{agentSessionId}/trace")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
+    public Result<List<AgentAuditEventResponse>> listAgentTrace(
+        @PathVariable String agentSessionId,
+        @RequestParam(value = "runId", required = false) String runId,
+        @RequestParam(value = "limit", defaultValue = "100") int limit,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        return Result.success(auditService.listTrace(
+            authIdentityService.requireIdentity(ownerKey), agentSessionId, runId, limit
+        ));
+    }
+
     /** 查询当前面试下的 Agent 动作草稿，不读取其他用户的动作。 */
     @GetMapping("/api/agent/interview-sessions/{sessionId}/actions")
     @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)

@@ -108,6 +108,7 @@ export interface AgentUsageRun {
 export interface AgentAuditEvent {
   interviewSessionId?: string | null;
   agentSessionId?: string | null;
+  runId?: string | null;
   action: string;
   resourceType: string;
   resourceId?: string | null;
