@@ -193,7 +193,10 @@ public class AgentConversationService {
             throw new AgentTaskBusyException();
         }
 
-        String runId = UUID.randomUUID().toString();
+        boolean resumeWaitingInput = session.getRunStatus() == AgentRunStatus.WAITING_USER
+            && "waiting_input".equals(session.getRunStep())
+            && session.getRunId() != null && !session.getRunId().isBlank();
+        String runId = resumeWaitingInput ? session.getRunId() : UUID.randomUUID().toString();
         session.setGoal(goal);
         if (memoryKey != null && !memoryKey.isBlank()) {
             session.setMemoryKey(memoryKey.trim());
@@ -246,8 +249,48 @@ public class AgentConversationService {
         if (runStateService != null) {
             runStateService.start(session);
         }
-        audit(session, "RUN_STARTED", "agent-run", runId, "success");
+        audit(session, resumeWaitingInput ? "RUN_INPUT_RESUMED" : "RUN_STARTED",
+            "agent-run", runId, resumeWaitingInput ? "waiting-input" : "success");
         return new PreparedMessage(assistantMessage.getId(), session.getId(), runId, session.getAgentSessionId());
+    }
+
+    /** 当前运行在明确缺少信息时进入等待态；回答已落库，但原 Run 仍可由下一条补充消息继续。 */
+    @Transactional
+    public void waitForUser(
+        Long messageId, String content, String notice, String expectedRunId
+    ) {
+        AgentChatMessageEntity message = lockActiveMessage(messageId, expectedRunId);
+        if (message == null) {
+            log.info("忽略已失效 Agent 等待输入事件: messageId={}", messageId);
+            return;
+        }
+        updateTerminalMessage(message, content, true, null);
+        AgentChatSessionEntity session = message.getSession();
+        session.setRunStatus(AgentRunStatus.WAITING_USER);
+        session.setRunFinishedAt(LocalDateTime.now());
+        session.setActiveMessageId(null);
+        session.setRunError(null);
+        session.setRunStep("waiting_input");
+        session.setRunStepStatus("waiting");
+        session.setRunNotice(safeStoredText(notice, 500));
+        sessionRepository.save(session);
+        if (runStateService != null) {
+            runStateService.finish(session);
+        }
+        audit(session, "RUN_WAITING_USER", "agent-run", expectedRunId, "missing-input");
+    }
+
+    /** 判断指定 Agent 会话是否在等待用户补充信息，而不是等待审批动作。 */
+    @Transactional
+    public boolean isWaitingForInput(
+        String interviewSessionId, String agentSessionId, String ownerKey
+    ) {
+        String normalizedOwnerKey = normalizeOwnerKey(ownerKey, false);
+        return findSession(interviewSessionId, agentSessionId)
+            .filter(session -> normalizedOwnerKey == null || isOwnedBy(session, normalizedOwnerKey))
+            .map(session -> session.getRunStatus() == AgentRunStatus.WAITING_USER
+                && "waiting_input".equals(session.getRunStep()))
+            .orElse(false);
     }
 
     /** 返回指定面试报告下的稳定 Agent 对话标识；旧调用方不传 ID 时复用默认线程。 */

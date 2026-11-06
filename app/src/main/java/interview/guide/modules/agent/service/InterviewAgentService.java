@@ -234,8 +234,14 @@ public class InterviewAgentService {
                 List<AgentHistoryMessage> historyMessages = AgentHistoryPolicy.normalize(
                     persistedHistory.isEmpty() ? runRequest.history() : persistedHistory
                 );
+                boolean waitingForInput = agentConversationService.isWaitingForInput(
+                    sessionId, runRequest.agentSessionId(), dataOwnerKey
+                );
+                String toolIntentMessage = waitingForInput
+                    ? mergePendingUserIntent(historyMessages, userIntentMessage)
+                    : userIntentMessage;
                 AgentIntentRouter.Decision intentDecision = agentIntentRouter.route(
-                    runRequest, userIntentMessage, historyMessages,
+                    runRequest, toolIntentMessage, historyMessages,
                     runRequest.providerId(), runTracker
                 );
                 runRequest = agentIntentRouter.applyMode(runRequest, intentDecision);
@@ -286,6 +292,7 @@ public class InterviewAgentService {
 
                 Flux<AgentStreamEvent> workflow = buildWorkflow(
                     sessionId, resolvedAgentSessionId, runRequest, message, userIntentMessage,
+                    toolIntentMessage,
                     historyMessages, context, preparedMessage, cancellationSignal, taskHandle, runTracker,
                     intentDecision, null
                 );
@@ -408,6 +415,7 @@ public class InterviewAgentService {
                 );
                 Flux<AgentStreamEvent> workflow = buildWorkflow(
                     recoveredRun.interviewSessionId(), activeKey, request, message, userIntentMessage,
+                    userIntentMessage,
                     historyMessages, context, prepared, cancellationSignal, taskHandle, runTracker,
                     intentDecision, new LoopResumeState(
                         recoveredRun.loopPlan(),
@@ -524,6 +532,7 @@ public class InterviewAgentService {
                 );
                 Flux<AgentStreamEvent> workflow = buildWorkflow(
                     resume.interviewSessionId(), activeKey, modelRequest, approvalMessage, approvalMessage,
+                    approvalMessage,
                     historyMessages, context, prepared, cancellationSignal, taskHandle, runTracker,
                     resumeDecision, null
                 );
@@ -569,6 +578,7 @@ public class InterviewAgentService {
         AgentMessageRequest request,
         String message,
         String userIntentMessage,
+        String toolIntentMessage,
         List<AgentHistoryMessage> historyMessages,
         AgentContextService.AgentContext context,
         AgentConversationService.PreparedMessage preparedMessage,
@@ -687,7 +697,7 @@ public class InterviewAgentService {
                     String requiredTool = intentDecision != null
                         && intentDecision.capabilities() != null
                         && intentDecision.capabilities().contains(AgentIntentRouter.Capability.SCHEDULE)
-                        ? agentIntentRouter.requiredToolName(userIntentMessage) : null;
+                        ? agentIntentRouter.requiredToolName(toolIntentMessage) : null;
                     PromptVariant normalPrompt = buildPromptVariant(
                         context, request, message, historyMessages, safePlan, loopTrace, false,
                         intentDecision
@@ -784,7 +794,7 @@ public class InterviewAgentService {
                     Flux<AgentStreamEvent> response = requiredTool != null
                         && agentContextToolCallbackFactory != null && objectMapper != null
                         ? streamExplicitScheduleAction(
-                            requiredTool, userIntentMessage, sessionId, agentSessionId,
+                            requiredTool, toolIntentMessage, sessionId, agentSessionId,
                             preparedMessage.assistantMessageId(), preparedMessage.runId(),
                             runTracker, taskHandle
                         )
@@ -858,6 +868,29 @@ public class InterviewAgentService {
             return List.copyOf(messages.subList(0, messages.size() - 1));
         }
         return messages;
+    }
+
+    /**
+     * 等待补充信息的运行继续时，把上一条用户请求与当前补充合并给工具授权和参数解析。
+     * 模型的当前用户消息仍只保留本轮输入，避免把同一内容重复塞进稳定历史；两段都来自
+     * 用户消息，且后续仍会经过工具自身的意图、owner 和参数校验。
+     */
+    private String mergePendingUserIntent(
+        List<AgentHistoryMessage> history, String currentMessage
+    ) {
+        if (history == null || history.isEmpty()) {
+            return currentMessage == null ? "" : currentMessage;
+        }
+        for (int index = history.size() - 1; index >= 0; index--) {
+            AgentHistoryMessage item = history.get(index);
+            if (item != null && "user".equals(item.role())
+                && item.content() != null && !item.content().isBlank()) {
+                String current = currentMessage == null ? "" : currentMessage;
+                return "原始待完成请求：\n" + item.content()
+                    + "\n\n用户补充信息：\n" + current;
+            }
+        }
+        return currentMessage == null ? "" : currentMessage;
     }
 
     /**
@@ -1145,10 +1178,12 @@ public class InterviewAgentService {
         AgentTaskHandle taskHandle
     ) {
         AtomicReference<String> output = new AtomicReference<>(new String());
+        AtomicBoolean waitingForUser = new AtomicBoolean(false);
         return Mono.fromCallable(() -> {
             long startedNanos = System.nanoTime();
             String toolInput = buildScheduleToolInput(toolName, userMessage);
             if (toolInput == null) {
+                waitingForUser.set(true);
                 return "请补充具体日期和时间、公司名称、应聘职位后，我再生成待确认的面试会议草稿。";
             }
             ToolCallback callback = agentContextToolCallbackFactory.callbacks().stream()
@@ -1171,13 +1206,21 @@ public class InterviewAgentService {
                 return Flux.just(
                     AgentStreamEvent.delta(output.get()),
                     AgentStreamEvent.step("insight", "completed"),
-                    AgentStreamEvent.step("action", "completed"),
+                    AgentStreamEvent.step(
+                        "action", waitingForUser.get() ? "waiting" : "completed"
+                    ),
                     AgentStreamEvent.done()
                 );
             })
             .doOnComplete(() -> {
                 agentProgressWriter.flush(assistantMessageId);
-                agentConversationService.completeMessage(assistantMessageId, output.get(), runId);
+                if (waitingForUser.get()) {
+                    agentConversationService.waitForUser(
+                        assistantMessageId, output.get(), output.get(), runId
+                    );
+                } else {
+                    agentConversationService.completeMessage(assistantMessageId, output.get(), runId);
+                }
             })
             .doOnError(error -> {
                 agentProgressWriter.flush(assistantMessageId);
@@ -1194,7 +1237,7 @@ public class InterviewAgentService {
             .doFinally(signal -> {
                 persistRunUsage(assistantMessageId, runId, runTracker);
                 agentMetrics.finishRun(runTracker, switch (signal) {
-                    case ON_COMPLETE -> "success";
+                    case ON_COMPLETE -> waitingForUser.get() ? "waiting_user" : "success";
                     case CANCEL -> "cancelled";
                     default -> "failure";
                 });
