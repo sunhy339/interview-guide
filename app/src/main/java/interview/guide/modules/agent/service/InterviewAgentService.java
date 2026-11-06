@@ -530,11 +530,17 @@ public class InterviewAgentService {
                             return () -> {
                                 AgentMetrics.ModelCallTracker modelCall = agentMetrics.startModelCall(providerId, runTracker);
                                 try {
-                                    // 意图路由只用于决定本轮是否进入复盘上下文，不再把能力裁剪成
-                                    // 互斥分支。主模型拿到完整的受控 Tool Catalog，自主决定零次、
-                                    // 一次或多次组合调用 Skill、上下文和日程工具；每个工具仍会在
-                                    // AgentObservedToolCallback/业务回调内做 owner、意图和确认校验。
-                                    ChatClient chatClient = llmProviderRegistry.getAgentChatClient(providerId);
+                                    // 普通问题仍拿到完整的受控 Tool Catalog，由主模型自主决定零次、
+                                    // 一次或多次组合调用；明确的日程变更则只挂载对应的单个草稿工具，
+                                    // 避免把完整目录和强制 tool_choice 一起发送给部分兼容层。
+                                    // 每个工具仍会在 AgentObservedToolCallback/业务回调内做 owner、
+                                    // 意图和确认校验。
+                                    String requiredTool = agentIntentRouter.requiredToolName(userIntentMessage);
+                                    ChatClient chatClient = requiredTool == null
+                                        ? llmProviderRegistry.getAgentChatClient(providerId)
+                                        : llmProviderRegistry.getAgentChatClient(
+                                            providerId, Set.of(requiredTool), false
+                                        );
                                     var promptSpec = chatClient.prompt().system(prompt.systemPrompt());
                                     if (!prompt.history().isEmpty()) {
                                         promptSpec = promptSpec.messages(prompt.history());
@@ -544,7 +550,6 @@ public class InterviewAgentService {
                                             agentToolContext(runTracker, userIntentMessage)
                                         );
                                     }
-                                    String requiredTool = agentIntentRouter.requiredToolName(userIntentMessage);
                                     if (requiredTool != null) {
                                         // 明确的业务变更不能只由模型“描述已经完成”。通过本次请求的
                                         // tool_choice 强制先走对应的受控草稿工具；工具本身仍负责
