@@ -3,6 +3,8 @@ package interview.guide.common.ai;
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.metrics.AgentRunBudgetExceededException;
 import interview.guide.modules.agent.service.AgentAuditService;
+import interview.guide.modules.agent.service.AgentIntentRouter;
+import interview.guide.modules.agent.service.AgentToolDescriptor;
 import interview.guide.common.config.LlmProviderProperties;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
@@ -222,6 +224,34 @@ class AgentObservedToolCallbackTest {
         verify(auditService).recordToolSecurityRejected(
             "user-1", "interview-1", "agent-1", "run-1", "load_skill"
         );
+    }
+
+    @Test
+    @DisplayName("工具契约不满足时在统一观测层拒绝且不调用业务回调")
+    void rejectsContractViolationBeforeDelegate() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AgentMetrics metrics = metrics(registry);
+        ToolCallback delegate = mockTool("schedule.create_draft", "不应被执行");
+        AgentToolDescriptor contract = new AgentToolDescriptor(
+            "schedule.create_draft", "v1", AgentIntentRouter.Capability.SCHEDULE,
+            AgentToolDescriptor.RiskLevel.DRAFT_WRITE, true, true,
+            "agent:schedule:draft", 5_000L, 1, AgentToolDescriptor.RetryPolicy.NONE,
+            AgentToolDescriptor.Idempotency.IDEMPOTENCY_KEYED,
+            AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION,
+            "{\"type\":\"object\",\"properties\":{\"companyName\":{\"type\":\"string\"}},\"required\":[\"companyName\"],\"additionalProperties\":false}",
+            delegate
+        );
+        AgentObservedToolCallback observed = new AgentObservedToolCallback(
+            delegate, metrics, null, new PromptSanitizer(new LlmProviderProperties()), contract
+        );
+
+        String result = observed.call("{}");
+
+        assertThat(result).contains("工具缺少必填字段 companyName").contains("agent-observed-tool-result");
+        verify(delegate, never()).call("{}");
+        assertThat(registry.get(AgentMetrics.TOOL_CALLS)
+            .tag("tool", "schedule.create_draft").tag("result", "rejected").counter().count())
+            .isEqualTo(1.0);
     }
 
     private AgentMetrics metrics(SimpleMeterRegistry registry) {

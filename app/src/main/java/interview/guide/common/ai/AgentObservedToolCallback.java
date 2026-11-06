@@ -2,6 +2,7 @@ package interview.guide.common.ai;
 
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.service.AgentAuditService;
+import interview.guide.modules.agent.service.AgentToolDescriptor;
 import java.time.Duration;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
@@ -25,6 +26,7 @@ final class AgentObservedToolCallback implements ToolCallback {
     private final AgentMetrics metrics;
     private final AgentAuditService auditService;
     private final PromptSanitizer promptSanitizer;
+    private final AgentToolDescriptor contract;
 
     AgentObservedToolCallback(ToolCallback delegate, AgentMetrics metrics) {
         this(delegate, metrics, null);
@@ -42,10 +44,21 @@ final class AgentObservedToolCallback implements ToolCallback {
         AgentAuditService auditService,
         PromptSanitizer promptSanitizer
     ) {
+        this(delegate, metrics, auditService, promptSanitizer, null);
+    }
+
+    AgentObservedToolCallback(
+        ToolCallback delegate,
+        AgentMetrics metrics,
+        AgentAuditService auditService,
+        PromptSanitizer promptSanitizer,
+        AgentToolDescriptor contract
+    ) {
         this.delegate = delegate;
         this.metrics = metrics;
         this.auditService = auditService;
         this.promptSanitizer = promptSanitizer;
+        this.contract = contract;
     }
 
     @Override
@@ -64,6 +77,12 @@ final class AgentObservedToolCallback implements ToolCallback {
         try {
             if (isOversizedInput(toolInput)) {
                 String result = sanitizeResult(rejectOversizedInput());
+                record("rejected", startedNanos);
+                return result;
+            }
+            String contractError = validateContract(toolInput);
+            if (contractError != null) {
+                String result = sanitizeResult(rejectContractInput(contractError));
                 record("rejected", startedNanos);
                 return result;
             }
@@ -86,6 +105,14 @@ final class AgentObservedToolCallback implements ToolCallback {
             reserveToolCall(runTracker);
             if (isOversizedInput(toolInput)) {
                 String result = sanitizeResult(rejectOversizedInput());
+                record("rejected", startedNanos);
+                audit(runTracker, "rejected");
+                auditSecurityRejection(runTracker);
+                return result;
+            }
+            String contractError = validateContract(toolInput);
+            if (contractError != null) {
+                String result = sanitizeResult(rejectContractInput(contractError));
                 record("rejected", startedNanos);
                 audit(runTracker, "rejected");
                 auditSecurityRejection(runTracker);
@@ -156,6 +183,19 @@ final class AgentObservedToolCallback implements ToolCallback {
         return promptSanitizer.wrapWithDelimiters(
             "agent-tool-error", "工具参数过长，未执行任何操作"
         );
+    }
+
+    private String validateContract(String toolInput) {
+        return AgentToolContractValidator.validateInput(toolInput, contract);
+    }
+
+    private String rejectContractInput(String reason) {
+        String message = reason == null || reason.isBlank()
+            ? "工具参数不符合输入契约，未执行任何操作" : reason;
+        if (promptSanitizer == null) {
+            return "[agent-tool-rejected] " + message;
+        }
+        return promptSanitizer.wrapWithDelimiters("agent-tool-error", message);
     }
 
     private void record(String result, long startedNanos) {

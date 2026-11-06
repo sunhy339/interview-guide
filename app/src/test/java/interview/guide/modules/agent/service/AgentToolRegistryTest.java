@@ -34,6 +34,21 @@ class AgentToolRegistryTest {
         assertThat(registry.descriptorMap()
             .get(AgentContextToolCallbackFactory.SCHEDULE_DRAFT).requiresApproval())
             .isTrue();
+        AgentToolDescriptor schedule = registry.descriptorMap()
+            .get(AgentContextToolCallbackFactory.SCHEDULE_DRAFT);
+        assertThat(schedule.version()).isEqualTo("v1");
+        assertThat(schedule.ownerScoped()).isTrue();
+        assertThat(schedule.requiredPermission()).isEqualTo("agent:schedule:draft");
+        assertThat(schedule.idempotency()).isEqualTo(AgentToolDescriptor.Idempotency.IDEMPOTENCY_KEYED);
+        assertThat(schedule.retryPolicy()).isEqualTo(AgentToolDescriptor.RetryPolicy.NONE);
+        assertThat(schedule.inputSchema()).contains("type", "object");
+        assertThat(registry.contractErrors()).isEmpty();
+
+        AgentToolDescriptor readOnly = registry.descriptorMap()
+            .get(AgentContextToolCallbackFactory.INTERVIEW_SEARCH);
+        assertThat(readOnly.requiredPermission()).isEqualTo("agent:context:read");
+        assertThat(readOnly.idempotency()).isEqualTo(AgentToolDescriptor.Idempotency.IDEMPOTENT);
+        assertThat(readOnly.resultContract()).isEqualTo(AgentToolDescriptor.ResultContract.DATA_BOUNDARY);
     }
 
     @Test
