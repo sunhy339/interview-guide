@@ -60,6 +60,23 @@ class AgentToolRegistryTest {
         assertThat(new AgentToolRegistry(factory).callbacks(null)).containsExactly(search);
     }
 
+    @Test
+    void givesSkillsToolTheSameReadOnlyExecutionContract() {
+        AgentContextToolCallbackFactory factory = mock(AgentContextToolCallbackFactory.class);
+        ToolCallback skill = callback("load_skill");
+
+        AgentToolDescriptor descriptor = new AgentToolRegistry(factory).descriptorForSkill(skill);
+
+        assertThat(descriptor).isNotNull();
+        assertThat(descriptor.capability()).isEqualTo(AgentIntentRouter.Capability.SKILL);
+        assertThat(descriptor.riskLevel()).isEqualTo(AgentToolDescriptor.RiskLevel.READ_ONLY);
+        assertThat(descriptor.requiresApproval()).isFalse();
+        assertThat(descriptor.timeoutMillis()).isEqualTo(5_000L);
+        assertThat(descriptor.maxAttempts()).isEqualTo(2);
+        assertThat(descriptor.retryPolicy()).isEqualTo(AgentToolDescriptor.RetryPolicy.SAFE_READ_ONLY);
+        assertThat(descriptor.requiredPermission()).isEqualTo("agent:skill:read");
+    }
+
     private ToolCallback callback(String name) {
         ToolCallback callback = mock(ToolCallback.class);
         when(callback.getToolDefinition()).thenReturn(ToolDefinition.builder()
