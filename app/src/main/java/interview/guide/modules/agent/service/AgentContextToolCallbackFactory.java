@@ -722,7 +722,7 @@ public class AgentContextToolCallbackFactory {
     /** 变更型工具必须来自用户的正向、直接请求，不能从否定句或资料转述中推断授权。 */
     private void requireMutationIntent(String message, String... phrases) {
         requireUserIntent(message, phrases);
-        if (containsNegativeOrIndirectIntent(message)
+        if ((containsNegativeOrIndirectIntent(message) && !isDraftOnlySafetyConstraint(message))
             || containsAny(
                 message, "取消绑定", "取消使用", "取消加入知识库", "取消导入知识库",
                 "取消预约", "取消面试", "取消日程"
@@ -732,6 +732,18 @@ public class AgentContextToolCallbackFactory {
                 "需要用户明确、直接确认该操作，未执行任何 Agent 操作"
             );
         }
+    }
+
+    /**
+     * 用户明确要求先生成待确认草稿时，“不要直接写入日程”是安全边界，
+     * 不能被误判为否定预约意图；真正的取消/拒绝表达仍由上面的规则拦截。
+     */
+    private boolean isDraftOnlySafetyConstraint(String message) {
+        return containsAny(
+            message,
+            "不要直接写入日程", "不要直接创建日程", "不要直接落库",
+            "只生成待确认草稿", "先生成待确认草稿", "生成待确认草稿"
+        );
     }
 
     private void requireClearIntent(String message) {

@@ -7,6 +7,7 @@ import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.model.AgentContextAssetResponse;
 import interview.guide.modules.agent.model.AgentContextAssetStatus;
 import interview.guide.modules.agent.model.AgentInterviewSearchResult;
+import interview.guide.modules.agent.model.AgentActionResponse;
 import interview.guide.modules.interviewschedule.model.InterviewScheduleDTO;
 import interview.guide.modules.interviewschedule.model.InterviewStatus;
 import interview.guide.modules.interviewschedule.service.InterviewScheduleService;
@@ -225,6 +226,26 @@ class AgentContextToolCallbackFactoryTest {
         assertThat(result).contains("需要用户明确、直接确认该操作");
         verify(actionService, never()).proposeInterviewScheduleDraft(
             any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+        );
+    }
+
+    @Test
+    void allowsDraftOnlySafetyConstraintWhenCreatingScheduleDraft() {
+        when(actionService.proposeInterviewScheduleDraft(
+            any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+        )).thenReturn(mock(AgentActionResponse.class));
+
+        String result = tool("schedule.create_draft").call(
+            "{\"companyName\":\"示例公司\",\"position\":\"Java\","
+                + "\"interviewTime\":\"2026-11-03T10:00\"}",
+            context("请安排明天12点的面试，公司是示例公司，职位是 Java；只生成待确认草稿，不要直接写入日程")
+        );
+
+        assertThat(result).contains("ACTION_PROPOSED");
+        verify(actionService).proposeInterviewScheduleDraft(
+            any(), eq("agent-1"), eq("owner-1"), eq("示例公司"), eq("Java"),
+            eq(java.time.LocalDateTime.of(2026, 11, 3, 10, 0)),
+            eq(null), eq(null), eq(1), eq(null), eq(null), eq(null)
         );
     }
 
