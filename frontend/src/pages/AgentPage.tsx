@@ -2374,6 +2374,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                       <span className="h-1.5 w-1.5 rounded-full bg-primary-400 shrink-0" />
                       <span className="font-medium dark-text">{formatAuditAction(event.action)}</span>
                       <span className="dark-text-muted">{event.resourceType}</span>
+                      {event.runId ? <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 dark:bg-slate-700 dark:text-slate-300">Run {event.runId.slice(0, 8)}</span> : null}
                       {event.result ? <span className={event.result === 'success' || event.result === 'sanitized' ? 'text-emerald-600 dark:text-emerald-300' : 'text-rose-600 dark:text-rose-300'}>{formatAuditResult(event.result)}</span> : null}
                     </div>
                     <p className="mt-1 truncate dark-text-muted">

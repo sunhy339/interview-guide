@@ -269,6 +269,15 @@ public class InterviewAgentService {
                     runRequest.goal(), dataOwnerKey, sessionId,
                     resolvedAgentSessionId, preparedMessage.runId()
                 );
+                recordRunTrace(
+                    runTracker, "ROUTE_SELECTED", "agent-route",
+                    intentDecision.route().name(), "selected"
+                );
+                recordRunTrace(
+                    runTracker, "CONTEXT_BUILT", "agent-context",
+                    intentDecision.route().name(),
+                    context.sources().isEmpty() ? "no-sources" : "sources-loaded"
+                );
                 activeTasks.put(resolvedAgentSessionId, taskHandle);
                 persistRunProgress(
                     preparedMessage.assistantMessageId(), "context", "running", null,
@@ -383,6 +392,13 @@ public class InterviewAgentService {
                 } finally {
                     AuthUserContext.clear();
                 }
+                recordRunTrace(
+                    runTracker, "RUN_RECOVERY_STARTED", "agent-run", "restart", "started"
+                );
+                recordRunTrace(
+                    runTracker, "CONTEXT_BUILT", "agent-context", intentDecision.route().name(),
+                    context.sources().isEmpty() ? "no-sources" : "sources-loaded"
+                );
                 AgentConversationService.PreparedMessage prepared = new AgentConversationService.PreparedMessage(
                     recoveredRun.assistantMessageId(), null, recoveredRun.runId(), recoveredRun.agentSessionId()
                 );
@@ -449,6 +465,10 @@ public class InterviewAgentService {
             try {
                 String originalUserContent = resume.userContent() == null ? "" : resume.userContent();
                 String approvalMessage = buildApprovalResumeMessage(resume);
+                agentMetrics.setAuditContext(
+                    runTracker, resume.ownerKey(), resume.interviewSessionId(),
+                    resume.agentSessionId(), resume.runId()
+                );
                 auditPromptSecurity(
                     runTracker, originalUserContent, resume.goal(), resume.ownerKey(),
                     resume.interviewSessionId(), resume.agentSessionId(), resume.runId()
@@ -478,6 +498,17 @@ public class InterviewAgentService {
                 } finally {
                     AuthUserContext.clear();
                 }
+                agentMetrics.setAuditContext(
+                    runTracker, resume.ownerKey(), resume.interviewSessionId(),
+                    resume.agentSessionId(), resume.runId()
+                );
+                recordRunTrace(
+                    runTracker, "RUN_RESUME_STARTED", "agent-run", "approval", "started"
+                );
+                recordRunTrace(
+                    runTracker, "CONTEXT_BUILT", "agent-context", originalDecision.route().name(),
+                    context.sources().isEmpty() ? "no-sources" : "sources-loaded"
+                );
 
                 // 续跑阶段只消费动作结果，不能再次把原始“安排/取消”意图识别成同一个工具调用。
                 AgentIntentRouter.Decision resumeDecision = new AgentIntentRouter.Decision(
@@ -562,6 +593,7 @@ public class InterviewAgentService {
                 AgentStreamEvent.step("planning", "running")
             ),
             planFlux.flatMap(plan -> {
+                    recordRunTrace(runTracker, "PLAN_READY", "agent-loop", "plan", "success");
                     AgentLoopEngine loopEngine = new AgentLoopEngine();
                     boolean hasInterviewReport = context.interviewReport() != null
                         && !context.interviewReport().isBlank();
@@ -670,6 +702,10 @@ public class InterviewAgentService {
                         (providerId, compacted) -> {
                             PromptVariant prompt = compacted ? compactPrompt : normalPrompt;
                             return () -> {
+                                recordRunTrace(
+                                    runTracker, "MODEL_STARTED", "agent-model", providerId,
+                                    compacted ? "compacted" : "normal"
+                                );
                                 AgentMetrics.ModelCallTracker modelCall = agentMetrics.startModelCall(providerId, runTracker);
                                 try {
                                     // 运行时只向模型暴露本轮能力策略允许的工具；普通问题默认
@@ -1520,14 +1556,17 @@ public class InterviewAgentService {
                 .map(AgentStreamEvent::delta);
             return withModelHeartbeat(attemptStream)
             .doOnComplete(() -> finishModelCallAndPersist(
-                currentCall.tracker(), "success", assistantMessageId, runId, runTracker))
+                currentCall.tracker(), "success", providerId, assistantMessageId, runId, runTracker))
             .doOnError(error -> finishModelCallAndPersist(
-                currentCall.tracker(), "failure", assistantMessageId, runId, runTracker))
+                currentCall.tracker(), "failure", providerId, assistantMessageId, runId, runTracker))
             .doOnCancel(() -> finishModelCallAndPersist(
-                currentCall.tracker(), "cancelled", assistantMessageId, runId, runTracker))
+                currentCall.tracker(), "cancelled", providerId, assistantMessageId, runId, runTracker))
             .onErrorResume(error -> {
                 if (!modelOutputStarted.get() && isContextLimitError(error) && !compacted) {
                     agentMetrics.recordRetry("context_limit");
+                    recordRunTrace(
+                        runTracker, "MODEL_RETRY", "agent-model", providerId, "context-limit"
+                    );
                     return Flux.concat(
                         Flux.just(AgentStreamEvent.waiting(
                             "insight", "本次上下文较长，正在压缩较早对话后重试"
@@ -1555,6 +1594,9 @@ public class InterviewAgentService {
                     && isTransientModelError(error)
                     && attempt < retryProperties.getModelRetryAttempts()) {
                     agentMetrics.recordRetry("transient");
+                    recordRunTrace(
+                        runTracker, "MODEL_RETRY", "agent-model", providerId, "transient"
+                    );
                     Duration delay = retryDelay(attempt);
                     int retryNumber = attempt + 1;
                     log.warn(
@@ -1592,11 +1634,13 @@ public class InterviewAgentService {
     private void finishModelCallAndPersist(
         AgentMetrics.ModelCallTracker tracker,
         String result,
+        String providerId,
         Long assistantMessageId,
         String runId,
         AgentMetrics.RunTracker runTracker
     ) {
         agentMetrics.finishModelCall(tracker, result);
+        recordRunTrace(runTracker, "MODEL_COMPLETED", "agent-model", providerId, result);
         // 必须在外层 completeMessage/failMessage 之前写入，避免活动消息栅栏关闭后被忽略。
         persistRunUsage(assistantMessageId, runId, runTracker);
     }
@@ -1970,6 +2014,18 @@ public class InterviewAgentService {
             agentAuditService.recordPromptInjectionDetected(
                 ownerKey, interviewSessionId, agentSessionId, runId, "goal"
             );
+        }
+    }
+
+    private void recordRunTrace(
+        AgentMetrics.RunTracker runTracker,
+        String action,
+        String resourceType,
+        String resourceId,
+        String result
+    ) {
+        if (agentAuditService != null) {
+            agentAuditService.recordRunTrace(runTracker, action, resourceType, resourceId, result);
         }
     }
 

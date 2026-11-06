@@ -1,5 +1,6 @@
 package interview.guide.modules.agent.service;
 
+import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.model.AgentAuditEventEntity;
 import interview.guide.modules.agent.model.AgentAuditEventResponse;
 import interview.guide.modules.agent.model.AgentChatSessionEntity;
@@ -107,6 +108,41 @@ public class AgentAuditService {
             .toList();
     }
 
+    /** 查询当前用户指定 Agent 会话的完整低敏 Trace，按发生顺序返回。 */
+    @Transactional(Transactional.TxType.SUPPORTS)
+    public List<AgentAuditEventResponse> listTrace(
+        String ownerKey, String agentSessionId, String runId, int limit
+    ) {
+        if (ownerKey == null || ownerKey.isBlank()
+            || agentSessionId == null || agentSessionId.isBlank()) {
+            return List.of();
+        }
+        String owner = ownerKey.trim();
+        String agent = agentSessionId.trim();
+        int safeLimit = Math.max(1, Math.min(MAX_QUERY_LIMIT, limit));
+        List<AgentAuditEventEntity> entities;
+        if (runId != null && !runId.isBlank()) {
+            entities = repository.findTop100ByOwnerKeyAndAgentSessionIdAndRunIdOrderByCreatedAtAsc(
+                owner, agent, runId.trim()
+            );
+        } else {
+            entities = repository.findTop100ByOwnerKeyAndAgentSessionIdOrderByCreatedAtDesc(owner, agent);
+            entities = entities.stream()
+                .sorted(java.util.Comparator.comparing(
+                    AgentAuditEventEntity::getCreatedAt,
+                    java.util.Comparator.nullsLast(java.util.Comparator.naturalOrder())
+                ))
+                .toList();
+        }
+        if (entities.isEmpty()) {
+            return List.of();
+        }
+        return entities.stream()
+            .limit(safeLimit)
+            .map(AgentAuditEventResponse::from)
+            .toList();
+    }
+
     private String titleOf(InterviewSessionEntity session) {
         if (session == null) return null;
         if (session.getTitle() != null && !session.getTitle().isBlank()) return session.getTitle();
@@ -208,6 +244,32 @@ public class AgentAuditService {
         recordQuietly(
             ownerKey, interviewSessionId, agentSessionId, runId,
             "TOOL_SECURITY_REJECTED", "agent-tool", toolName, "rejected"
+        );
+    }
+
+    /**
+     * 记录一次 Agent Run 的阶段轨迹。
+     *
+     * <p>只从运行追踪器读取 owner、会话和 runId；调用方只能传稳定标签，不能把 Prompt、
+     * 工具参数、模型回答或异常正文写入审计表。</p>
+     */
+    public void recordRunTrace(
+        AgentMetrics.RunTracker tracker,
+        String action,
+        String resourceType,
+        String resourceId,
+        String result
+    ) {
+        if (tracker == null) {
+            return;
+        }
+        AgentMetrics.AuditContext context = tracker.auditContext();
+        if (context == null) {
+            return;
+        }
+        recordQuietly(
+            context.ownerKey(), context.interviewSessionId(), context.agentSessionId(), context.runId(),
+            action, resourceType, resourceId, result
         );
     }
 
