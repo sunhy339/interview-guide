@@ -27,6 +27,8 @@ final class AgentObservedToolCallback implements ToolCallback {
     private static final String RESULT_TRUNCATION_NOTICE = "\n[工具资料已截断]";
     private static final String OVERSIZED_INPUT_REJECTION =
         "[agent-tool-rejected] 工具参数过长，未执行任何操作";
+    private static final String RESULT_CONTRACT_REJECTION_PREFIX =
+        "[agent-tool-rejected] ";
     private static final ExecutorService TOOL_EXECUTOR =
         Executors.newThreadPerTaskExecutor(
             Thread.ofVirtual().name("agent-tool-execution-", 0).factory()
@@ -98,6 +100,12 @@ final class AgentObservedToolCallback implements ToolCallback {
             }
             String rawResult = invokeDelegate(toolInput, null);
             boolean rejected = isRejectedResult(rawResult);
+            String resultContractError = rejected
+                ? null : AgentToolResultContractValidator.validateOutput(rawResult, contract);
+            if (resultContractError != null) {
+                rawResult = rejectResultContract(resultContractError);
+                rejected = true;
+            }
             String result = sanitizeResult(rawResult);
             record(rejected ? "rejected" : "success", startedNanos);
             return result;
@@ -130,6 +138,12 @@ final class AgentObservedToolCallback implements ToolCallback {
             }
             String rawResult = invokeDelegate(toolInput, toolContext);
             boolean rejected = isRejectedResult(rawResult);
+            String resultContractError = rejected
+                ? null : AgentToolResultContractValidator.validateOutput(rawResult, contract);
+            if (resultContractError != null) {
+                rawResult = rejectResultContract(resultContractError);
+                rejected = true;
+            }
             String result = sanitizeResult(rawResult);
             String outcome = rejected ? "rejected" : "success";
             record(outcome, startedNanos);
@@ -256,6 +270,15 @@ final class AgentObservedToolCallback implements ToolCallback {
         return promptSanitizer.wrapWithDelimiters("agent-tool-error", message);
     }
 
+    private String rejectResultContract(String reason) {
+        String message = reason == null || reason.isBlank()
+            ? "工具结果不符合输出契约，未确认任何业务状态" : reason;
+        if (promptSanitizer == null) {
+            return RESULT_CONTRACT_REJECTION_PREFIX + message;
+        }
+        return promptSanitizer.wrapWithDelimiters("agent-tool-error", message);
+    }
+
     private void record(String result, long startedNanos) {
         if (metrics != null) {
             metrics.recordToolCall(
@@ -275,6 +298,9 @@ final class AgentObservedToolCallback implements ToolCallback {
             return false;
         }
         if (result.startsWith(OVERSIZED_INPUT_REJECTION)) {
+            return true;
+        }
+        if (result.startsWith(RESULT_CONTRACT_REJECTION_PREFIX)) {
             return true;
         }
         return result.matches(

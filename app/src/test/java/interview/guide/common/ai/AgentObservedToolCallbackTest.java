@@ -255,6 +255,65 @@ class AgentObservedToolCallbackTest {
     }
 
     @Test
+    @DisplayName("动作工具返回结构化草稿且带 actionId 时才记为成功")
+    void acceptsStructuredActionResultWithActionId() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AgentMetrics metrics = metrics(registry);
+        ToolCallback delegate = mock(ToolCallback.class);
+        ToolDefinition definition = ToolDefinition.builder()
+            .name("schedule.create_draft")
+            .description("test")
+            .inputSchema("{\"type\":\"object\",\"additionalProperties\":true}")
+            .build();
+        when(delegate.getToolDefinition()).thenReturn(definition);
+        when(delegate.call("{}")).thenReturn(
+            "<data-boundary-ab12cd34-agent-tool-result>"
+                + "{\"status\":\"ACTION_PROPOSED\","
+                + "\"action\":{\"actionId\":\"action-1\"}}"
+                + "</data-boundary-ab12cd34-agent-tool-result>"
+        );
+        AgentObservedToolCallback observed = new AgentObservedToolCallback(
+            delegate, metrics, null, new PromptSanitizer(new LlmProviderProperties()),
+            contract("schedule.create_draft", 500, 1, AgentToolDescriptor.RetryPolicy.NONE)
+        );
+
+        assertThat(observed.call("{}")).contains("agent-observed-tool-result");
+        assertThat(registry.get(AgentMetrics.TOOL_CALLS)
+            .tag("tool", "schedule.create_draft").tag("result", "success").counter().count())
+            .isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("动作工具返回未绑定结果或缺少 actionId 时拒绝，避免模型误报已完成")
+    void rejectsUntrustedActionResult() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AgentMetrics metrics = metrics(registry);
+        ToolCallback delegate = mock(ToolCallback.class);
+        ToolDefinition definition = ToolDefinition.builder()
+            .name("schedule.create_draft")
+            .description("test")
+            .inputSchema("{\"type\":\"object\",\"additionalProperties\":true}")
+            .build();
+        when(delegate.getToolDefinition()).thenReturn(definition);
+        when(delegate.call("{}")).thenReturn("{\"status\":\"ACTION_PROPOSED\"}");
+        AgentObservedToolCallback observed = new AgentObservedToolCallback(
+            delegate, metrics, null, new PromptSanitizer(new LlmProviderProperties()),
+            contract("schedule.create_draft", 500, 1, AgentToolDescriptor.RetryPolicy.NONE)
+        );
+
+        String result = observed.call("{}");
+
+        assertThat(result)
+            .contains("工具结果缺少可信数据边界")
+            .contains("agent-observed-tool-result");
+        assertThat(registry.get(AgentMetrics.TOOL_CALLS)
+            .tag("tool", "schedule.create_draft").tag("result", "rejected").counter().count())
+            .isEqualTo(1.0);
+        assertThat(registry.find(AgentMetrics.TOOL_CALLS)
+            .tag("tool", "schedule.create_draft").tag("result", "success").counter()).isNull();
+    }
+
+    @Test
     @DisplayName("工具超过契约超时后停止等待并记录 timeout")
     void enforcesToolTimeout() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
