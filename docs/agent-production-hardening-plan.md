@@ -84,6 +84,10 @@ contextVersion、attempt、lease、heartbeat、status
 
 ### P1.2 工具注册与策略中心
 
+当前进度：已完成第一阶段工具目录注册中心。现有业务回调通过统一描述提供能力、风险
+和审批元数据，Provider Registry 使用同一筛选入口构建请求级 Tool Catalog；原有工具名、
+owner 校验、参数校验和动作确认链路保持不变。外部 MCP 工具的版本、权限和结果验证仍待后续接入。
+
 每个工具统一声明：
 
 - 稳定名称、版本、输入 Schema 和输出 Schema；
