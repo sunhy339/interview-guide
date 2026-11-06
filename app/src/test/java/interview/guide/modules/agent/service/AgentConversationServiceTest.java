@@ -655,12 +655,24 @@ class AgentConversationServiceTest {
         when(sessionRepository.findByAgentSessionIdForUpdate("agent-1"))
             .thenReturn(Optional.of(session));
 
-        service.waitForUser(22L, "请补充公司和职位", "请补充公司和职位", "run-1");
+        when(objectMapper.writeValueAsString(any(List.class)))
+            .thenReturn("[\"dateTime\",\"companyName\",\"position\"]");
+        service.waitForUser(
+            22L,
+            "请补充公司和职位",
+            "请补充公司和职位",
+            "run-1",
+            List.of("dateTime", "companyName", "position")
+        );
 
         assertThat(session.getRunStatus()).isEqualTo(AgentRunStatus.WAITING_USER);
         assertThat(session.getRunStep()).isEqualTo("waiting_input");
         assertThat(session.getRunStepStatus()).isEqualTo("waiting");
         assertThat(session.getActiveMessageId()).isNull();
+        assertThat(session.getPendingType()).isEqualTo("INPUT");
+        assertThat(session.getPendingSchemaVersion()).isEqualTo("agent-pending-v1");
+        assertThat(session.getPendingRequiredFieldsJson())
+            .isEqualTo("[\"dateTime\",\"companyName\",\"position\"]");
         when(sessionRepository.findByAgentSessionId("agent-1"))
             .thenReturn(Optional.of(session));
         assertThat(service.isWaitingForInput(null, "agent-1", "user-1")).isTrue();
@@ -690,6 +702,9 @@ class AgentConversationServiceTest {
         assertThat(session.getRunStatus()).isEqualTo(AgentRunStatus.RUNNING);
         assertThat(session.getRunStep()).isNull();
         assertThat(session.getActiveMessageId()).isEqualTo(23L);
+        assertThat(session.getPendingType()).isNull();
+        assertThat(session.getPendingSchemaVersion()).isNull();
+        assertThat(session.getPendingRequiredFieldsJson()).isNull();
     }
 
     @Test

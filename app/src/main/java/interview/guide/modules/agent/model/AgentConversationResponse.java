@@ -24,7 +24,8 @@ public record AgentConversationResponse(
     String loopPlan,
     int loopNextStep,
     List<Integer> loopCompletedStepIndices,
-    List<AgentLoopTraceItem> loopTrace
+    List<AgentLoopTraceItem> loopTrace,
+    AgentPendingInteraction pendingInteraction
 ) {
     /** 兼容未携带运行用量的旧调用方。 */
     public AgentConversationResponse(
@@ -47,7 +48,7 @@ public record AgentConversationResponse(
     ) {
         this(interviewSessionId, agentSessionId, title, goal, providerId, runId, runStatus,
             runStartedAt, runFinishedAt, runError, runStep, runStepStatus, runNotice,
-            runPartialAnswer, runSources, messages, null, null, 0, List.of(), List.of());
+            runPartialAnswer, runSources, messages, null, null, 0, List.of(), List.of(), null);
     }
 
     /** 兼容已有服务和测试调用方。 */
@@ -69,7 +70,7 @@ public record AgentConversationResponse(
     ) {
         this(interviewSessionId, null, null, goal, providerId, runId, runStatus,
             runStartedAt, runFinishedAt, runError, runStep, runStepStatus, runNotice,
-            runPartialAnswer, runSources, messages, null, null, 0, List.of(), List.of());
+            runPartialAnswer, runSources, messages, null, null, 0, List.of(), List.of(), null);
     }
 
     public AgentConversationResponse {

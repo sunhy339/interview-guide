@@ -1216,7 +1216,8 @@ public class InterviewAgentService {
                 agentProgressWriter.flush(assistantMessageId);
                 if (waitingForUser.get()) {
                     agentConversationService.waitForUser(
-                        assistantMessageId, output.get(), output.get(), runId
+                        assistantMessageId, output.get(), output.get(), runId,
+                        List.of("dateTime", "companyName", "position")
                     );
                 } else {
                     agentConversationService.completeMessage(assistantMessageId, output.get(), runId);

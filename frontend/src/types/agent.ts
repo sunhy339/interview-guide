@@ -36,6 +36,15 @@ export interface AgentConversationResponse {
   loopNextStep?: number;
   loopCompletedStepIndices?: number[];
   loopTrace?: AgentLoopTraceItem[];
+  pendingInteraction?: AgentPendingInteraction | null;
+}
+
+export interface AgentPendingInteraction {
+  type: 'INPUT' | 'APPROVAL' | string;
+  schemaVersion?: string | null;
+  requiredFields?: string[];
+  actionId?: string | null;
+  notice?: string | null;
 }
 
 export interface AgentLoopTraceItem {
