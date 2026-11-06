@@ -199,7 +199,7 @@ public class AgentContextService {
             detail, retrievalQuery, sources, buildRetrievalHistory(effectiveHistory),
             trustedOwner, request == null ? null : request.agentSessionId(), sessionId
         );
-        AgentMemorySnapshot memory = loadAndUpdateMemory(detail, request);
+        AgentMemorySnapshot memory = loadMemory(request);
 
         return new AgentContext(
             report,
@@ -220,7 +220,7 @@ public class AgentContextService {
     private AgentContext buildGeneralContext(
         AgentMessageRequest request, List<AgentHistoryMessage> effectiveHistory
     ) {
-        AgentMemorySnapshot memory = loadAndUpdateMemory(null, request);
+        AgentMemorySnapshot memory = loadMemory(request);
         String retrievalQuery = buildGeneralRetrievalQuery(request, effectiveHistory);
         List<AgentSource> sources = new ArrayList<>();
         String report = loadAttachedContext(request, retrievalQuery, effectiveHistory, sources, null);
@@ -493,18 +493,16 @@ public class AgentContextService {
         );
     }
 
-    private AgentMemorySnapshot loadAndUpdateMemory(InterviewDetailDTO detail, AgentMessageRequest request) {
+    /**
+     * 上下文编排只负责读取长期记忆，不能因为用户发起一次普通对话或查看一份报告
+     * 就隐式修改跨会话数据。记忆写入统一通过明确的 Agent 动作草稿和用户确认完成。
+     */
+    private AgentMemorySnapshot loadMemory(AgentMessageRequest request) {
         String trustedOwner = ownerKey(request);
         if (agentMemoryService == null || trustedOwner == null || trustedOwner.isBlank()) {
             return AgentMemorySnapshot.empty(null);
         }
-        String safeSkillId = detail == null ? null : sanitizeSkillId(detail.skillId());
-        return agentMemoryService.remember(
-            trustedOwner,
-            safeSkillId,
-            detail == null ? List.of() : extractWeaknesses(detail),
-            request.goal()
-        );
+        return agentMemoryService.load(trustedOwner);
     }
 
     private String buildGeneralRetrievalQuery(

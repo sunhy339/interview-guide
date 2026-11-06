@@ -277,7 +277,7 @@ class AgentContextServiceTest {
 
         when(history.getInterviewDetailForOwner("session-safe-rag", "owner-1")).thenReturn(detail);
         when(objectMapper.writeValueAsString(detail)).thenReturn("{report}");
-        when(memory.remember(anyString(), any(), any(), any()))
+        when(memory.load(anyString()))
             .thenReturn(AgentMemorySnapshot.empty("owner-1"));
         when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
         when(sanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
@@ -331,7 +331,7 @@ class AgentContextServiceTest {
         KnowledgeBaseRepository knowledgeBases = mock(KnowledgeBaseRepository.class);
         AgentContextSummaryService summaries = mock(AgentContextSummaryService.class);
 
-        when(memory.remember(anyString(), any(), any(), any()))
+        when(memory.load(anyString()))
             .thenReturn(AgentMemorySnapshot.empty("owner-1"));
         when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
         when(contexts.findByAgentSessionIdAndOwnerKeyAndActiveTrueOrderByAttachedAtDesc("agent-1", "owner-1"))
@@ -383,7 +383,7 @@ class AgentContextServiceTest {
         assertThat(context.interviewReport())
             .contains("当前 Agent 会话未绑定任何资料");
         verify(history, never()).getInterviewDetail(anyString());
-        verify(memory, never()).remember(anyString(), any(), any(), any());
+        verify(memory, never()).load(anyString());
     }
 
     @Test
@@ -403,7 +403,7 @@ class AgentContextServiceTest {
         when(objectMapper.writeValueAsString(detail)).thenReturn("{report}");
         when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
         when(sanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
-        when(memory.remember(anyString(), any(), any(), any()))
+        when(memory.load(anyString()))
             .thenReturn(AgentMemorySnapshot.empty("owner-1"));
         when(contexts.findByAgentSessionIdAndOwnerKeyAndActiveTrueOrderByAttachedAtDesc("agent-1", "owner-1"))
             .thenReturn(List.of());
@@ -422,6 +422,7 @@ class AgentContextServiceTest {
 
         verify(history).getInterviewDetailForOwner("owned-session", "owner-1");
         verify(history, never()).getInterviewDetail("owned-session");
+        verify(memory, never()).remember(anyString(), any(), any(), any());
     }
 
     @Test
@@ -487,7 +488,7 @@ class AgentContextServiceTest {
         KnowledgeBaseRepository knowledgeBases = mock(KnowledgeBaseRepository.class);
         AgentContextSummaryService summaries = mock(AgentContextSummaryService.class);
 
-        when(memory.remember(anyString(), any(), any(), any()))
+        when(memory.load(anyString()))
             .thenReturn(AgentMemorySnapshot.empty("owner-1"));
         when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
         when(contexts.findByAgentSessionIdAndOwnerKeyAndActiveTrueOrderByAttachedAtDesc("agent-1", "owner-1"))
@@ -562,7 +563,7 @@ class AgentContextServiceTest {
                 AgentSessionContextEntity.builder()
                     .agentSessionId("agent-1").contextType("FILE").resourceId("asset-1").active(true).build()
             ));
-        when(memory.remember(anyString(), any(), any(), any()))
+        when(memory.load(anyString()))
             .thenReturn(AgentMemorySnapshot.empty("owner-1"));
         when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
         when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
@@ -617,7 +618,7 @@ class AgentContextServiceTest {
                 .reviewStatus(AgentContextAssetStatus.APPROVED_FOR_CONTEXT)
                 .expiresAt(LocalDateTime.now().plusDays(1))
                 .build()));
-        when(memory.remember(anyString(), any(), any(), any()))
+        when(memory.load(anyString()))
             .thenReturn(AgentMemorySnapshot.empty("owner-1"));
         when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
         when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
@@ -668,7 +669,7 @@ class AgentContextServiceTest {
                     .agentSessionId("agent-1").contextType("INTERVIEW_REPORT")
                     .resourceId("secondary").active(true).build()
             ));
-        when(memory.remember(anyString(), any(), any(), any()))
+        when(memory.load(anyString()))
             .thenReturn(AgentMemorySnapshot.empty("owner-1"));
         when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
         when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
@@ -713,7 +714,7 @@ class AgentContextServiceTest {
         )).thenReturn(List.of(AgentSessionContextEntity.builder()
             .agentSessionId("agent-1").contextType("INTERVIEW_REPORT")
             .resourceId(injectedId).active(true).build()));
-        when(memory.remember(anyString(), any(), any(), any()))
+        when(memory.load(anyString()))
             .thenReturn(AgentMemorySnapshot.empty("owner-1"));
         when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
         when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation ->
@@ -754,7 +755,7 @@ class AgentContextServiceTest {
         AgentContextSummaryService summaries = mock(AgentContextSummaryService.class);
         String largeText = "资料内容".repeat(200_000);
 
-        when(memory.remember(anyString(), any(), any(), any()))
+        when(memory.load(anyString()))
             .thenReturn(AgentMemorySnapshot.empty("owner-1"));
         when(summaries.loadForPrompt("agent-1", "owner-1")).thenReturn("暂无会话摘要");
         when(contexts.findByAgentSessionIdAndOwnerKeyAndActiveTrueOrderByAttachedAtDesc(
