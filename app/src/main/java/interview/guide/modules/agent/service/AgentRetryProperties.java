@@ -44,6 +44,11 @@ public class AgentRetryProperties {
     @Max(value = 64, message = "Agent 单次运行工具调用预算不能超过 64 次")
     private int maxToolCallsPerRun = 8;
 
+    /** 模型调用前的保守输入预算；只用于上下文裁剪，不设置 Provider 的输出上限。 */
+    @Min(value = 4_000, message = "Agent 输入上下文预算不能小于 4000 Token")
+    @Max(value = 128_000, message = "Agent 输入上下文预算不能超过 128000 Token")
+    private int contextBudgetTokens = 24_000;
+
     /** 是否启用受控 Agent Loop；关闭时回退到现有单次回答流程。 */
     private boolean loopEnabled = true;
 
