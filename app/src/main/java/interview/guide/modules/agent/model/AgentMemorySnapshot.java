@@ -40,7 +40,8 @@ public record AgentMemorySnapshot(
     /** 只把适用于当前面试方向的记忆注入 Agent 上下文。 */
     public String toPrompt(String currentJobScope) {
         List<AgentMemoryItem> applicableItems = items.stream()
-            .filter(item -> item != null && isApplicable(item, currentJobScope))
+            .filter(item -> item != null && item.revokedAt() == null
+                && isApplicable(item, currentJobScope))
             .toList();
         boolean legacySnapshot = items.isEmpty();
         boolean skillApplicable = lastSkillId == null || currentJobScope == null
