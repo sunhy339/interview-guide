@@ -58,6 +58,34 @@ public class AgentToolRegistry {
     }
 
     /**
+     * 为不属于业务目录的只读工具提供同一份执行契约。
+     *
+     * <p>Skill 仍由调用方按本轮意图单独决定是否挂载，不混入业务工具白名单；
+     * 这里只复用 owner 无关的超时、重试、输入和结果边界。</p>
+     */
+    public AgentToolDescriptor descriptorForSkill(ToolCallback callback) {
+        if (callback == null || callback.getToolDefinition() == null) {
+            return null;
+        }
+        return new AgentToolDescriptor(
+            callback.getToolDefinition().name(),
+            "v1",
+            AgentIntentRouter.Capability.SKILL,
+            AgentToolDescriptor.RiskLevel.READ_ONLY,
+            false,
+            true,
+            "agent:skill:read",
+            5_000L,
+            2,
+            AgentToolDescriptor.RetryPolicy.SAFE_READ_ONLY,
+            AgentToolDescriptor.Idempotency.IDEMPOTENT,
+            AgentToolDescriptor.ResultContract.DATA_BOUNDARY,
+            callback.getToolDefinition().inputSchema(),
+            callback
+        );
+    }
+
+    /**
      * 校验目录中的契约是否满足最小生产边界。
      *
      * <p>应用启动时不强制执行，避免历史测试替身或旧配置被一次性阻断；生产装配可在

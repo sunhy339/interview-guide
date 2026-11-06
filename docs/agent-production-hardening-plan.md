@@ -89,7 +89,7 @@ contextVersion、attempt、lease、heartbeat、status
 风险、owner 作用域、权限语义、输入 Schema、超时/重试/幂等元数据和结果边界；Provider
 Registry 使用同一筛选入口构建请求级 Tool Catalog，并在回调前校验 JSON 对象、必填字段、
 声明字段、基础类型和枚举。原有工具名、owner 校验、业务参数校验和动作确认链路保持不变。
-外部 MCP 工具、真实执行超时、受控重试和逐工具输出 Schema/结果验证仍待后续接入。
+Skill 和现有业务工具现在都经过统一观测包装；只读工具执行超时和有限瞬时失败重试已经生效，写入草稿不自动重试。外部 MCP 工具、逐工具输出 Schema/结果验证和更细的权限策略仍待后续接入。
 
 每个工具统一声明：
 

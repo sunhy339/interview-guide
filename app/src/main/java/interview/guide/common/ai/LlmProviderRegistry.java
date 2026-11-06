@@ -9,6 +9,7 @@ import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.service.AgentAuditService;
 import interview.guide.modules.agent.service.AgentContextToolCallbackFactory;
+import interview.guide.modules.agent.service.AgentToolDescriptor;
 import interview.guide.modules.agent.service.AgentToolRegistry;
 import interview.guide.modules.llmprovider.model.LlmGlobalSettingEntity;
 import interview.guide.modules.llmprovider.model.LlmProviderEntity;
@@ -430,9 +431,11 @@ public class LlmProviderRegistry {
         ChatClient.Builder builder = ChatClient.builder(chatModel);
         List<ToolCallback> agentTools = new ArrayList<>();
         if (includeSkills && interviewSkillsToolCallback != null) {
+            AgentToolDescriptor skillContract = agentToolRegistry == null
+                ? null : agentToolRegistry.descriptorForSkill(interviewSkillsToolCallback);
             agentTools.add(new AgentObservedToolCallback(
                 interviewSkillsToolCallback, agentMetrics, agentAuditService,
-                new PromptSanitizer(properties)
+                new PromptSanitizer(properties), skillContract
             ));
         }
         if (agentContextToolCallbackFactory != null) {
