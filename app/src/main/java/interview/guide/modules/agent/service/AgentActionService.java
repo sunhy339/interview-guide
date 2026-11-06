@@ -223,6 +223,33 @@ public class AgentActionService {
         String notes,
         String requestedIdempotencyKey
     ) {
+        return proposeInterviewScheduleDraft(
+            interviewSessionId, agentSessionId, ownerKey, companyName, position, interviewTime,
+            interviewType, meetingLink, roundNumber, interviewer, notes, requestedIdempotencyKey,
+            null
+        );
+    }
+
+    /**
+     * 生成带运行代次的面试日程草稿。运行代次只用于审计和恢复关联，不参与幂等键，
+     * 这样同一条用户意图在恢复时不会重复生成动作。
+     */
+    @Transactional
+    public AgentActionResponse proposeInterviewScheduleDraft(
+        String interviewSessionId,
+        String agentSessionId,
+        String ownerKey,
+        String companyName,
+        String position,
+        java.time.LocalDateTime interviewTime,
+        String interviewType,
+        String meetingLink,
+        Integer roundNumber,
+        String interviewer,
+        String notes,
+        String requestedIdempotencyKey,
+        String runId
+    ) {
         String owner = requireOwner(ownerKey);
         String interviewId = normalizeOptional(interviewSessionId, 64);
         String agentId = requireText(agentSessionId, "Agent 会话不能为空", 64);
@@ -258,6 +285,7 @@ public class AgentActionService {
             .ownerKey(owner)
             .interviewSessionId(interviewId)
             .agentSessionId(agentId)
+            .runId(normalizeOptional(runId, 64))
             .toolId(INTERVIEW_SCHEDULE_CREATE_TOOL)
             .riskLevel("BUSINESS_WRITE")
             .status(AgentActionStatus.PROPOSED)
@@ -286,6 +314,21 @@ public class AgentActionService {
         String ownerKey,
         InterviewScheduleDTO schedule,
         String requestedIdempotencyKey
+    ) {
+        return proposeInterviewScheduleCancelDraft(
+            interviewSessionId, agentSessionId, ownerKey, schedule, requestedIdempotencyKey, null
+        );
+    }
+
+    /** 生成带运行代次的取消日程草稿；运行代次不参与幂等键。 */
+    @Transactional
+    public AgentActionResponse proposeInterviewScheduleCancelDraft(
+        String interviewSessionId,
+        String agentSessionId,
+        String ownerKey,
+        InterviewScheduleDTO schedule,
+        String requestedIdempotencyKey,
+        String runId
     ) {
         String owner = requireOwner(ownerKey);
         String interviewId = normalizeOptional(interviewSessionId, 64);
@@ -324,6 +367,7 @@ public class AgentActionService {
             .ownerKey(owner)
             .interviewSessionId(interviewId)
             .agentSessionId(agentId)
+            .runId(normalizeOptional(runId, 64))
             .toolId(INTERVIEW_SCHEDULE_CANCEL_TOOL)
             .riskLevel("BUSINESS_WRITE")
             .status(AgentActionStatus.PROPOSED)
@@ -347,6 +391,21 @@ public class AgentActionService {
         String ownerKey,
         InterviewScheduleDTO schedule,
         String requestedIdempotencyKey
+    ) {
+        return proposeInterviewScheduleUpdateDraft(
+            interviewSessionId, agentSessionId, ownerKey, schedule, requestedIdempotencyKey, null
+        );
+    }
+
+    /** 生成带运行代次的修改日程草稿；运行代次不参与幂等键。 */
+    @Transactional
+    public AgentActionResponse proposeInterviewScheduleUpdateDraft(
+        String interviewSessionId,
+        String agentSessionId,
+        String ownerKey,
+        InterviewScheduleDTO schedule,
+        String requestedIdempotencyKey,
+        String runId
     ) {
         String owner = requireOwner(ownerKey);
         String interviewId = normalizeOptional(interviewSessionId, 64);
@@ -395,6 +454,7 @@ public class AgentActionService {
             .ownerKey(owner)
             .interviewSessionId(interviewId)
             .agentSessionId(agentId)
+            .runId(normalizeOptional(runId, 64))
             .toolId(INTERVIEW_SCHEDULE_UPDATE_TOOL)
             .riskLevel("BUSINESS_WRITE")
             .status(AgentActionStatus.PROPOSED)
@@ -568,6 +628,20 @@ public class AgentActionService {
         String contextAssetId,
         String requestedIdempotencyKey
     ) {
+        return proposeResumeImportDraft(
+            agentSessionId, ownerKey, contextAssetId, requestedIdempotencyKey, null
+        );
+    }
+
+    /** 生成带运行代次的简历导入草稿；运行代次不参与幂等键。 */
+    @Transactional
+    public AgentActionResponse proposeResumeImportDraft(
+        String agentSessionId,
+        String ownerKey,
+        String contextAssetId,
+        String requestedIdempotencyKey,
+        String runId
+    ) {
         String owner = requireOwner(ownerKey);
         String agentId = requireText(agentSessionId, "Agent 会话不能为空", 64);
         String assetId = requireText(contextAssetId, "Agent 文件素材不能为空", 64);
@@ -590,6 +664,7 @@ public class AgentActionService {
             .actionId(UUID.randomUUID().toString())
             .ownerKey(owner)
             .agentSessionId(agentId)
+            .runId(normalizeOptional(runId, 64))
             .toolId(RESUME_IMPORT_TOOL)
             .riskLevel("BUSINESS_WRITE")
             .status(AgentActionStatus.PROPOSED)
@@ -649,7 +724,7 @@ public class AgentActionService {
     private AgentActionResponse saveProposed(AgentActionRequestEntity entity) {
         AgentActionRequestEntity saved = repository.save(entity);
         auditService.recordQuietly(
-            saved.getOwnerKey(), saved.getInterviewSessionId(), saved.getAgentSessionId(), null,
+            saved.getOwnerKey(), saved.getInterviewSessionId(), saved.getAgentSessionId(), saved.getRunId(),
             "ACTION_PROPOSED", "agent-action",
             saved.getActionId(), AgentActionStatus.PROPOSED.name()
         );

@@ -396,7 +396,7 @@ public class AgentContextToolCallbackFactory {
 
     private String importResume(AgentContextAssetResponse asset, ToolContextData context) {
         AgentActionResponse action = actionService.proposeResumeImportDraft(
-            context.agentSessionId(), context.ownerKey(), asset.assetId(), null
+            context.agentSessionId(), context.ownerKey(), asset.assetId(), null, context.runId()
         );
         return emit(Map.of(
             "status", "ACTION_PROPOSED",
@@ -460,7 +460,7 @@ public class AgentContextToolCallbackFactory {
             requiredSafeText(input, "position", "岗位不能为空", 255), interviewTime,
             optionalSafeText(input, "interviewType", 64), optionalSafeText(input, "meetingLink", 1000),
             integer(input, "roundNumber", 1, 1, 20), optionalSafeText(input, "interviewer", 255),
-            optionalSafeText(input, "notes", 2000), null
+            optionalSafeText(input, "notes", 2000), null, context.runId()
         );
         return emit(Map.of(
             "status", "ACTION_PROPOSED",
@@ -513,7 +513,8 @@ public class AgentContextToolCallbackFactory {
 
         InterviewScheduleDTO schedule = candidates.getFirst();
         AgentActionResponse action = actionService.proposeInterviewScheduleCancelDraft(
-            context.interviewSessionId(), context.agentSessionId(), context.ownerKey(), schedule, null
+            context.interviewSessionId(), context.agentSessionId(), context.ownerKey(), schedule, null,
+            context.runId()
         );
         return emit(Map.of(
             "status", "ACTION_PROPOSED",
@@ -590,7 +591,8 @@ public class AgentContextToolCallbackFactory {
         }
 
         AgentActionResponse action = actionService.proposeInterviewScheduleUpdateDraft(
-            context.interviewSessionId(), context.agentSessionId(), context.ownerKey(), updated, null
+            context.interviewSessionId(), context.agentSessionId(), context.ownerKey(), updated, null,
+            context.runId()
         );
         return emit(Map.of(
             "status", "ACTION_PROPOSED",
@@ -712,7 +714,7 @@ public class AgentContextToolCallbackFactory {
         Object message = toolContext.getContext().get(AgentMetrics.USER_MESSAGE_TOOL_CONTEXT_KEY);
         return new ToolContextData(
             tracker, audit.ownerKey(), audit.interviewSessionId(), audit.agentSessionId(),
-            message == null ? "" : message.toString()
+            message == null ? "" : message.toString(), audit.runId()
         );
     }
 
@@ -976,7 +978,8 @@ public class AgentContextToolCallbackFactory {
 
     private record ToolContextData(
         AgentMetrics.RunTracker tracker,
-        String ownerKey, String interviewSessionId, String agentSessionId, String userMessage
+        String ownerKey, String interviewSessionId, String agentSessionId, String userMessage,
+        String runId
     ) {
     }
 

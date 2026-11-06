@@ -46,6 +46,10 @@ public class AgentActionRequestEntity {
     @Column(name = "agent_session_id", nullable = false, length = 64)
     private String agentSessionId;
 
+    /** 产生该动作的 Agent 运行代次；旧动作允许为空以兼容历史数据。 */
+    @Column(name = "run_id", length = 64)
+    private String runId;
+
     @Column(name = "tool_id", nullable = false, length = 64)
     private String toolId;
 
