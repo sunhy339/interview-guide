@@ -4,6 +4,12 @@ import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.service.AgentAuditService;
 import interview.guide.modules.agent.service.AgentToolDescriptor;
 import java.time.Duration;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
@@ -21,6 +27,10 @@ final class AgentObservedToolCallback implements ToolCallback {
     private static final String RESULT_TRUNCATION_NOTICE = "\n[工具资料已截断]";
     private static final String OVERSIZED_INPUT_REJECTION =
         "[agent-tool-rejected] 工具参数过长，未执行任何操作";
+    private static final ExecutorService TOOL_EXECUTOR =
+        Executors.newThreadPerTaskExecutor(
+            Thread.ofVirtual().name("agent-tool-execution-", 0).factory()
+        );
 
     private final ToolCallback delegate;
     private final AgentMetrics metrics;
@@ -86,13 +96,13 @@ final class AgentObservedToolCallback implements ToolCallback {
                 record("rejected", startedNanos);
                 return result;
             }
-            String rawResult = delegate.call(toolInput);
+            String rawResult = invokeDelegate(toolInput, null);
             boolean rejected = isRejectedResult(rawResult);
             String result = sanitizeResult(rawResult);
             record(rejected ? "rejected" : "success", startedNanos);
             return result;
         } catch (RuntimeException error) {
-            record("failure", startedNanos);
+            record(error instanceof ToolExecutionTimeoutException ? "timeout" : "failure", startedNanos);
             throw error;
         }
     }
@@ -118,7 +128,7 @@ final class AgentObservedToolCallback implements ToolCallback {
                 auditSecurityRejection(runTracker);
                 return result;
             }
-            String rawResult = delegate.call(toolInput, toolContext);
+            String rawResult = invokeDelegate(toolInput, toolContext);
             boolean rejected = isRejectedResult(rawResult);
             String result = sanitizeResult(rawResult);
             String outcome = rejected ? "rejected" : "success";
@@ -129,10 +139,58 @@ final class AgentObservedToolCallback implements ToolCallback {
             }
             return result;
         } catch (RuntimeException error) {
-            record("failure", startedNanos);
-            audit(runTracker, "failure");
+            String outcome = error instanceof ToolExecutionTimeoutException ? "timeout" : "failure";
+            record(outcome, startedNanos);
+            audit(runTracker, outcome);
             throw error;
         }
+    }
+
+    /**
+     * 工具契约中的超时和重试不能只停留在元数据层。
+     *
+     * <p>只读工具可以按契约进行有限的瞬时失败重试；草稿/写入类工具默认不重试，
+     * 避免同一请求重复产生动作。Future 只负责隔离 Agent 调用线程，超时后会发出
+     * interrupt 并让当前模型轮次立即得到明确失败信号；业务回调自身仍由各模块负责
+     * 正确处理中断和数据库事务。</p>
+     */
+    private String invokeDelegate(String toolInput, ToolContext toolContext) {
+        if (contract == null) {
+            return callDelegate(toolInput, toolContext);
+        }
+        int maxAttempts = contract.retryPolicy() == AgentToolDescriptor.RetryPolicy.NONE
+            ? 1 : contract.maxAttempts();
+        RuntimeException lastFailure = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            Future<String> future = TOOL_EXECUTOR.submit(() -> callDelegate(toolInput, toolContext));
+            try {
+                return future.get(contract.timeoutMillis(), TimeUnit.MILLISECONDS);
+            } catch (TimeoutException error) {
+                future.cancel(true);
+                lastFailure = new ToolExecutionTimeoutException(
+                    "Agent 工具 " + getToolDefinition().name() + " 执行超时（"
+                        + contract.timeoutMillis() + "ms）"
+                );
+            } catch (InterruptedException error) {
+                future.cancel(true);
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Agent 工具执行线程被中断", error);
+            } catch (ExecutionException error) {
+                Throwable cause = error.getCause();
+                lastFailure = cause instanceof RuntimeException runtime
+                    ? runtime : new IllegalStateException("Agent 工具执行失败", cause);
+            }
+            if (attempt < maxAttempts) {
+                continue;
+            }
+        }
+        throw lastFailure == null
+            ? new IllegalStateException("Agent 工具执行失败") : lastFailure;
+    }
+
+    private String callDelegate(String toolInput, ToolContext toolContext) {
+        return toolContext == null
+            ? delegate.call(toolInput) : delegate.call(toolInput, toolContext);
     }
 
     private void reserveToolCall(AgentMetrics.RunTracker runTracker) {
@@ -239,5 +297,13 @@ final class AgentObservedToolCallback implements ToolCallback {
             safe = safe.substring(0, contentChars) + RESULT_TRUNCATION_NOTICE;
         }
         return promptSanitizer.wrapWithDelimiters("agent-observed-tool-result", safe);
+    }
+}
+
+/** 工具超过自身契约的执行时间预算。 */
+final class ToolExecutionTimeoutException extends RuntimeException {
+
+    ToolExecutionTimeoutException(String message) {
+        super(message);
     }
 }

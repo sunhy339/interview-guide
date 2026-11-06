@@ -105,8 +105,10 @@ public class AgentToolRegistry {
             true,
             permission,
             readOnly ? 3_000L : 5_000L,
-            1,
-            AgentToolDescriptor.RetryPolicy.NONE,
+            readOnly ? 2 : 1,
+            readOnly
+                ? AgentToolDescriptor.RetryPolicy.SAFE_READ_ONLY
+                : AgentToolDescriptor.RetryPolicy.NONE,
             readOnly
                 ? AgentToolDescriptor.Idempotency.IDEMPOTENT
                 : AgentToolDescriptor.Idempotency.IDEMPOTENCY_KEYED,
