@@ -9,6 +9,15 @@ Loop 预算，不调用模型：
 .\gradlew.bat :app:agentEvaluation --no-daemon
 ```
 
+路由和能力裁剪的确定性行为矩阵位于 `behavior-matrix-v1.jsonl`，覆盖普通问答、面试
+复盘、简历/文件上下文、Skill+RAG 组合以及日程创建/取消/改期。它不调用模型，直接
+验证“普通问题不加载业务工具”和“日程动作只暴露对应工具”等安全边界；运行完整测试
+时会自动执行：
+
+```powershell
+.\gradlew.bat :app:test --tests interview.guide.modules.agent.evaluation.AgentBehaviorMatrixTest
+```
+
 ## 真实运行结果
 
 将每次 Agent 运行整理为 JSONL，每行至少包含以下字段：
