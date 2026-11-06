@@ -214,6 +214,50 @@ class AgentIntentRouterTest {
     }
 
     @Test
+    @DisplayName("模型可以同时选择 Skill、RAG 和资料上下文能力")
+    void keepsMultipleCapabilitiesFromModel() {
+        AgentIntentRouter modelRouter = new AgentIntentRouter(
+            null, null, new ObjectMapper(), null
+        );
+
+        AgentIntentRouter.Decision decision = modelRouter.parseModelDecision(
+            "{\"mode\":\"GENERAL\",\"capabilities\":[\"SKILL\",\"RAG\",\"CONTEXT\"],"
+                + "\"confidence\":0.93,\"reason\":\"需要联合资料回答\"}",
+            "请结合 Skill 和知识库资料回答这个问题"
+        );
+
+        assertThat(decision).isNotNull();
+        assertThat(decision.route()).isEqualTo(AgentIntentRouter.Route.GENERAL);
+        assertThat(decision.capabilities())
+            .containsExactlyInAnyOrder(
+                AgentIntentRouter.Capability.SKILL,
+                AgentIntentRouter.Capability.RAG,
+                AgentIntentRouter.Capability.CONTEXT
+            );
+        assertThat(decision.includeSkills()).isTrue();
+        assertThat(decision.allowedToolNames())
+            .contains(AgentContextToolCallbackFactory.CONTEXT_LIST)
+            .doesNotContain(AgentContextToolCallbackFactory.SCHEDULE_DRAFT);
+    }
+
+    @Test
+    @DisplayName("规则兜底也保留多个能力，不因先命中 Skill 丢失 RAG")
+    void fallbackKeepsMultipleCapabilities() {
+        AgentIntentRouter.Decision decision = router.route(request(
+            "general", "请结合 Skill 和知识库资料回答这个问题"
+        ));
+
+        assertThat(decision.capabilities())
+            .contains(
+                AgentIntentRouter.Capability.SKILL,
+                AgentIntentRouter.Capability.RAG,
+                AgentIntentRouter.Capability.CONTEXT
+            );
+        assertThat(decision.includeSkills()).isTrue();
+        assertThat(decision.useTools()).isTrue();
+    }
+
+    @Test
     @DisplayName("模型不可用时回退规则且不让旧 review 目标污染普通问题")
     void fallsBackSafelyWhenClassifierFails() {
         interview.guide.common.ai.LlmProviderRegistry registry = mock(
