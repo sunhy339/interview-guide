@@ -254,6 +254,78 @@ class AgentObservedToolCallbackTest {
             .isEqualTo(1.0);
     }
 
+    @Test
+    @DisplayName("工具超过契约超时后停止等待并记录 timeout")
+    void enforcesToolTimeout() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AgentMetrics metrics = metrics(registry);
+        ToolCallback delegate = mockTool("slow_tool", null);
+        when(delegate.call("{}")).thenAnswer(invocation -> {
+            Thread.sleep(200);
+            return "late";
+        });
+        AgentObservedToolCallback observed = new AgentObservedToolCallback(
+            delegate, metrics, null, new PromptSanitizer(new LlmProviderProperties()),
+            contract("slow_tool", 30, 1, AgentToolDescriptor.RetryPolicy.NONE)
+        );
+
+        assertThatThrownBy(() -> observed.call("{}"))
+            .isInstanceOf(ToolExecutionTimeoutException.class)
+            .hasMessageContaining("执行超时");
+        assertThat(registry.get(AgentMetrics.TOOL_CALLS)
+            .tag("tool", "slow_tool").tag("result", "timeout").counter().count())
+            .isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("只读工具瞬时失败时按契约有限重试，写入工具不自动重试")
+    void retriesOnlyAccordingToToolContract() {
+        ToolCallback readOnlyDelegate = mockTool("read_only_tool", null);
+        when(readOnlyDelegate.call("{}"))
+            .thenThrow(new IllegalStateException("temporary"))
+            .thenReturn("ok");
+        AgentObservedToolCallback readOnly = new AgentObservedToolCallback(
+            readOnlyDelegate, null, null, null,
+            contract("read_only_tool", 500, 2, AgentToolDescriptor.RetryPolicy.SAFE_READ_ONLY)
+        );
+
+        assertThat(readOnly.call("{}")).isEqualTo("ok");
+        verify(readOnlyDelegate, org.mockito.Mockito.times(2)).call("{}");
+
+        ToolCallback writeDelegate = mockTool("write_tool", null);
+        when(writeDelegate.call("{}")).thenThrow(new IllegalStateException("temporary"));
+        AgentObservedToolCallback write = new AgentObservedToolCallback(
+            writeDelegate, null, null, null,
+            contract("write_tool", 500, 2, AgentToolDescriptor.RetryPolicy.NONE)
+        );
+
+        assertThatThrownBy(() -> write.call("{}"))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessage("temporary");
+        verify(writeDelegate).call("{}");
+    }
+
+    private AgentToolDescriptor contract(
+        String name, long timeoutMillis, int maxAttempts, AgentToolDescriptor.RetryPolicy retryPolicy
+    ) {
+        return new AgentToolDescriptor(
+            name, "v1", AgentIntentRouter.Capability.CONTEXT,
+            retryPolicy == AgentToolDescriptor.RetryPolicy.NONE
+                ? AgentToolDescriptor.RiskLevel.DRAFT_WRITE
+                : AgentToolDescriptor.RiskLevel.READ_ONLY,
+            retryPolicy == AgentToolDescriptor.RetryPolicy.NONE, true,
+            "agent:context:read", timeoutMillis, maxAttempts, retryPolicy,
+            retryPolicy == AgentToolDescriptor.RetryPolicy.NONE
+                ? AgentToolDescriptor.Idempotency.IDEMPOTENCY_KEYED
+                : AgentToolDescriptor.Idempotency.IDEMPOTENT,
+            retryPolicy == AgentToolDescriptor.RetryPolicy.NONE
+                ? AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION
+                : AgentToolDescriptor.ResultContract.DATA_BOUNDARY,
+            "{\"type\":\"object\",\"additionalProperties\":true}",
+            mock(ToolCallback.class)
+        );
+    }
+
     private AgentMetrics metrics(SimpleMeterRegistry registry) {
         @SuppressWarnings("unchecked")
         org.springframework.beans.factory.ObjectProvider<io.micrometer.core.instrument.MeterRegistry> provider =
