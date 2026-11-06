@@ -91,6 +91,7 @@ public class InterviewAgentService {
     private final AgentIntentRouter agentIntentRouter;
     private final AgentContextToolCallbackFactory agentContextToolCallbackFactory;
     private final tools.jackson.databind.ObjectMapper objectMapper;
+    private AgentRunStateService runStateService;
     private final Set<String> activeSessions = ConcurrentHashMap.newKeySet();
     private final Map<String, Sinks.One<Void>> cancellationSignals = new ConcurrentHashMap<>();
     private final Map<String, AgentTaskHandle> activeTasks = new ConcurrentHashMap<>();
@@ -167,6 +168,12 @@ public class InterviewAgentService {
         this.userPromptTemplate = new PromptTemplate(resourceLoader
             .getResource("classpath:prompts/agent-interview-coach-user.st")
             .getContentAsString(StandardCharsets.UTF_8));
+    }
+
+    /** 模型轮次检查点在迁移期可选接入；不可用时不影响既有流式回答。 */
+    @Autowired(required = false)
+    void setRunStateService(AgentRunStateService runStateService) {
+        this.runStateService = runStateService;
     }
 
     /**
@@ -716,6 +723,9 @@ public class InterviewAgentService {
                                     compacted ? "compacted" : "normal"
                                 );
                                 AgentMetrics.ModelCallTracker modelCall = agentMetrics.startModelCall(providerId, runTracker);
+                                if (runStateService != null) {
+                                    runStateService.modelTurnStarted(runTracker, providerId, compacted);
+                                }
                                 try {
                                     // 运行时只向模型暴露本轮能力策略允许的工具；普通问题默认
                                     // 不挂载业务工具，明确资料、Skill 或日程请求才加载对应能力。
@@ -787,6 +797,9 @@ public class InterviewAgentService {
                                     return new ModelStream(content, modelCall);
                                 } catch (Throwable error) {
                                     agentMetrics.finishModelCall(modelCall, "failure");
+                                    if (runStateService != null) {
+                                        runStateService.modelTurnFinished(runTracker, providerId, "failure");
+                                    }
                                     throw error;
                                 }
                             };
@@ -1683,6 +1696,9 @@ public class InterviewAgentService {
         AgentMetrics.RunTracker runTracker
     ) {
         agentMetrics.finishModelCall(tracker, result);
+        if (runStateService != null) {
+            runStateService.modelTurnFinished(runTracker, providerId, result);
+        }
         recordRunTrace(runTracker, "MODEL_COMPLETED", "agent-model", providerId, result);
         // 必须在外层 completeMessage/failMessage 之前写入，避免活动消息栅栏关闭后被忽略。
         persistRunUsage(assistantMessageId, runId, runTracker);

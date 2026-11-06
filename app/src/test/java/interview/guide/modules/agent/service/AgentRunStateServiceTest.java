@@ -3,10 +3,14 @@ package interview.guide.modules.agent.service;
 import interview.guide.modules.agent.model.AgentChatSessionEntity;
 import interview.guide.modules.agent.model.AgentRunStateEntity;
 import interview.guide.modules.agent.model.AgentRunStatus;
+import interview.guide.modules.agent.metrics.AgentMetrics;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import interview.guide.modules.agent.repository.AgentRunStateRepository;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.beans.factory.ObjectProvider;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -86,5 +90,51 @@ class AgentRunStateServiceTest {
         new AgentRunStateService(repository).checkpoint(session);
 
         assertThat(session.getRunStatus()).isEqualTo(AgentRunStatus.RUNNING);
+    }
+
+    @Test
+    void persistsModelTurnBoundaryWithoutPersistingPromptContent() {
+        AgentRunStateEntity state = AgentRunStateEntity.builder()
+            .runId("run-1")
+            .agentSessionId("agent-1")
+            .status(AgentRunStatus.RUNNING)
+            .build();
+        when(repository.findByRunId("run-1"))
+            .thenReturn(Optional.of(state), Optional.of(state), Optional.of(state));
+        when(repository.save(any(AgentRunStateEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+
+        AgentMetrics.RunTracker tracker = tracker("run-1");
+        AgentRunStateService service = new AgentRunStateService(repository);
+
+        service.modelTurnStarted(tracker, "pixel", false);
+
+        assertThat(state.getModelTurnIndex()).isEqualTo(1);
+        assertThat(state.getModelTurnId()).startsWith("turn-");
+        assertThat(state.getModelProvider()).isEqualTo("pixel");
+        assertThat(state.getModelTurnStatus()).isEqualTo("STARTED");
+        assertThat(state.getPhase()).isEqualTo("model");
+        assertThat(state.getModelResultReference()).isNull();
+
+        service.modelTurnFinished(tracker, "pixel", "success");
+
+        assertThat(state.getModelTurnStatus()).isEqualTo("SUCCEEDED");
+        assertThat(state.getModelResultReference()).isEqualTo("status:succeeded");
+
+        state.setModelTurnStatus("STARTED");
+        service.markInterrupted("run-1");
+        assertThat(state.getModelTurnStatus()).isEqualTo("INTERRUPTED");
+        assertThat(state.getModelResultReference()).isEqualTo("status:interrupted");
+        assertThat(state.getPhase()).isEqualTo("model_interrupted");
+    }
+
+    private AgentMetrics.RunTracker tracker(String runId) {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<MeterRegistry> provider = org.mockito.Mockito.mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(new SimpleMeterRegistry());
+        AgentMetrics metrics = new AgentMetrics(provider, false);
+        AgentMetrics.RunTracker tracker = metrics.startRun(4, 4);
+        metrics.setAuditContext(tracker, "user-1", "interview-1", "agent-1", runId);
+        return tracker;
     }
 }

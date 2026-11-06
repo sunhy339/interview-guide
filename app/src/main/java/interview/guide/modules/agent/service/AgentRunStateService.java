@@ -26,6 +26,7 @@ public class AgentRunStateService {
     private static final int LEASE_MINUTES = 5;
     private static final int MAX_PHASE = 32;
     private static final int MAX_TOOL_NAME = 128;
+    private static final int MAX_MODEL_PROVIDER = 64;
 
     private final AgentRunStateRepository repository;
 
@@ -50,8 +51,88 @@ public class AgentRunStateService {
             state.setPendingApproval(false);
             state.setContextVersion(1);
             state.setAttempt(Math.max(1, value(state.getAttempt())));
+            state.setModelTurnId(null);
+            state.setModelProvider(null);
+            state.setModelTurnStatus(null);
+            state.setModelResultReference(null);
             heartbeat(state);
             state.setFinishedAt(null);
+            repository.save(state);
+        });
+    }
+
+    /**
+     * 在真正订阅模型流前落一个模型轮次检查点。
+     *
+     * <p>这里记录的是轮次和提供商元数据，不记录提示词、工具参数、资料正文或隐藏
+     * 推理。进程在模型流中断时，恢复扫描可以知道上一个安全边界是“模型轮次中间”，
+     * 后续只能安全重试/重新生成，不能假装精确恢复了模型内部上下文。</p>
+     */
+    public void modelTurnStarted(
+        AgentMetrics.RunTracker tracker, String providerId, boolean compacted
+    ) {
+        String runId = runId(tracker);
+        runSafely("模型轮次开始", runId, () -> {
+            if (blank(runId)) {
+                return;
+            }
+            AgentRunStateEntity state = findOrCreate(runId);
+            int index = value(state.getModelTurnIndex()) + 1;
+            state.setModelTurnIndex(index);
+            state.setModelTurnId("turn-" + hash(runId + ":" + index).substring(0, 32));
+            state.setModelProvider(clean(providerId, MAX_MODEL_PROVIDER));
+            state.setModelTurnStatus("STARTED");
+            state.setModelResultReference(null);
+            state.setPhase(clean(compacted ? "model_compacted" : "model", MAX_PHASE));
+            state.setFinishedAt(null);
+            heartbeat(state);
+            repository.save(state);
+        });
+    }
+
+    /** 模型轮次结束只保存有限状态，禁止把自然语言正文写入检查点。 */
+    public void modelTurnFinished(
+        AgentMetrics.RunTracker tracker, String providerId, String result
+    ) {
+        String runId = runId(tracker);
+        runSafely("模型轮次结束", runId, () -> {
+            if (blank(runId)) {
+                return;
+            }
+            AgentRunStateEntity state = findOrCreate(runId);
+            String status = normalizeModelTurnStatus(result);
+            state.setModelProvider(clean(providerId, MAX_MODEL_PROVIDER));
+            if (blank(state.getModelTurnId())) {
+                int index = Math.max(1, value(state.getModelTurnIndex()));
+                state.setModelTurnIndex(index);
+                state.setModelTurnId("turn-" + hash(runId + ":" + index).substring(0, 32));
+            }
+            state.setModelTurnStatus(status);
+            state.setModelResultReference("status:" + status.toLowerCase(java.util.Locale.ROOT));
+            state.setPhase("model");
+            heartbeat(state);
+            repository.save(state);
+        });
+    }
+
+    /**
+     * 恢复接管前标记旧轮次为中断，帮助诊断“重新生成”与“精确续跑”的差异。
+     * 该标记不改变会话终态，也不触发任何业务工具重放。
+     */
+    public void markInterrupted(String runId) {
+        runSafely("标记模型轮次中断", runId, () -> {
+            if (blank(runId)) {
+                return;
+            }
+            AgentRunStateEntity state = repository.findByRunId(runId).orElse(null);
+            if (state == null || !"STARTED".equals(state.getModelTurnStatus())) {
+                return;
+            }
+            state.setModelTurnStatus("INTERRUPTED");
+            state.setModelResultReference("status:interrupted");
+            state.setPhase("model_interrupted");
+            state.setFinishedAt(LocalDateTime.now());
+            heartbeat(state);
             repository.save(state);
         });
     }
@@ -269,6 +350,21 @@ public class AgentRunStateService {
 
     private int value(Integer value) {
         return value == null ? 0 : Math.max(0, value);
+    }
+
+    private String runId(AgentMetrics.RunTracker tracker) {
+        if (tracker == null || tracker.auditContext() == null) {
+            return null;
+        }
+        return tracker.auditContext().runId();
+    }
+
+    private String normalizeModelTurnStatus(String result) {
+        return switch (result == null ? "" : result.toLowerCase(java.util.Locale.ROOT)) {
+            case "success", "succeeded" -> "SUCCEEDED";
+            case "cancel", "cancelled" -> "CANCELLED";
+            default -> "FAILED";
+        };
     }
 
     public record ApprovalResumeMarker(String actionId, String notice) {
