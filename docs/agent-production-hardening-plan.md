@@ -107,6 +107,12 @@ owner 校验、参数校验和动作确认链路保持不变。外部 MCP 工具
 
 ### P1.4 可观测性和测试
 
+- 当前进度：已确认需要补齐多轮模型 usage 聚合和跨轮模型调用预算，但当前
+  ToolCallingAdvisor 会在内部递归并只向外层暴露聚合流，现有外层观测不能证明每个内部
+  模型轮次都被准确计量；因此暂不把这一项标记为完成，后续需在 Provider/Advisor 可观测
+  边界增加真实契约测试后再实现。统一 Trace、首 Token 延迟、真实 Provider 契约测试和
+  固定 Agent 评测集仍待后续实现。
+
 - 为一次 Agent Run 建立统一 Trace ID，串联分类、规划、模型、工具、数据库、Redis 和恢复任务。
 - 记录首 Token 延迟、队列时间、各阶段耗时、工具成功率、恢复次数、Token 和费用。
 - 增加真实 Provider 契约测试、多轮 Tool Calling、审批恢复、崩溃恢复、并发会话和失败注入测试。
@@ -154,3 +160,41 @@ owner 校验、参数校验和动作确认链路保持不变。外部 MCP 工具
 3. 旧面试、简历、RAG、Skill 和日程主流程回归通过。
 4. 前端默认路径保持输入简单、结果清晰，内部 Loop 详情只作为高级诊断信息。
 5. 能说明 Token、耗时、失败原因、恢复状态和是否产生业务副作用。
+
+## 8. 与主流 Agent Runtime 的差距审计
+
+### 8.1 当前已经达到的设计基线
+
+- 仍采用受控单 Agent，而不是自由协作的多 Agent 网络；这更适合当前的面试、简历、知识库和日程场景。
+- 意图路由、上下文选择和工具目录已经可以组合使用；普通问题不默认挂载业务工具，明确需要时才加载。
+- ToolCallingAdvisor 已负责模型决策、工具执行、工具结果回传和继续生成；服务端额外保留有限 Loop、模型调用预算、工具调用预算和重试边界。
+- 业务写入继续经过草稿、确认、owner 校验、幂等和审计；文件、报告、Skill 和 RAG 结果都按不可信资料处理。
+- 会话消息、Loop 检查点、滚动摘要、基础恢复、来源摘要和 Token/费用记录已经存在。
+
+### 8.2 必须补齐的生产能力
+
+1. **真正的同一 Run 暂停/恢复**：当前审批确认后会收束等待态，但还没有把审批结果回传给原模型继续下一轮。应保存可恢复的模型轮次、工具调用、工具结果摘要、审批项和 pending batch，并以同一 `runId` 恢复。
+2. **统一 Trace**：当前已有指标、审计和 Loop 轨迹，但还没有把一次运行中的分类、规划、每个模型轮次、工具调用、Guardrail、数据库和恢复动作串成一条 Trace。
+3. **工具契约完整化**：注册中心目前已有名称、能力、风险和审批元数据；还需要版本、权限、输入/输出校验、超时、重试、幂等和结果验证器，不能只靠工具名称筛选。
+4. **上下文预算和证据链**：当前以字符预算为主；需要增加 Token 预算、来源优先级、冲突处理、RAG/Skill 引用和“未找到依据”状态，避免模型有资料但回答无法解释来源。
+5. **评测和真实契约测试**：需要固定问题集覆盖普通问答、面试报告引用、Skill+RAG 组合、日程创建/取消/修改、文件审核、注入攻击、审批恢复、重启恢复、并发会话和 Provider 失败切换。
+
+### 8.3 可以后置的能力
+
+- **MCP Runtime/Gateway**：当前仓库没有真正的 MCP Client/Server 运行时，不应直接把外部 MCP 工具挂进模型。后续必须先增加白名单、OAuth/Scope、owner 映射、限流、超时、结果净化和外部写操作确认。
+- **多 Agent / 子 Agent**：当前单 Agent 还没有达到必须拆分的复杂度。未来如果简历分析、RAG 研究和面试训练出现独立预算、权限和输出协议，再引入有界子 Agent。
+- **自动化外部操作**：日历、会议、邮件等外部系统先做读取和草稿；真正发送、取消或修改必须保留独立确认边界。
+
+### 8.4 参考的主流运行时原则
+
+- 可恢复 RunState 应包含足以继续执行的上下文、用量、模型响应、生成项和审批状态，而不是只保存展示轨迹或哈希摘要。
+- Trace 应能区分模型轮次、工具调用、Guardrail 和自定义事件；否则出现“回答不对”时无法定位是路由、检索、工具还是模型造成的。
+- 高风险工具应在工具边界做校验并暂停等待人工确认，确认后继续原运行，而不是另起一个孤立动作。
+- 外部 MCP 的认证和授权必须是运行时边界的一部分，不能把发现到的工具列表直接视为可信权限。
+
+参考：
+
+- OpenAI Agents SDK RunState：<https://openai.github.io/openai-agents-python/ref/run_state/>
+- OpenAI Agents SDK Tracing：<https://openai.github.io/openai-agents-python/tracing/>
+- OpenAI Guardrails and human review：<https://developers.openai.com/api/docs/guides/agents/guardrails-approvals>
+- MCP Authorization：<https://modelcontextprotocol.io/specification/draft/basic/authorization>
