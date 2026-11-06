@@ -88,6 +88,7 @@ public class AgentActionService {
     private final InterviewScheduleService interviewScheduleService;
     private final PromptSanitizer promptSanitizer;
     private final AgentResumeImportService resumeImportService;
+    private AgentConversationService conversationService;
 
     /** 保留轻量构造方式，便于只测试草稿状态机的调用方。 */
     public AgentActionService(
@@ -182,6 +183,12 @@ public class AgentActionService {
         this.interviewScheduleService = interviewScheduleService;
         this.promptSanitizer = promptSanitizer;
         this.resumeImportService = resumeImportService;
+    }
+
+    /** 动作服务可选接入会话续接，旧构造方式和非运行级动作保持兼容。 */
+    @Autowired(required = false)
+    void setConversationService(AgentConversationService conversationService) {
+        this.conversationService = conversationService;
     }
 
     /** 生成待确认的简历编辑版草稿；确认后写入现有简历编辑器，不覆盖原始上传文件。 */
@@ -764,7 +771,9 @@ public class AgentActionService {
         AgentActionRequestEntity entity = findOwnedForUpdate(actionId, ownerKey);
         boolean sanitized = sanitizeStoredAction(entity);
         if (entity.getStatus() == AgentActionStatus.SUCCEEDED) {
-            return safeResponse(entity);
+            AgentActionResponse response = safeResponse(entity);
+            resolveWaitingRun(entity, response, "用户已确认并完成 Agent 动作");
+            return response;
         }
         if (sanitized && (entity.getStatus() == AgentActionStatus.PROPOSED
             || entity.getStatus() == AgentActionStatus.FAILED)) {
@@ -786,7 +795,9 @@ public class AgentActionService {
             entity.setConfirmedAt(LocalDateTime.now());
             audit(entity, "ACTION_CONFIRMED", AgentActionStatus.CONFIRMED.name());
         }
-        return executeConfirmed(entity, false);
+        AgentActionResponse response = executeConfirmed(entity, false);
+        resolveWaitingRun(entity, response, "用户已确认并完成 Agent 动作");
+        return response;
     }
 
     /** 重试一次已经失败的动作，最多允许三次实际执行。 */
@@ -795,7 +806,9 @@ public class AgentActionService {
         AgentActionRequestEntity entity = findOwnedForUpdate(actionId, ownerKey);
         boolean sanitized = sanitizeStoredAction(entity);
         if (entity.getStatus() == AgentActionStatus.SUCCEEDED) {
-            return safeResponse(entity);
+            AgentActionResponse response = safeResponse(entity);
+            resolveWaitingRun(entity, response, "重试动作已完成，Agent 运行已恢复");
+            return response;
         }
         if (entity.getStatus() != AgentActionStatus.FAILED) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "只有执行失败的 Agent 动作可以重试");
@@ -810,7 +823,9 @@ public class AgentActionService {
                 "该 Agent 草稿包含不安全内容，已净化保存，请重新检查后重试"
             );
         }
-        return executeConfirmed(entity, true);
+        AgentActionResponse response = executeConfirmed(entity, true);
+        resolveWaitingRun(entity, response, "重试动作已完成，Agent 运行已恢复");
+        return response;
     }
 
     /**
@@ -1063,13 +1078,34 @@ public class AgentActionService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "已保存的 Agent 草稿不能取消");
         }
         if (entity.getStatus() == AgentActionStatus.CANCELLED) {
+            if (conversationService != null && entity.getRunId() != null) {
+                conversationService.resolveWaitingApproval(
+                    entity.getAgentSessionId(), entity.getRunId(), "用户已取消待确认动作，Agent 运行已结束"
+                );
+            }
             return safeResponse(entity);
         }
         entity.setStatus(AgentActionStatus.CANCELLED);
         entity.setResultSummary("用户取消了该动作，原始面试资料未被修改。");
         repository.save(entity);
         audit(entity, "ACTION_CANCELLED", AgentActionStatus.CANCELLED.name());
+        if (conversationService != null && entity.getRunId() != null) {
+            conversationService.resolveWaitingApproval(
+                entity.getAgentSessionId(), entity.getRunId(), "用户已取消待确认动作，Agent 运行已结束"
+            );
+        }
         return safeResponse(entity);
+    }
+
+    private void resolveWaitingRun(
+        AgentActionRequestEntity entity, AgentActionResponse response, String notice
+    ) {
+        if (conversationService == null || entity == null || response == null
+            || response.status() != AgentActionStatus.SUCCEEDED
+            || entity.getRunId() == null || entity.getRunId().isBlank()) {
+            return;
+        }
+        conversationService.resolveWaitingApproval(entity.getAgentSessionId(), entity.getRunId(), notice);
     }
 
     private AgentActionRequestEntity findOwnedForUpdate(String actionId, String ownerKey) {

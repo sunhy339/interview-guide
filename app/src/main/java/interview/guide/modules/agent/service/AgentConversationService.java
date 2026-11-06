@@ -621,6 +621,40 @@ public class AgentConversationService {
         return true;
     }
 
+    /** 动作确认/拒绝后关闭同一 Agent 运行的等待态；不存在等待态时保持兼容无操作。 */
+    @Transactional
+    public boolean resolveWaitingApproval(String agentSessionId, String runId, String notice) {
+        if (agentSessionId == null || agentSessionId.isBlank() || runId == null || runId.isBlank()) {
+            return false;
+        }
+        AgentChatSessionEntity session = sessionRepository.findByAgentSessionIdForUpdate(agentSessionId)
+            .orElse(null);
+        if (session == null
+            || session.getRunStatus() != AgentRunStatus.WAITING_USER
+            || !runId.equals(session.getRunId())) {
+            return false;
+        }
+        session.setRunStatus(AgentRunStatus.COMPLETED);
+        session.setRunFinishedAt(LocalDateTime.now());
+        session.setActiveMessageId(null);
+        session.setRunStepStatus("completed");
+        session.setRunNotice(safeStoredText(notice, 500));
+        sessionRepository.save(session);
+        if (runStateService != null) {
+            runStateService.finish(session);
+        }
+        if (usageService != null) {
+            try {
+                usageService.record(session, readRunUsage(session));
+            } catch (RuntimeException error) {
+                log.warn("Agent 等待确认运行累计用量持久化失败: agentSessionId={}",
+                    session.getAgentSessionId(), error);
+            }
+        }
+        audit(session, "RUN_RESUMED", "agent-run", runId, "approval-resolved");
+        return true;
+    }
+
     /** 持久化当前 Agent 编排阶段，供断线和页面刷新后恢复展示。 */
     @Transactional
     public void updateRunProgress(Long messageId, String step, String status, String notice) {
@@ -1313,12 +1347,18 @@ public class AgentConversationService {
     }
 
     private void markRunFinished(AgentChatSessionEntity session, AgentRunStatus status, String error) {
-        session.setRunStatus(status);
+        AgentRunStatus effectiveStatus = status;
+        if (status == AgentRunStatus.COMPLETED && runStateService != null
+            && runStateService.hasPendingApproval(session.getRunId())) {
+            effectiveStatus = AgentRunStatus.WAITING_USER;
+        }
+        session.setRunStatus(effectiveStatus);
         session.setRunFinishedAt(LocalDateTime.now());
         session.setActiveMessageId(null);
         session.setRunError(safeStoredText(error, 500));
-        session.setRunStepStatus(status == AgentRunStatus.COMPLETED ? "completed"
-            : status == AgentRunStatus.CANCELLED ? "cancelled" : "failed");
+        session.setRunStepStatus(effectiveStatus == AgentRunStatus.COMPLETED ? "completed"
+            : effectiveStatus == AgentRunStatus.WAITING_USER ? "waiting"
+            : effectiveStatus == AgentRunStatus.CANCELLED ? "cancelled" : "failed");
         session.setRunNotice(null);
         // 保留本次 Loop 的计划、检查点和轨迹，供历史查看与失败后的恢复诊断；
         // 下一次 prepareMessage 会在新运行开始前清理这些运行态字段。
@@ -1326,7 +1366,7 @@ public class AgentConversationService {
         if (runStateService != null) {
             runStateService.finish(session);
         }
-        audit(session, "RUN_" + status.name(), "agent-run", session.getRunId(), status.name());
+        audit(session, "RUN_" + effectiveStatus.name(), "agent-run", session.getRunId(), effectiveStatus.name());
     }
 
     private void audit(

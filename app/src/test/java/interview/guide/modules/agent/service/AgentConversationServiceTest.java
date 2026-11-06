@@ -60,6 +60,9 @@ class AgentConversationServiceTest {
     @Mock
     private PromptSanitizer promptSanitizer;
 
+    @Mock
+    private AgentRunStateService runStateService;
+
     @InjectMocks
     private AgentConversationService service;
 
@@ -589,6 +592,43 @@ class AgentConversationServiceTest {
         assertThat(session.getRunTotalTokens()).isEqualTo(200);
         verify(sessionRepository).save(session);
         verify(usageService).record(session, usage);
+    }
+
+    @Test
+    @DisplayName("待确认动作使运行进入等待态，确认后再收束为完成")
+    void entersWaitingUserUntilApprovalIsResolved() {
+        AgentChatSessionEntity session = AgentChatSessionEntity.builder()
+            .id(11L)
+            .agentSessionId("agent-1")
+            .runId("run-1")
+            .runStatus(AgentRunStatus.RUNNING)
+            .activeMessageId(22L)
+            .build();
+        AgentChatMessageEntity message = AgentChatMessageEntity.builder()
+            .id(22L)
+            .session(session)
+            .role(AgentChatMessageEntity.MessageRole.ASSISTANT)
+            .content("")
+            .sequenceNum(1)
+            .completed(false)
+            .build();
+        when(messageRepository.findById(22L)).thenReturn(Optional.of(message));
+        when(sessionRepository.findByAgentSessionIdForUpdate("agent-1"))
+            .thenReturn(Optional.of(session));
+        when(runStateService.hasPendingApproval("run-1")).thenReturn(true);
+        service.setRunStateService(runStateService);
+
+        service.completeMessage(22L, "已生成待确认动作");
+
+        assertThat(session.getRunStatus()).isEqualTo(AgentRunStatus.WAITING_USER);
+        assertThat(session.getRunStepStatus()).isEqualTo("waiting");
+        verify(runStateService).finish(session);
+
+        assertThat(service.resolveWaitingApproval(
+            "agent-1", "run-1", "动作已处理"
+        )).isTrue();
+        assertThat(session.getRunStatus()).isEqualTo(AgentRunStatus.COMPLETED);
+        verify(usageService).record(session, null);
     }
 
     @Test

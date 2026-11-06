@@ -82,7 +82,9 @@ public class AgentRunStateService {
             state.setStatus(session.getRunStatus() == null ? AgentRunStatus.FAILED : session.getRunStatus());
             state.setPhase(clean(session.getRunStep(), MAX_PHASE));
             state.setStepIndex(Math.max(0, session.getLoopNextStep()));
-            state.setPendingApproval(false);
+            if (session.getRunStatus() != AgentRunStatus.WAITING_USER) {
+                state.setPendingApproval(false);
+            }
             state.setAssistantMessageId(session.getActiveMessageId());
             state.setFinishedAt(LocalDateTime.now());
             heartbeat(state);
@@ -135,6 +137,21 @@ public class AgentRunStateService {
             heartbeat(state);
             repository.save(state);
         });
+    }
+
+    /** 读取运行是否有待用户确认的动作；检查点不可用时安全返回 false。 */
+    public boolean hasPendingApproval(String runId) {
+        if (blank(runId)) {
+            return false;
+        }
+        try {
+            return repository.findByRunId(runId)
+                .map(AgentRunStateEntity::getPendingApproval)
+                .orElse(false);
+        } catch (RuntimeException error) {
+            log.warn("读取 Agent 待确认状态失败，按无待确认动作处理: runId={}", runId, error);
+            return false;
+        }
     }
 
     private void runSafely(String operation, String runId, Runnable action) {

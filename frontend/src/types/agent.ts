@@ -21,7 +21,7 @@ export interface AgentConversationResponse {
   goal?: AgentGoal | string | null;
   providerId?: string | null;
   runId?: string | null;
-  runStatus?: 'IDLE' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | string | null;
+  runStatus?: 'IDLE' | 'RUNNING' | 'WAITING_USER' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | string | null;
   runStartedAt?: string | null;
   runFinishedAt?: string | null;
   runError?: string | null;
@@ -181,7 +181,7 @@ export interface AgentConversationSummary {
   agentSessionId: string;
   interviewSessionId: string | null;
   title?: string | null;
-  runStatus?: 'IDLE' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | string | null;
+  runStatus?: 'IDLE' | 'RUNNING' | 'WAITING_USER' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
 }
