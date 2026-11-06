@@ -444,7 +444,12 @@ public class LlmProviderRegistry {
                 : agentToolRegistry.callbacks(allowedToolNames);
             callbacks.stream()
                 .map(callback -> new AgentObservedToolCallback(
-                    callback, agentMetrics, agentAuditService, new PromptSanitizer(properties)))
+                    callback,
+                    agentMetrics,
+                    agentAuditService,
+                    new PromptSanitizer(properties),
+                    agentToolRegistry == null
+                        ? null : agentToolRegistry.descriptor(callback.getToolDefinition().name())))
                 .forEach(agentTools::add);
         }
         if (!agentTools.isEmpty()) {

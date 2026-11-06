@@ -46,6 +46,39 @@ public class AgentToolRegistry {
         ));
     }
 
+    /** 返回指定工具的完整契约；未知名称不允许悄悄降级成任意工具。 */
+    public AgentToolDescriptor descriptor(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        return descriptors().stream()
+            .filter(descriptor -> name.equals(descriptor.name()))
+            .findFirst()
+            .orElse(null);
+    }
+
+    /**
+     * 校验目录中的契约是否满足最小生产边界。
+     *
+     * <p>应用启动时不强制执行，避免历史测试替身或旧配置被一次性阻断；生产装配可在
+     * 健康检查中调用此方法，并把异常作为工具目录配置错误处理。</p>
+     */
+    public List<String> contractErrors() {
+        return descriptors().stream()
+            .flatMap(descriptor -> {
+                java.util.ArrayList<String> errors = new java.util.ArrayList<>();
+                if (!descriptor.ownerScoped()) errors.add(descriptor.name() + ":owner-scope");
+                if (descriptor.requiredPermission().isBlank()) {
+                    errors.add(descriptor.name() + ":permission");
+                }
+                if (descriptor.inputSchema().isBlank()) errors.add(descriptor.name() + ":input-schema");
+                if (descriptor.timeoutMillis() <= 0) errors.add(descriptor.name() + ":timeout");
+                if (descriptor.maxAttempts() < 1) errors.add(descriptor.name() + ":attempts");
+                return errors.stream();
+            })
+            .toList();
+    }
+
     private AgentToolDescriptor describe(ToolCallback callback) {
         String name = callback.getToolDefinition().name();
         AgentIntentRouter.Capability capability = name.startsWith("schedule_")
@@ -59,8 +92,29 @@ public class AgentToolRegistry {
                 AgentToolDescriptor.RiskLevel.READ_ONLY;
             default -> AgentToolDescriptor.RiskLevel.DRAFT_WRITE;
         };
+        boolean readOnly = risk == AgentToolDescriptor.RiskLevel.READ_ONLY;
+        String permission = capability == AgentIntentRouter.Capability.SCHEDULE
+            ? readOnly ? "agent:schedule:read" : "agent:schedule:draft"
+            : readOnly ? "agent:context:read" : "agent:context:draft";
         return new AgentToolDescriptor(
-            name, capability, risk, risk == AgentToolDescriptor.RiskLevel.DRAFT_WRITE, callback
+            name,
+            "v1",
+            capability,
+            risk,
+            !readOnly,
+            true,
+            permission,
+            readOnly ? 3_000L : 5_000L,
+            1,
+            AgentToolDescriptor.RetryPolicy.NONE,
+            readOnly
+                ? AgentToolDescriptor.Idempotency.IDEMPOTENT
+                : AgentToolDescriptor.Idempotency.IDEMPOTENCY_KEYED,
+            readOnly
+                ? AgentToolDescriptor.ResultContract.DATA_BOUNDARY
+                : AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION,
+            callback.getToolDefinition().inputSchema(),
+            callback
         );
     }
 }
