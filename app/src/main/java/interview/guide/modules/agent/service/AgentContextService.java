@@ -353,7 +353,10 @@ public class AgentContextService {
                 "\n[面试报告：" + safeSessionLabel + "]\n"
                     + promptSanitizer.sanitizeForContext(rawReport) + '\n');
             if (appended) {
-                sources.add(new AgentSource("interview", "面试报告 " + safeSessionLabel, null, "INTERVIEW"));
+                sources.add(new AgentSource(
+                    "interview", "面试报告 " + safeSessionLabel, null, "INTERVIEW",
+                    sessionId, "interview-report-v1", "user-selected", "explicit-context"
+                ));
             }
         } catch (RuntimeException error) {
             log.warn("通用 Agent 读取面试报告失败: sessionId={}", sessionId, error);
@@ -381,7 +384,8 @@ public class AgentContextService {
                 if (appended) {
                     sources.add(new AgentSource(
                         "resume", safeFilename == null ? "未命名简历" : safeFilename,
-                        null, "RESUME-" + resourceId
+                        null, "RESUME-" + resourceId, resourceId, "resume-record-v1",
+                        "user-owned", "explicit-context"
                     ));
                 }
             });
@@ -412,7 +416,8 @@ public class AgentContextService {
                 if (appended) {
                     sources.add(new AgentSource(
                         "file", safeFilename == null ? "未命名文件" : safeFilename,
-                        null, "FILE-" + resourceId
+                        null, "FILE-" + resourceId, resourceId, "context-asset-v1",
+                        "user-reviewed", "explicit-context"
                     ));
                 }
             });
@@ -467,7 +472,11 @@ public class AgentContextService {
             if (budget <= 0) break;
             report.append("\n[").append(reference).append(" 来源：").append(title).append("]\n")
                 .append(text, 0, Math.min(text.length(), budget)).append('\n');
-            sources.add(new AgentSource("rag", title, document.score(), reference));
+            sources.add(new AgentSource(
+                "rag", title, document.score(), reference,
+                knowledgeBaseId + ":" + reference, "rag-retrieval-v1",
+                "knowledge-base", "retrieval"
+            ));
         }
     }
 
@@ -597,7 +606,10 @@ public class AgentContextService {
                     ownerId, interviewSessionId, agentSessionId,
                     "skill-reference", skillId, reference
                 );
-                sources.add(new AgentSource("skill", "Skill: " + skillId, null, "skill-reference"));
+                sources.add(new AgentSource(
+                    "skill", "Skill: " + skillId, null, "skill-reference", skillId,
+                    "skill-reference-v1", "skill-maintainer", "skill-selected"
+                ));
                 return truncate(promptSanitizer.sanitizeForContext(reference), 8_000);
             }
         } catch (Exception error) {
@@ -682,7 +694,11 @@ public class AgentContextService {
                 if (includedText.isBlank()) {
                     break;
                 }
-                sources.add(new AgentSource("rag", title, document.score(), reference));
+                sources.add(new AgentSource(
+                    "rag", title, document.score(), reference,
+                    detail.knowledgeBaseId() + ":" + reference, "rag-retrieval-v1",
+                    "knowledge-base", "retrieval"
+                ));
                 context.append(prefix).append(includedText).append("\n\n");
                 if (includedText.length() < text.length()) {
                     context.append(RAG_TRUNCATION_NOTICE).append('\n');
