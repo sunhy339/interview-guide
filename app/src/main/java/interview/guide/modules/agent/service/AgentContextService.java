@@ -159,6 +159,22 @@ public class AgentContextService {
         AgentMessageRequest request,
         List<AgentHistoryMessage> effectiveHistory
     ) {
+        return buildForDecision(sessionId, request, effectiveHistory, null);
+    }
+
+    /**
+     * 按本轮意图选择主报告、Skill 和 RAG 上下文。
+     *
+     * <p>旧的三参数入口保留迁移期行为；Agent 主流程会传入分类结果，避免普通问答
+     * 因旧会话目标或面试会话 ID 触发完整复盘上下文。显式绑定的会话资料仍然按用户
+     * 选择读取，不会因为本轮是 GENERAL 就被静默丢弃。</p>
+     */
+    public AgentContext buildForDecision(
+        String sessionId,
+        AgentMessageRequest request,
+        List<AgentHistoryMessage> effectiveHistory,
+        AgentIntentRouter.Decision intentDecision
+    ) {
         // 面试会话 ID 只代表数据归属，不代表本轮自动授权读取报告。
         // 普通问题由 InterviewAgentService 归一化为 general；这里再次防守，
         // 避免旧调用方直接传入 sessionId 时重新引入“自动复盘”。
@@ -172,6 +188,10 @@ public class AgentContextService {
             return buildGeneralContext(request, effectiveHistory);
         }
         if (sessionId == null || sessionId.isBlank()) {
+            return buildGeneralContext(request, effectiveHistory);
+        }
+        ContextSelection selection = ContextSelection.from(intentDecision, request);
+        if (!selection.includeInterviewReport()) {
             return buildGeneralContext(request, effectiveHistory);
         }
         InterviewDetailDTO detail = loadInterviewDetailForOwner(sessionId, trustedOwner);
@@ -192,13 +212,17 @@ public class AgentContextService {
         }
 
         String safeSkillId = sanitizeSkillId(detail.skillId());
-        String skillReference = loadSkillReference(safeSkillId, sources, trustedOwner,
-            request == null ? null : request.agentSessionId(), sessionId);
+        String skillReference = selection.includeSkill()
+            ? loadSkillReference(safeSkillId, sources, trustedOwner,
+                request == null ? null : request.agentSessionId(), sessionId)
+            : "暂无匹配的 Skill references";
         String retrievalQuery = buildRetrievalQuery(detail, request);
-        String ragContext = loadRagContext(
-            detail, retrievalQuery, sources, buildRetrievalHistory(effectiveHistory),
-            trustedOwner, request == null ? null : request.agentSessionId(), sessionId
-        );
+        String ragContext = selection.includeRag()
+            ? loadRagContext(
+                detail, retrievalQuery, sources, buildRetrievalHistory(effectiveHistory),
+                trustedOwner, request == null ? null : request.agentSessionId(), sessionId
+            )
+            : "暂无知识库检索上下文";
         AgentMemorySnapshot memory = loadMemory(request);
 
         return new AgentContext(
@@ -468,6 +492,29 @@ public class AgentContextService {
 
     private String ownerKey(AgentMessageRequest request) {
         return AuthUserContext.currentUserId().orElse(null);
+    }
+
+    private record ContextSelection(
+        boolean includeInterviewReport,
+        boolean includeSkill,
+        boolean includeRag
+    ) {
+        private static ContextSelection from(
+            AgentIntentRouter.Decision decision, AgentMessageRequest request
+        ) {
+            if (decision == null) {
+                boolean legacyReview = request != null
+                    && !"general".equalsIgnoreCase(request.goal());
+                return new ContextSelection(legacyReview, legacyReview, legacyReview);
+            }
+            java.util.Set<AgentIntentRouter.Capability> capabilities = decision.capabilities();
+            return new ContextSelection(
+                decision.route() == AgentIntentRouter.Route.INTERVIEW_REVIEW
+                    || capabilities.contains(AgentIntentRouter.Capability.INTERVIEW_REPORT),
+                capabilities.contains(AgentIntentRouter.Capability.SKILL),
+                capabilities.contains(AgentIntentRouter.Capability.RAG)
+            );
+        }
     }
 
     /**

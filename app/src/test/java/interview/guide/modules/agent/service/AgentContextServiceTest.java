@@ -28,6 +28,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -103,6 +104,68 @@ class AgentContextServiceTest {
         assertThat(context.ragContext()).contains("暂无知识库");
         verify(history, never()).getInterviewDetail("session-1");
         verify(skills, never()).buildEvaluationReferenceSectionSafe(anyString());
+    }
+
+    @Test
+    void routedGeneralQuestionDoesNotLoadPrimaryReportOrOptionalReferences() throws Exception {
+        InterviewHistoryService history = mock(InterviewHistoryService.class);
+        InterviewSkillService skills = mock(InterviewSkillService.class);
+        KnowledgeBaseQueryService rag = mock(KnowledgeBaseQueryService.class);
+        PromptSanitizer sanitizer = mock(PromptSanitizer.class);
+        ObjectMapper objectMapper = mock(ObjectMapper.class);
+        when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(sanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        AgentIntentRouter.Decision decision = new AgentIntentRouter.Decision(
+            AgentIntentRouter.Route.GENERAL, Set.of(), 0.96d, "普通学习问题"
+        );
+        AgentContextService.AgentContext context = new AgentContextService(
+            history, skills, rag, sanitizer, objectMapper
+        ).buildForDecision(
+            "session-routed-general",
+            new AgentMessageRequest("review", "解释一下 Agent Loop", List.of(), null),
+            List.of(), decision
+        );
+
+        assertThat(context.interviewReport()).contains("当前 Agent 会话未绑定任何资料");
+        assertThat(context.skillReference()).contains("暂无匹配");
+        assertThat(context.ragContext()).contains("暂无知识库");
+        verify(history, never()).getInterviewDetail("session-routed-general");
+        verify(skills, never()).buildEvaluationReferenceSectionSafe(anyString());
+        verify(rag, never()).retrieveOnly(any(), anyString(), any());
+    }
+
+    @Test
+    void routedReviewCanLoadReportWithoutImplicitSkillOrRag() throws Exception {
+        InterviewHistoryService history = mock(InterviewHistoryService.class);
+        InterviewSkillService skills = mock(InterviewSkillService.class);
+        KnowledgeBaseQueryService rag = mock(KnowledgeBaseQueryService.class);
+        PromptSanitizer sanitizer = mock(PromptSanitizer.class);
+        ObjectMapper objectMapper = mock(ObjectMapper.class);
+        InterviewDetailDTO detail = detail("java-backend", 42L);
+        when(history.getInterviewDetail("session-report-only")).thenReturn(detail);
+        when(objectMapper.writeValueAsString(detail)).thenReturn("{report}");
+        when(sanitizer.sanitize(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(sanitizer.sanitizeForContext(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        AgentIntentRouter.Decision decision = new AgentIntentRouter.Decision(
+            AgentIntentRouter.Route.INTERVIEW_REVIEW,
+            Set.of(AgentIntentRouter.Capability.INTERVIEW_REPORT),
+            0.96d, "仅复盘报告"
+        );
+        AgentContextService.AgentContext context = new AgentContextService(
+            history, skills, rag, sanitizer, objectMapper
+        ).buildForDecision(
+            "session-report-only",
+            new AgentMessageRequest("review", "请复盘本场面试", List.of(), null),
+            List.of(), decision
+        );
+
+        assertThat(context.interviewReport()).isEqualTo("{report}");
+        assertThat(context.skillReference()).contains("暂无匹配");
+        assertThat(context.ragContext()).contains("暂无知识库");
+        verify(skills, never()).buildEvaluationReferenceSectionSafe(anyString());
+        verify(rag, never()).retrieveOnly(any(), anyString(), any());
     }
 
     @Test

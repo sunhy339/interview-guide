@@ -242,7 +242,7 @@ public class InterviewAgentService {
                 try {
                     // 通用 Agent 永远从 null 报告上下文开始；绑定面试报告只能通过
                     // 当前会话的显式上下文绑定进入，不能根据线程历史自动恢复旧报告。
-                    context = agentContextService.build(sessionId, runRequest, historyMessages);
+                    context = buildContext(sessionId, runRequest, historyMessages, intentDecision);
                 } finally {
                     AuthUserContext.clear();
                 }
@@ -375,8 +375,8 @@ public class InterviewAgentService {
                 AgentContextService.AgentContext context;
                 AuthUserContext.set(recoveredRun.ownerKey());
                 try {
-                    context = agentContextService.build(
-                        recoveredRun.interviewSessionId(), request, historyMessages
+                    context = buildContext(
+                        recoveredRun.interviewSessionId(), request, historyMessages, intentDecision
                     );
                 } finally {
                     AuthUserContext.clear();
@@ -718,6 +718,21 @@ public class InterviewAgentService {
         }
         List<String> candidates = llmProviderRegistry.resolveChatProviderCandidates(request.providerId());
         return candidates.isEmpty() ? request : request.withProviderId(candidates.getFirst());
+    }
+
+    /**
+     * 兼容迁移期的上下文测试替身和旧内部调用方；生产实现始终优先使用带意图策略的入口。
+     */
+    private AgentContextService.AgentContext buildContext(
+        String sessionId,
+        AgentMessageRequest request,
+        List<AgentHistoryMessage> history,
+        AgentIntentRouter.Decision intentDecision
+    ) {
+        AgentContextService.AgentContext context = agentContextService.buildForDecision(
+            sessionId, request, history, intentDecision
+        );
+        return context == null ? agentContextService.build(sessionId, request, history) : context;
     }
 
     private AgentMessageRequest normalizeRequestMode(String sessionId, AgentMessageRequest request) {
