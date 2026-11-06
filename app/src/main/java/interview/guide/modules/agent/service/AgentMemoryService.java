@@ -103,7 +103,17 @@ public class AgentMemoryService {
         String key = normalizeKey(memoryKey);
         return repository.findByMemoryKey(key)
             .map(this::deserialize)
-            .map(this::removeExpired)
+            .map(this::removeInactive)
+            .orElseGet(() -> AgentMemorySnapshot.empty(key));
+    }
+
+    /**
+     * 读取完整快照，仅供保存时保留已撤销/已过期条目的治理痕迹；不得直接注入 Agent。
+     */
+    private AgentMemorySnapshot loadStored(String memoryKey) {
+        String key = normalizeKey(memoryKey);
+        return repository.findByMemoryKey(key)
+            .map(this::deserialize)
             .orElseGet(() -> AgentMemorySnapshot.empty(key));
     }
 
@@ -197,9 +207,13 @@ public class AgentMemoryService {
         if (index < 0) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "长期记忆不存在");
         }
-        items.remove(index);
+        AgentMemoryItem current = items.get(index);
+        items.set(index, new AgentMemoryItem(
+            current.id(), current.category(), current.content(), current.source(), current.jobScope(),
+            current.confidence(), current.updatedAt(), current.expiresAt(), LocalDateTime.now()
+        ));
         AgentMemorySnapshot snapshot = saveSnapshot(key, previous.lastSkillId(), items);
-        audit(key, "MEMORY_DELETED", "memory-item", normalizedId, "success");
+        audit(key, "MEMORY_REVOKED", "memory-item", normalizedId, "success");
         return snapshot;
     }
 
@@ -309,7 +323,8 @@ public class AgentMemoryService {
                     item.updatedAt() == null ? fallbackUpdatedAt : item.updatedAt(),
                     item.expiresAt() == null
                         ? expiresAt(item.updatedAt() == null ? fallbackUpdatedAt : item.updatedAt())
-                        : item.expiresAt()
+                        : item.expiresAt(),
+                    item.revokedAt()
                 ));
                 index++;
             }
@@ -364,8 +379,12 @@ public class AgentMemoryService {
         String key, String lastSkillId, List<AgentMemoryItem> items
     ) {
         LocalDateTime now = LocalDateTime.now();
-        List<AgentMemoryItem> safeItems = items == null ? List.of() : items.stream()
-            .filter(item -> item != null && !isExpired(item, now))
+        List<AgentMemoryItem> providedItems = items == null ? List.of() : items.stream()
+            .filter(item -> item != null)
+            .toList();
+        List<AgentMemoryItem> storedItems = mergeStoredItems(key, providedItems);
+        List<AgentMemoryItem> safeItems = storedItems.stream()
+            .filter(item -> !isInactive(item, now))
             .toList();
         AgentMemorySnapshot next = new AgentMemorySnapshot(
             key,
@@ -380,7 +399,7 @@ public class AgentMemoryService {
                 .orElseGet(() -> AgentUserMemoryEntity.builder().memoryKey(key).build());
             entity.setMemoryJson(objectMapper.writeValueAsString(new MemoryPayload(
                 next.lastSkillId(), next.weaknesses(), next.recentGoals(),
-                next.items().stream().map(MemoryItemPayload::from).toList()
+                storedItems.stream().map(MemoryItemPayload::from).toList()
             )));
             repository.save(entity);
         } catch (RuntimeException error) {
@@ -459,12 +478,13 @@ public class AgentMemoryService {
         String jobScope,
         Double confidence,
         LocalDateTime updatedAt,
-        LocalDateTime expiresAt
+        LocalDateTime expiresAt,
+        LocalDateTime revokedAt
     ) {
         private static MemoryItemPayload from(AgentMemoryItem item) {
             return new MemoryItemPayload(
                 item.id(), item.category(), item.content(), item.source(), item.jobScope(),
-                item.confidence(), item.updatedAt(), item.expiresAt()
+                item.confidence(), item.updatedAt(), item.expiresAt(), item.revokedAt()
             );
         }
     }
@@ -476,13 +496,13 @@ public class AgentMemoryService {
         return Math.max(0d, Math.min(1d, confidence));
     }
 
-    private AgentMemorySnapshot removeExpired(AgentMemorySnapshot snapshot) {
-        if (snapshot == null || snapshot.items().isEmpty() || !properties.isExpirationEnabled()) {
+    private AgentMemorySnapshot removeInactive(AgentMemorySnapshot snapshot) {
+        if (snapshot == null || snapshot.items().isEmpty()) {
             return snapshot;
         }
         LocalDateTime now = LocalDateTime.now();
         List<AgentMemoryItem> activeItems = snapshot.items().stream()
-            .filter(item -> !isExpired(item, now))
+            .filter(item -> !isInactive(item, now))
             .toList();
         if (activeItems.size() == snapshot.items().size()) {
             return snapshot;
@@ -495,10 +515,30 @@ public class AgentMemoryService {
         );
     }
 
-    private boolean isExpired(AgentMemoryItem item, LocalDateTime now) {
-        return properties.isExpirationEnabled()
-            && item.expiresAt() != null
-            && !item.expiresAt().isAfter(now);
+    private boolean isInactive(AgentMemoryItem item, LocalDateTime now) {
+        return item.revokedAt() != null
+            || (properties.isExpirationEnabled()
+                && item.expiresAt() != null
+                && !item.expiresAt().isAfter(now));
+    }
+
+    /**
+     * 以当前写入结果覆盖同 id 条目，同时保留历史撤销/过期条目。
+     * 这只用于治理和审计，返回给 Agent 的快照仍然只包含 active 条目。
+     */
+    private List<AgentMemoryItem> mergeStoredItems(
+        String key, List<AgentMemoryItem> providedItems
+    ) {
+        List<AgentMemoryItem> storedItems = new ArrayList<>(loadStored(key).items());
+        for (AgentMemoryItem provided : providedItems) {
+            int index = indexOf(storedItems, provided.id());
+            if (index >= 0) {
+                storedItems.set(index, provided);
+            } else {
+                storedItems.add(provided);
+            }
+        }
+        return List.copyOf(storedItems);
     }
 
     private LocalDateTime expiresAt(LocalDateTime updatedAt) {
