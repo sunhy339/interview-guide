@@ -252,14 +252,14 @@ class AgentIntentRouterTest {
         assertThat(decision.capabilities())
             .contains(
                 AgentIntentRouter.Capability.SKILL,
-                AgentIntentRouter.Capability.RAG,
-                AgentIntentRouter.Capability.CONTEXT
+                AgentIntentRouter.Capability.RAG
             );
         assertThat(decision.capabilities()).contains(
             AgentIntentRouter.Capability.SKILL,
-            AgentIntentRouter.Capability.RAG,
-            AgentIntentRouter.Capability.CONTEXT
+            AgentIntentRouter.Capability.RAG
         );
+        assertThat(decision.capabilities())
+            .doesNotContain(AgentIntentRouter.Capability.CONTEXT);
     }
 
     @Test

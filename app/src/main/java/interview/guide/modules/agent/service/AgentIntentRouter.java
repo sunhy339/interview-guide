@@ -78,9 +78,10 @@ public class AgentIntentRouter {
     );
     private static final Pattern CONTEXT_ACTION = Pattern.compile(
         "(?:根据|基于|结合|参考|使用|引用|绑定|选中|添加|上传|查看|搜索|查询|检索).{0,24}"
-            + "(?:简历|简历管理|面试报告|报告|文件|资料|知识库|上下文)"
-            + "|(?:简历|简历管理|面试报告|报告|文件|资料|知识库|上下文).{0,24}"
+            + "(?:简历|简历管理|面试报告|报告|文件|上下文|附件)"
+            + "|(?:简历|简历管理|面试报告|报告|文件|资料|上下文|附件).{0,24}"
             + "(?:根据|基于|结合|参考|使用|引用|绑定|选中|添加|上传|查看|搜索|查询|检索)"
+            + "|(?:知识库|向量库).{0,24}(?:绑定|选中|添加|上传|加入|查看|管理|清除|取消)"
     );
     private static final Pattern SKILL_ACTION = Pattern.compile(
         "(?:根据|基于|结合|参考|使用|加载|调用|查找|检索|应用).{0,20}"
@@ -93,14 +94,11 @@ public class AgentIntentRouter {
         "(?:知识库|知识检索|向量库|RAG|检索相关知识)",
         Pattern.CASE_INSENSITIVE
     );
-    private static final Pattern CONTEXT_RESOURCE = Pattern.compile(
-        "(?:简历|简历管理|面试报告|报告|文件|知识库|上下文|附件)"
-    );
     private static final Pattern INFORMATIONAL = Pattern.compile(
         "(?:是什么|什么是|是什么意思|如何理解|怎么理解|解释|介绍|学习|区别|能不能|可以吗|为什么|是否|怎么|怎么做|如何做)"
     );
     private static final Pattern DIRECT_ACTION = Pattern.compile(
-        "(?:帮我|请|替我|直接|现在就|执行|安排一下|预约一下|取消掉|改到|创建一个|更新一下)"
+        "(?:帮我|替我|直接|现在就|执行|安排一下|预约一下|取消掉|改到|创建一个|更新一下)"
     );
 
     private final LlmProviderRegistry providerRegistry;
@@ -356,8 +354,7 @@ public class AgentIntentRouter {
         }
         // “Skill 参考资料”中的“资料”属于 Skill 本身，不应误判成通用上下文；
         // 只有出现简历、报告、文件、知识库等明确资源，才追加 CONTEXT 能力。
-        if (!informational && CONTEXT_ACTION.matcher(message).find()
-            && (!skillRequested || CONTEXT_RESOURCE.matcher(message).find())) {
+        if (!informational && CONTEXT_ACTION.matcher(message).find()) {
             capabilities.add(Capability.CONTEXT);
         }
         if (!informational && RAG_ACTION.matcher(message).find()) {
