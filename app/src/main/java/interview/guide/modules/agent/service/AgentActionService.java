@@ -44,6 +44,7 @@ public class AgentActionService {
     private static final String INTERVIEW_SCHEDULE_CREATE_TOOL = "interview.schedule.create";
     private static final String INTERVIEW_SCHEDULE_CANCEL_TOOL = "interview.schedule.cancel";
     private static final String INTERVIEW_SCHEDULE_UPDATE_TOOL = "interview.schedule.update";
+    public static final String RESUME_IMPORT_TOOL = "resume.import";
     private static final String MEMORY_TOOL = "agent.memory.save";
     private static final String INTERVIEW_TITLE_TOOL = "interview.title.rename";
     private static final String DRAFT_RISK = "DRAFT_WRITE";
@@ -67,6 +68,8 @@ public class AgentActionService {
     private static final String INTERVIEW_SCHEDULE_CANCEL_PREVIEW = "确认后将匹配到的面试日程标记为已取消，保留历史记录，不删除日程。";
     private static final String INTERVIEW_SCHEDULE_UPDATE_TITLE = "修改面试日程";
     private static final String INTERVIEW_SCHEDULE_UPDATE_PREVIEW = "确认后更新匹配到的面试日程；如修改时间则标记为已改期，保留原日程记录。";
+    private static final String RESUME_IMPORT_TITLE = "导入简历管理";
+    private static final String RESUME_IMPORT_PREVIEW = "确认后复制已审核文件到简历管理并提交异步分析；原始 Agent 上传文件保留不变。";
     private static final int MAX_OWNER_KEY = 64;
     private static final int MAX_IDEMPOTENCY_KEY = 128;
     private static final int MAX_CONTENT = 12_000;
@@ -84,6 +87,7 @@ public class AgentActionService {
     private final ResumeEditorService resumeEditorService;
     private final InterviewScheduleService interviewScheduleService;
     private final PromptSanitizer promptSanitizer;
+    private final AgentResumeImportService resumeImportService;
 
     /** 保留轻量构造方式，便于只测试草稿状态机的调用方。 */
     public AgentActionService(
@@ -142,7 +146,6 @@ public class AgentActionService {
             new PromptSanitizer(new LlmProviderProperties()));
     }
 
-    @Autowired
     public AgentActionService(
         AgentActionRequestRepository repository,
         AgentAuditService auditService,
@@ -153,6 +156,23 @@ public class AgentActionService {
         InterviewScheduleService interviewScheduleService,
         PromptSanitizer promptSanitizer
     ) {
+        this(repository, auditService, memoryService, interviewPersistenceService,
+            trainingTaskService, resumeEditorService, interviewScheduleService,
+            promptSanitizer, null);
+    }
+
+    @Autowired
+    public AgentActionService(
+        AgentActionRequestRepository repository,
+        AgentAuditService auditService,
+        AgentMemoryService memoryService,
+        InterviewPersistenceService interviewPersistenceService,
+        AgentTrainingTaskService trainingTaskService,
+        ResumeEditorService resumeEditorService,
+        InterviewScheduleService interviewScheduleService,
+        PromptSanitizer promptSanitizer,
+        AgentResumeImportService resumeImportService
+    ) {
         this.repository = repository;
         this.auditService = auditService;
         this.memoryService = memoryService;
@@ -161,6 +181,7 @@ public class AgentActionService {
         this.resumeEditorService = resumeEditorService;
         this.interviewScheduleService = interviewScheduleService;
         this.promptSanitizer = promptSanitizer;
+        this.resumeImportService = resumeImportService;
     }
 
     /** 生成待确认的简历编辑版草稿；确认后写入现有简历编辑器，不覆盖原始上传文件。 */
@@ -539,6 +560,50 @@ public class AgentActionService {
         );
     }
 
+    /** 生成通用 Agent 的简历导入动作；确认后才复制文件并进入简历管理。 */
+    @Transactional
+    public AgentActionResponse proposeResumeImportDraft(
+        String agentSessionId,
+        String ownerKey,
+        String contextAssetId,
+        String requestedIdempotencyKey
+    ) {
+        String owner = requireOwner(ownerKey);
+        String agentId = requireText(agentSessionId, "Agent 会话不能为空", 64);
+        String assetId = requireText(contextAssetId, "Agent 文件素材不能为空", 64);
+        if (resumeImportService == null) {
+            throw new IllegalStateException("Agent 简历导入服务未配置");
+        }
+        var asset = resumeImportService.requireImportableAsset(assetId, owner);
+        String idempotencyKey = normalizeIdempotencyKey(requestedIdempotencyKey);
+        if (idempotencyKey == null) {
+            idempotencyKey = digest(owner + "\n" + agentId + "\n"
+                + RESUME_IMPORT_TOOL + "\n" + asset.getAssetId());
+        }
+        AgentActionRequestEntity existing = repository
+            .findByOwnerKeyAndIdempotencyKey(owner, idempotencyKey)
+            .orElse(null);
+        if (existing != null) {
+            return safeResponse(existing);
+        }
+        AgentActionRequestEntity entity = AgentActionRequestEntity.builder()
+            .actionId(UUID.randomUUID().toString())
+            .ownerKey(owner)
+            .agentSessionId(agentId)
+            .toolId(RESUME_IMPORT_TOOL)
+            .riskLevel("BUSINESS_WRITE")
+            .status(AgentActionStatus.PROPOSED)
+            .title(RESUME_IMPORT_TITLE)
+            .previewText(RESUME_IMPORT_PREVIEW)
+            .draftContent("文件：" + asset.getOriginalFilename()
+                + "\n导入后：进入简历管理并提交异步分析"
+                + "\n原始 Agent 文件：保留")
+            .contextAssetId(asset.getAssetId())
+            .idempotencyKey(idempotencyKey)
+            .build();
+        return saveProposed(entity);
+    }
+
     private AgentActionResponse proposeDraft(
         String interviewSessionId,
         String agentSessionId,
@@ -757,9 +822,13 @@ public class AgentActionService {
         audit(entity, "ACTION_RUNNING", AgentActionStatus.RUNNING.name());
 
         try {
+            // 重试前清除上一次失败摘要；执行器若返回专属结果（例如分析投递失败）会覆盖它。
+            entity.setResultSummary(null);
             execute(entity);
             entity.setStatus(AgentActionStatus.SUCCEEDED);
-            entity.setResultSummary(successSummary(entity.getToolId()));
+            if (entity.getResultSummary() == null) {
+                entity.setResultSummary(successSummary(entity.getToolId()));
+            }
             entity.setCompletedAt(LocalDateTime.now());
             repository.save(entity);
             audit(entity, "ACTION_SUCCEEDED", AgentActionStatus.SUCCEEDED.name());
@@ -824,6 +893,16 @@ public class AgentActionService {
             );
             return;
         }
+        if (RESUME_IMPORT_TOOL.equals(entity.getToolId())) {
+            if (resumeImportService == null || entity.getContextAssetId() == null) {
+                throw new IllegalStateException("Agent 简历导入服务未配置或素材不存在");
+            }
+            AgentResumeImportService.ResumeImportResult result = resumeImportService.importApprovedAsset(
+                entity.getContextAssetId(), entity.getOwnerKey()
+            );
+            entity.setResultSummary(result.message());
+            return;
+        }
         if (INTERVIEW_SCHEDULE_CREATE_TOOL.equals(entity.getToolId())) {
             if (interviewScheduleService == null) {
                 throw new IllegalStateException("面试日程服务未配置");
@@ -881,8 +960,9 @@ public class AgentActionService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "只有待确认的 Agent 草稿可以编辑");
         }
         if (INTERVIEW_SCHEDULE_CANCEL_TOOL.equals(entity.getToolId())
-            || INTERVIEW_SCHEDULE_UPDATE_TOOL.equals(entity.getToolId())) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "该日程动作不支持编辑，请重新查询后生成草稿");
+            || INTERVIEW_SCHEDULE_UPDATE_TOOL.equals(entity.getToolId())
+            || RESUME_IMPORT_TOOL.equals(entity.getToolId())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "该动作不支持编辑，请重新查询后生成草稿");
         }
         String updatedContent = INTERVIEW_SCHEDULE_CREATE_TOOL.equals(entity.getToolId())
             ? updateScheduleDraft(entity, content)
@@ -1007,6 +1087,9 @@ public class AgentActionService {
         }
         if (RESUME_EDITOR_SAVE_TOOL.equals(toolId)) {
             return "简历优化内容已保存为编辑版草稿，原始上传文件未被修改。";
+        }
+        if (RESUME_IMPORT_TOOL.equals(toolId)) {
+            return "文件已导入简历管理，原始 Agent 上传文件已保留，简历分析任务已提交后台处理。";
         }
         if (INTERVIEW_SCHEDULE_CREATE_TOOL.equals(toolId)) {
             return "复习日程已创建，可在面试日程中继续调整；原始面试资料未被修改。";

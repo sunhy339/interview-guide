@@ -167,6 +167,10 @@ export function isAgentResumeEditAction(action: AgentAction): boolean {
   return action.toolId === 'resume.editor.save';
 }
 
+export function isAgentResumeImportAction(action: AgentAction): boolean {
+  return action.toolId === 'resume.import';
+}
+
 export function isAgentScheduleAction(action: AgentAction): boolean {
   return action.toolId === 'interview.schedule.create'
     || action.toolId === 'interview.schedule.cancel'

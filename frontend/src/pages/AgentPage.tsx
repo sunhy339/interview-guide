@@ -50,7 +50,7 @@ import {
   rememberAgentThreadId,
   resolveAgentThreadId,
 } from './agentSession';
-import { isAgentReportExportAction, isAgentResumeEditAction, isAgentScheduleAction } from '../types/agent';
+import { isAgentReportExportAction, isAgentResumeEditAction, isAgentResumeImportAction, isAgentScheduleAction } from '../types/agent';
 import type {
   AgentGoal,
   AgentAuditEvent,
@@ -1557,6 +1557,9 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         if (isAgentResumeEditAction(updated) && updated.status === 'SUCCEEDED') {
           setActionNotice('简历优化编辑版已保存，请到简历管理中继续编辑或导出');
         }
+        if (isAgentResumeImportAction(updated) && updated.status === 'SUCCEEDED') {
+          setActionNotice('文件已导入简历管理，分析任务已提交后台处理');
+        }
         if (isAgentReportExportAction(updated) && updated.status === 'SUCCEEDED' && sessionId) {
           setActionNotice('报告导出已确认，正在下载 PDF...');
           void agentApi.downloadConfirmedInterviewReport(updated.actionId)
@@ -2947,7 +2950,8 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                         </button>
                         {action.status === 'PROPOSED' && editingActionId !== action.actionId
                           && action.toolId !== 'interview.schedule.cancel'
-                          && action.toolId !== 'interview.schedule.update' ? (
+                          && action.toolId !== 'interview.schedule.update'
+                          && !isAgentResumeImportAction(action) ? (
                           <button
                             onClick={() => startEditAgentAction(action)}
                             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition-colors hover:border-primary-300 hover:text-primary-600 dark:border-slate-600 dark:text-slate-300 dark:hover:text-primary-300"
@@ -2983,6 +2987,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                                   : action.toolId === 'training.task.create' ? '确认创建任务'
                                     : isAgentReportExportAction(action) ? '确认导出报告'
                                       : isAgentResumeEditAction(action) ? '确认保存简历版'
+                                      : isAgentResumeImportAction(action) ? '确认导入简历'
                                       : action.toolId === 'interview.schedule.cancel' ? '确认取消面试'
                                       : action.toolId === 'interview.schedule.update' ? '确认修改面试'
                                       : isAgentScheduleAction(action) ? '确认创建日程'

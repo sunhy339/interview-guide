@@ -41,6 +41,18 @@ class AgentIntentRouterTest {
     }
 
     @Test
+    @DisplayName("将上传文件加入简历管理路由为上下文能力")
+    void routesResumeManagementImportToContextTools() {
+        AgentIntentRouter.Decision decision = router.route(request(
+            "general", "请把我刚上传的文件加入简历管理"
+        ));
+
+        assertThat(decision.route()).isEqualTo(AgentIntentRouter.Route.CONTEXT);
+        assertThat(decision.capabilities())
+            .containsExactly(AgentIntentRouter.Capability.CONTEXT);
+    }
+
+    @Test
     @DisplayName("明确使用 Skill 时只暴露 SkillsTool")
     void routesExplicitSkillRequestToSkillTool() {
         AgentIntentRouter.Decision decision = router.route(request(

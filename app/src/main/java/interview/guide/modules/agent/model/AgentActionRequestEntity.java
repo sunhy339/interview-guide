@@ -106,6 +106,10 @@ public class AgentActionRequestEntity {
     @Column(name = "schedule_id")
     private Long scheduleId;
 
+    /** 简历导入动作指向的 Agent 素材；确认后只使用该受保护 ID，不信任可编辑草稿文本。 */
+    @Column(name = "context_asset_id", length = 64)
+    private String contextAssetId;
+
     @Column(name = "result_summary", length = 500)
     private String resultSummary;
 

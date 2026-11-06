@@ -94,6 +94,44 @@ public class ResumePersistenceService {
             throw new BusinessException(ErrorCode.RESUME_UPLOAD_FAILED, "保存简历失败");
         }
     }
+
+    /**
+     * 保存已在 Agent 素材审核边界内的简历副本。
+     *
+     * <p>该入口不依赖线程上下文中的登录用户，调用方必须传入已经校验过的 owner，
+     * 供 Agent 的确认动作使用；文件哈希沿用 Agent 上传时计算的值，避免再次读取对象存储。</p>
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public ResumeEntity saveImportedResume(
+        String ownerId,
+        String fileHash,
+        String originalFilename,
+        long fileSize,
+        String contentType,
+        String storageKey,
+        String storageUrl,
+        String resumeText
+    ) {
+        try {
+            ResumeEntity resume = new ResumeEntity();
+            resume.setOwnerId(ownerId);
+            resume.setFileHash(fileHash);
+            resume.setOriginalFilename(originalFilename);
+            resume.setFileSize(fileSize);
+            resume.setContentType(contentType);
+            resume.setStorageKey(storageKey);
+            resume.setStorageUrl(storageUrl);
+            resume.setResumeText(resumeText);
+            resume.setOriginalResumeText(resumeText);
+            resume.setAnalyzeUpdatedAt(java.time.LocalDateTime.now());
+            ResumeEntity saved = resumeRepository.save(resume);
+            log.info("Agent 素材已保存为简历: id={}, hash={}", saved.getId(), fileHash);
+            return saved;
+        } catch (Exception e) {
+            log.error("保存 Agent 导入简历失败: {}", e.getMessage(), e);
+            throw new BusinessException(ErrorCode.RESUME_UPLOAD_FAILED, "保存简历失败");
+        }
+    }
     
     /**
      * 回填简历正文（独立短事务，供 Stream 消费者从 RustFS 恢复文本后使用）

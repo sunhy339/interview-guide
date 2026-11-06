@@ -9,10 +9,12 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
+import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -63,5 +65,16 @@ class FileStorageServiceTest {
         assertThrows(BusinessException.class, () -> fileStorageService.init());
 
         verify(s3Client, never()).createBucket(any(CreateBucketRequest.class));
+    }
+
+    @Test
+    @DisplayName("导入 Agent 素材时复制到简历目录而不复用原文件键")
+    void shouldCopyAgentAssetToResumePrefix() {
+        String target = fileStorageService.copyAgentContextAssetToResume(
+            "agent-context-assets/resume.pdf", "resume.pdf"
+        );
+
+        assertThat(target).startsWith("resumes/");
+        verify(s3Client).copyObject(any(CopyObjectRequest.class));
     }
 }

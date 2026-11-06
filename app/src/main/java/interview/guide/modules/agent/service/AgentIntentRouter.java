@@ -43,7 +43,7 @@ public class AgentIntentRouter {
         - GENERAL：普通问答、解释概念、学习、写作、分析。
         - INTERVIEW_REVIEW：用户明确要求复盘本场/本次面试、评价实际回答、评分、表现或改进点。
         - SCHEDULE：用户明确要求创建、查询、修改、取消或安排面试会议/日程。
-        - CONTEXT：用户明确要求使用、绑定、查找、上传、查看简历、面试报告、文件或会话资料。
+        - CONTEXT：用户明确要求使用、绑定、查找、上传、查看简历、简历管理、面试报告、文件或会话资料；把已审核上传文件加入简历管理也属于 CONTEXT。
         - INTERVIEW_REPORT：需要读取明确指定的面试报告。
         - SKILL：需要加载或参考 Skill、技能资料或参考资料。
         - RAG：需要使用知识库检索；如果当前会话没有绑定知识库，应说明需要先绑定或选择。
@@ -78,8 +78,8 @@ public class AgentIntentRouter {
     );
     private static final Pattern CONTEXT_ACTION = Pattern.compile(
         "(?:根据|基于|结合|参考|使用|引用|绑定|选中|添加|上传|查看|搜索|查询|检索).{0,24}"
-            + "(?:简历|面试报告|报告|文件|资料|知识库|上下文)"
-            + "|(?:简历|面试报告|报告|文件|资料|知识库|上下文).{0,24}"
+            + "(?:简历|简历管理|面试报告|报告|文件|资料|知识库|上下文)"
+            + "|(?:简历|简历管理|面试报告|报告|文件|资料|知识库|上下文).{0,24}"
             + "(?:根据|基于|结合|参考|使用|引用|绑定|选中|添加|上传|查看|搜索|查询|检索)"
     );
     private static final Pattern SKILL_ACTION = Pattern.compile(
@@ -94,7 +94,7 @@ public class AgentIntentRouter {
         Pattern.CASE_INSENSITIVE
     );
     private static final Pattern CONTEXT_RESOURCE = Pattern.compile(
-        "(?:简历|面试报告|报告|文件|知识库|上下文|附件)"
+        "(?:简历|简历管理|面试报告|报告|文件|知识库|上下文|附件)"
     );
     private static final Pattern INFORMATIONAL = Pattern.compile(
         "(?:是什么|什么是|是什么意思|如何理解|怎么理解|解释|介绍|学习|区别|能不能|可以吗|为什么|是否|怎么|怎么做|如何做)"

@@ -337,6 +337,18 @@ export const agentApi = {
     );
   },
 
+  proposeGeneralResumeImportDraft(
+    agentSessionId: string,
+    assetId: string,
+    idempotencyKey?: string,
+  ): Promise<AgentAction> {
+    return request.post<AgentAction>(
+      `/api/agent/sessions/${encodeURIComponent(agentSessionId)}/actions/resume-import-draft`,
+      { assetId, ...(idempotencyKey ? { idempotencyKey } : {}) },
+      { headers: agentHeaders() },
+    );
+  },
+
   proposeMemoryDraft(
     sessionId: string,
     agentSessionId: string,

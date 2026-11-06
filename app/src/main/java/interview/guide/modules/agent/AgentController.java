@@ -15,6 +15,7 @@ import interview.guide.modules.agent.model.CreateAgentDraftActionRequest;
 import interview.guide.modules.agent.model.CreateAgentMemoryDraftRequest;
 import interview.guide.modules.agent.model.CreateAgentTitleDraftRequest;
 import interview.guide.modules.agent.model.CreateAgentScheduleDraftRequest;
+import interview.guide.modules.agent.model.CreateAgentResumeImportRequest;
 import interview.guide.modules.agent.model.UpdateAgentActionDraftRequest;
 import interview.guide.modules.agent.model.AgentTrainingTaskResponse;
 import interview.guide.modules.agent.model.AgentTrainingTaskStatus;
@@ -626,6 +627,21 @@ public class AgentController {
             null, agentSessionId, identity, request.companyName(), request.position(),
             request.interviewTime(), request.interviewType(), request.meetingLink(),
             request.roundNumber(), request.interviewer(), request.notes(), request.idempotencyKey()
+        ));
+    }
+
+    /** 通用 Agent 只生成待确认的简历导入动作，不要求先绑定面试报告。 */
+    @PostMapping("/api/agent/sessions/{agentSessionId}/actions/resume-import-draft")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 10)
+    public Result<AgentActionResponse> proposeGeneralResumeImportDraft(
+        @PathVariable String agentSessionId,
+        @Valid @RequestBody CreateAgentResumeImportRequest request,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        String identity = authIdentityService.requireIdentity(ownerKey);
+        conversationService.assertAccess(null, agentSessionId, identity);
+        return Result.success(actionService.proposeResumeImportDraft(
+            agentSessionId, identity, request.assetId(), request.idempotencyKey()
         ));
     }
 
