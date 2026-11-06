@@ -71,6 +71,24 @@ public class AgentRunStateEntity {
     @Column(name = "tool_result_reference", length = 128)
     private String toolResultReference;
 
+    /** 当前或最近一次模型轮次的稳定摘要标识；不保存请求正文或模型隐藏推理。 */
+    @Column(name = "model_turn_id", length = 64)
+    private String modelTurnId;
+
+    @Column(name = "model_provider", length = 64)
+    private String modelProvider;
+
+    /** STARTED、SUCCEEDED、FAILED、CANCELLED 或 INTERRUPTED。 */
+    @Column(name = "model_turn_status", length = 16)
+    private String modelTurnStatus;
+
+    @Column(name = "model_turn_index", nullable = false)
+    private Integer modelTurnIndex;
+
+    /** 仅保存状态摘要，不能据此推断模型输出正文。 */
+    @Column(name = "model_result_reference", length = 128)
+    private String modelResultReference;
+
     /** 审批事务已提交但续跑任务尚未启动时，用于重启后找回原动作。 */
     @Column(name = "resume_action_id", length = 64)
     private String resumeActionId;
@@ -120,6 +138,9 @@ public class AgentRunStateEntity {
         }
         if (attempt == null) {
             attempt = 0;
+        }
+        if (modelTurnIndex == null) {
+            modelTurnIndex = 0;
         }
     }
 

@@ -1129,6 +1129,10 @@ public class AgentConversationService {
             return null;
         }
 
+        String previousRunId = session.getRunId();
+        if (runStateService != null) {
+            runStateService.markInterrupted(previousRunId);
+        }
         String runId = UUID.randomUUID().toString();
         session.setRunId(runId);
         session.setRunStartedAt(LocalDateTime.now());
