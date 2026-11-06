@@ -92,6 +92,7 @@ public class AgentContextToolCallbackFactory {
     private final InterviewScheduleService interviewScheduleService;
     private final PromptSanitizer promptSanitizer;
     private final ObjectMapper objectMapper;
+    private AgentRunStateService runStateService;
 
     public AgentContextToolCallbackFactory(
         AgentInterviewContextService interviewContextService,
@@ -111,6 +112,12 @@ public class AgentContextToolCallbackFactory {
         this.interviewScheduleService = interviewScheduleService;
         this.promptSanitizer = promptSanitizer;
         this.objectMapper = objectMapper;
+    }
+
+    /** 运行检查点在迁移期可选接入，不影响无容器单元测试。 */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setRunStateService(AgentRunStateService runStateService) {
+        this.runStateService = runStateService;
     }
 
     public List<ToolCallback> callbacks() {
@@ -159,7 +166,7 @@ public class AgentContextToolCallbackFactory {
             .description(description)
             .inputSchema(schema)
             .build();
-        return new Callback(definition, objectMapper, promptSanitizer, handler);
+        return new Callback(definition, objectMapper, promptSanitizer, handler, runStateService);
     }
 
     private String searchInterviews(JsonNode input, ToolContext toolContext) {
@@ -1032,17 +1039,20 @@ public class AgentContextToolCallbackFactory {
         private final ObjectMapper objectMapper;
         private final PromptSanitizer promptSanitizer;
         private final BiFunction<JsonNode, ToolContext, String> handler;
+        private final AgentRunStateService runStateService;
 
         private Callback(
             ToolDefinition definition,
             ObjectMapper objectMapper,
             PromptSanitizer promptSanitizer,
-            BiFunction<JsonNode, ToolContext, String> handler
+            BiFunction<JsonNode, ToolContext, String> handler,
+            AgentRunStateService runStateService
         ) {
             this.definition = definition;
             this.objectMapper = objectMapper;
             this.promptSanitizer = promptSanitizer;
             this.handler = handler;
+            this.runStateService = runStateService;
         }
 
         @Override
@@ -1057,21 +1067,43 @@ public class AgentContextToolCallbackFactory {
 
         @Override
         public String call(String toolInput, ToolContext toolContext) {
+            AgentMetrics.RunTracker tracker = tracker(toolContext);
+            if (runStateService != null) {
+                runStateService.recordToolCall(tracker, definition.name(), toolInput);
+            }
+            String result;
             try {
                 if (toolInput != null
                     && toolInput.length() > PromptSecurityConstants.MAX_AGENT_TOOL_INPUT_CHARS) {
-                    return safeError("工具参数过长，未执行任何操作");
+                    result = safeError("工具参数过长，未执行任何操作");
+                } else {
+                    JsonNode input = toolInput == null || toolInput.isBlank()
+                        ? objectMapper.createObjectNode() : objectMapper.readTree(toolInput);
+                    result = handler.apply(input, toolContext);
                 }
-                JsonNode input = toolInput == null || toolInput.isBlank()
-                    ? objectMapper.createObjectNode() : objectMapper.readTree(toolInput);
-                return handler.apply(input, toolContext);
             } catch (BusinessException error) {
-                return safeError(error.getMessage());
+                result = safeError(error.getMessage());
             } catch (JacksonException error) {
-                return safeError("工具参数不是合法 JSON");
+                result = safeError("工具参数不是合法 JSON");
             } catch (RuntimeException error) {
-                return safeError("工具执行失败，请稍后重试");
+                result = safeError("工具执行失败，请稍后重试");
             }
+            if (runStateService != null) {
+                runStateService.recordToolResult(
+                    tracker, definition.name(), result,
+                    result != null && (result.contains("ACTION_PROPOSED")
+                        || result.contains("USER_CONFIRMATION_REQUIRED"))
+                );
+            }
+            return result;
+        }
+
+        private AgentMetrics.RunTracker tracker(ToolContext toolContext) {
+            if (toolContext == null || toolContext.getContext() == null) {
+                return null;
+            }
+            Object value = toolContext.getContext().get(AgentMetrics.RUN_TRACKER_TOOL_CONTEXT_KEY);
+            return value instanceof AgentMetrics.RunTracker tracker ? tracker : null;
         }
 
         private String safeError(String message) {

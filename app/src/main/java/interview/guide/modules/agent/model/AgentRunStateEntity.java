@@ -1,0 +1,123 @@
+package interview.guide.modules.agent.model;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
+import jakarta.persistence.Table;
+import java.time.LocalDateTime;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+/**
+ * Agent 运行检查点。
+ *
+ * <p>它是会话运行态的兼容扩展，不替换现有会话表。原始参数、工具结果和模型隐藏推理
+ * 不落库，只保存用于恢复、审批和审计关联的摘要。</p>
+ */
+@Entity
+@Table(name = "agent_run_states")
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class AgentRunStateEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(name = "run_id", nullable = false, unique = true, length = 64)
+    private String runId;
+
+    @Column(name = "owner_key", length = 64)
+    private String ownerKey;
+
+    @Column(name = "interview_session_id", length = 64)
+    private String interviewSessionId;
+
+    @Column(name = "agent_session_id", nullable = false, length = 64)
+    private String agentSessionId;
+
+    @Column(name = "assistant_message_id")
+    private Long assistantMessageId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 16)
+    private AgentRunStatus status;
+
+    @Column(length = 32)
+    private String phase;
+
+    @Column(name = "step_index", nullable = false)
+    private Integer stepIndex;
+
+    @Column(name = "tool_call_id", length = 128)
+    private String toolCallId;
+
+    @Column(name = "tool_name", length = 128)
+    private String toolName;
+
+    @Column(name = "tool_arguments_hash", length = 64)
+    private String toolArgumentsHash;
+
+    @Column(name = "tool_result_reference", length = 128)
+    private String toolResultReference;
+
+    @Column(name = "pending_approval", nullable = false)
+    private Boolean pendingApproval;
+
+    @Column(name = "context_version", nullable = false)
+    private Integer contextVersion;
+
+    @Column(nullable = false)
+    private Integer attempt;
+
+    @Column(name = "lease_until")
+    private LocalDateTime leaseUntil;
+
+    @Column(name = "heartbeat_at")
+    private LocalDateTime heartbeatAt;
+
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
+
+    @Column(name = "finished_at")
+    private LocalDateTime finishedAt;
+
+    @PrePersist
+    protected void onCreate() {
+        LocalDateTime now = LocalDateTime.now();
+        if (createdAt == null) {
+            createdAt = now;
+        }
+        updatedAt = now;
+        if (stepIndex == null) {
+            stepIndex = 0;
+        }
+        if (pendingApproval == null) {
+            pendingApproval = false;
+        }
+        if (contextVersion == null) {
+            contextVersion = 1;
+        }
+        if (attempt == null) {
+            attempt = 0;
+        }
+    }
+
+    @PreUpdate
+    protected void onUpdate() {
+        updatedAt = LocalDateTime.now();
+    }
+}

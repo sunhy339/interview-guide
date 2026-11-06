@@ -63,6 +63,7 @@ public class AgentConversationService {
     private final AgentSessionContextRepository contextRepository;
     private final AgentContextSummaryService contextSummaryService;
     private final PromptSanitizer promptSanitizer;
+    private AgentRunStateService runStateService;
 
     /** 兼容无 Spring 容器的旧测试和内部调用方。 */
     public AgentConversationService(
@@ -112,6 +113,12 @@ public class AgentConversationService {
         this.contextRepository = contextRepository;
         this.contextSummaryService = contextSummaryService;
         this.promptSanitizer = promptSanitizer;
+    }
+
+    /** 运行检查点在迁移期可选接入；未配置时保留原有会话行为。 */
+    @Autowired(required = false)
+    void setRunStateService(AgentRunStateService runStateService) {
+        this.runStateService = runStateService;
     }
 
     /** 保留旧测试和内部调用方的七参数构造方式。 */
@@ -227,6 +234,9 @@ public class AgentConversationService {
         assistantMessage = messageRepository.save(assistantMessage);
         session.setActiveMessageId(assistantMessage.getId());
         sessionRepository.save(session);
+        if (runStateService != null) {
+            runStateService.start(session);
+        }
         audit(session, "RUN_STARTED", "agent-run", runId, "success");
         return new PreparedMessage(assistantMessage.getId(), session.getId(), runId, session.getAgentSessionId());
     }
@@ -631,6 +641,9 @@ public class AgentConversationService {
         session.setRunStepStatus(safeStoredText(status, 16));
         session.setRunNotice(safeStoredText(notice, 500));
         sessionRepository.save(session);
+        if (runStateService != null) {
+            runStateService.checkpoint(session);
+        }
     }
 
     /** 持久化本次 Agent 实际使用的来源摘要，不保存原始 RAG 文本。 */
@@ -692,6 +705,9 @@ public class AgentConversationService {
         session.setLoopNextStep(Math.max(0, nextStepIndex));
         session.setLoopCompletedSteps(serializeLoopCompletedSteps(completedStepIndices));
         sessionRepository.save(session);
+        if (runStateService != null) {
+            runStateService.checkpoint(session);
+        }
     }
 
     /** 持久化结构化 Loop 轨迹，供刷新、断线和应用重启后恢复展示。 */
@@ -706,6 +722,9 @@ public class AgentConversationService {
         }
         session.setLoopTraceJson(serializeLoopTrace(trace));
         sessionRepository.save(session);
+        if (runStateService != null) {
+            runStateService.checkpoint(session);
+        }
     }
 
     /** 持久化最近一次模型运行的聚合用量，供刷新页面和验收查看。 */
@@ -821,6 +840,9 @@ public class AgentConversationService {
         assistant.setErrorMessage(null);
         messageRepository.save(assistant);
         sessionRepository.save(session);
+        if (runStateService != null) {
+            runStateService.start(session);
+        }
         return new RecoveredRun(
             session.getInterviewSessionId(),
             session.getAgentSessionId(),
@@ -1301,6 +1323,9 @@ public class AgentConversationService {
         // 保留本次 Loop 的计划、检查点和轨迹，供历史查看与失败后的恢复诊断；
         // 下一次 prepareMessage 会在新运行开始前清理这些运行态字段。
         sessionRepository.save(session);
+        if (runStateService != null) {
+            runStateService.finish(session);
+        }
         audit(session, "RUN_" + status.name(), "agent-run", session.getRunId(), status.name());
     }
 
