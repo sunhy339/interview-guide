@@ -210,6 +210,12 @@ function formatRunStatus(status?: string | null) {
   return labels[status || ''] || status || '未知状态';
 }
 
+function waitingRunNotice(runStep?: string | null, notice?: string | null) {
+  if (notice) return notice;
+  if (runStep === 'waiting_input') return 'Agent 需要补充信息，请直接在输入框继续回复；补充后会接着当前任务处理。';
+  return 'Agent 已生成待确认动作，请在动作卡片中确认或取消。';
+}
+
 function runStatusClass(status?: string | null) {
   if (status === 'FAILED') return 'text-rose-600 dark:text-rose-300';
   if (status === 'CANCELLED') return 'text-slate-500 dark:text-slate-400';
@@ -609,7 +615,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
           restoreConversationMessages(conversation, fallbackAssistant);
           if (conversation.runStatus === 'WAITING_USER') {
             setRunError('');
-            setRunNotice(conversation.runNotice || 'Agent 已生成待确认动作，请在动作卡片中确认或取消。');
+            setRunNotice(waitingRunNotice(conversation.runStep, conversation.runNotice));
             setRunStatus('waiting');
           } else if (conversation.runStatus === 'COMPLETED') {
             setRunError('');
@@ -826,7 +832,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         }
         if (conversation.runStatus === 'WAITING_USER') {
           setRunStatus('waiting');
-          setRunNotice(conversation.runNotice || 'Agent 已生成待确认动作，请先确认或取消。');
+          setRunNotice(waitingRunNotice(conversation.runStep, conversation.runNotice));
         }
         if (conversation.runStatus === 'FAILED') {
           setRunStatus('error');
@@ -869,7 +875,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
           reconcileConversation('', undefined, agentSessionId);
         } else if (conversation.runStatus === 'WAITING_USER') {
           setRunStatus('waiting');
-          setRunNotice(conversation.runNotice || 'Agent 已生成待确认动作，请先确认或取消。');
+          setRunNotice(waitingRunNotice(conversation.runStep, conversation.runNotice));
         } else if (conversation.runStatus === 'FAILED') {
           setRunStatus('error');
           setRunError(conversation.runError || 'Agent 执行失败，请稍后重试');

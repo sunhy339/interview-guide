@@ -637,6 +637,62 @@ class AgentConversationServiceTest {
     }
 
     @Test
+    @DisplayName("缺少日程信息时进入等待输入态，下一条补充消息复用原 Run")
+    void resumesWaitingInputWithSameRunId() {
+        AgentChatSessionEntity session = AgentChatSessionEntity.builder()
+            .id(11L)
+            .agentSessionId("agent-1")
+            .runId("run-1")
+            .runStatus(AgentRunStatus.RUNNING)
+            .runStep("context")
+            .activeMessageId(22L)
+            .ownerKey("user-1")
+            .build();
+        AgentChatMessageEntity assistant = AgentChatMessageEntity.builder()
+            .id(22L).session(session).role(AgentChatMessageEntity.MessageRole.ASSISTANT)
+            .content("").sequenceNum(1).completed(false).build();
+        when(messageRepository.findById(22L)).thenReturn(Optional.of(assistant));
+        when(sessionRepository.findByAgentSessionIdForUpdate("agent-1"))
+            .thenReturn(Optional.of(session));
+
+        service.waitForUser(22L, "请补充公司和职位", "请补充公司和职位", "run-1");
+
+        assertThat(session.getRunStatus()).isEqualTo(AgentRunStatus.WAITING_USER);
+        assertThat(session.getRunStep()).isEqualTo("waiting_input");
+        assertThat(session.getRunStepStatus()).isEqualTo("waiting");
+        assertThat(session.getActiveMessageId()).isNull();
+        when(sessionRepository.findByAgentSessionId("agent-1"))
+            .thenReturn(Optional.of(session));
+        assertThat(service.isWaitingForInput(null, "agent-1", "user-1")).isTrue();
+
+        AgentChatMessageEntity oldAssistant = AgentChatMessageEntity.builder()
+            .id(22L).session(session).role(AgentChatMessageEntity.MessageRole.ASSISTANT)
+            .content("请补充公司和职位").sequenceNum(1).completed(true).build();
+        when(messageRepository.findTopBySessionIdOrderBySequenceNumDesc(11L))
+            .thenReturn(Optional.of(oldAssistant));
+        when(messageRepository.save(any(AgentChatMessageEntity.class)))
+            .thenAnswer(invocation -> {
+                AgentChatMessageEntity message = invocation.getArgument(0);
+                if (message.getRole() == AgentChatMessageEntity.MessageRole.ASSISTANT) {
+                    message.setId(23L);
+                }
+                return message;
+            });
+        when(sessionRepository.save(any(AgentChatSessionEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+
+        AgentConversationService.PreparedMessage resumed = service.prepareMessage(
+            null, "agent-1", "general", "primary", "北京时间，浪速公司，Agent 开发工程师", "user-1"
+        );
+
+        assertThat(resumed.runId()).isEqualTo("run-1");
+        assertThat(resumed.assistantMessageId()).isEqualTo(23L);
+        assertThat(session.getRunStatus()).isEqualTo(AgentRunStatus.RUNNING);
+        assertThat(session.getRunStep()).isNull();
+        assertThat(session.getActiveMessageId()).isEqualTo(23L);
+    }
+
+    @Test
     @DisplayName("审批成功后复用原 runId 创建续答助手消息并发布事件")
     void preparesApprovalResumeWithoutDuplicatingUserMessage() {
         AgentChatSessionEntity session = AgentChatSessionEntity.builder()
