@@ -43,7 +43,7 @@ public class AgentMetrics {
     public static final String COST = "app.agent.cost";
     public static final String PROMPT_PREFIX = "app.agent.prompt.prefix";
     public static final String PROMPT_PREFIX_MISMATCH = "app.agent.prompt.prefix.mismatch";
-    public static final String SYSTEM_PROMPT_VERSION = "agent-system:v2";
+    public static final String SYSTEM_PROMPT_VERSION = "agent-system:v1";
 
     private final MeterRegistry registry;
     private final boolean enabled;
