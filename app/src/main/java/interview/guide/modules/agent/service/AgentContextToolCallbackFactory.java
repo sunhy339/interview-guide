@@ -40,16 +40,16 @@ public class AgentContextToolCallbackFactory {
     // OpenAI-compatible tool names only allow letters, digits, '_' and '-'.
     // Keep the namespace readable without dots so configured providers reject
     // neither the tool schema nor the complete Agent request.
-    private static final String INTERVIEW_SEARCH = "interview_search";
-    private static final String INTERVIEW_ATTACH = "interview_attach_context";
-    private static final String INTERVIEW_CLEAR = "interview_clear_context";
-    private static final String CONTEXT_LIST = "agent_context_list";
-    private static final String CONTEXT_ASSET_ACTION = "agent_context_asset_action";
-    private static final String SCHEDULE_LIST = "schedule_list";
-    private static final String SCHEDULE_CONFLICT = "schedule_check_conflict";
-    private static final String SCHEDULE_DRAFT = "schedule_create_draft";
-    private static final String SCHEDULE_CANCEL_DRAFT = "schedule_cancel_draft";
-    private static final String SCHEDULE_UPDATE_DRAFT = "schedule_update_draft";
+    public static final String INTERVIEW_SEARCH = "interview_search";
+    public static final String INTERVIEW_ATTACH = "interview_attach_context";
+    public static final String INTERVIEW_CLEAR = "interview_clear_context";
+    public static final String CONTEXT_LIST = "agent_context_list";
+    public static final String CONTEXT_ASSET_ACTION = "agent_context_asset_action";
+    public static final String SCHEDULE_LIST = "schedule_list";
+    public static final String SCHEDULE_CONFLICT = "schedule_check_conflict";
+    public static final String SCHEDULE_DRAFT = "schedule_create_draft";
+    public static final String SCHEDULE_CANCEL_DRAFT = "schedule_cancel_draft";
+    public static final String SCHEDULE_UPDATE_DRAFT = "schedule_update_draft";
     private static final int MAX_TOOL_ASSETS = 20;
     private static final int MAX_SEARCH_QUERY_CHARS = 512;
     private static final int MAX_TOOL_IDENTIFIER_CHARS = 128;

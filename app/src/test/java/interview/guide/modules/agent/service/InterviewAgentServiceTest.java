@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -43,6 +44,18 @@ import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class InterviewAgentServiceTest {
+
+    @BeforeEach
+    void defaultScopedAgentClientToLegacyFixture() {
+        // 绝大多数历史测试只需要一个可流式响应的 Agent client；真实生产代码仍会
+        // 使用按路由筛选后的重载方法。显式测试可在本方法之后覆盖该 stub。
+        lenient().when(providerRegistry.getAgentChatClient(
+            anyString(), org.mockito.ArgumentMatchers.<String>anySet(),
+            org.mockito.ArgumentMatchers.anyBoolean()
+        )).thenAnswer(invocation -> providerRegistry.getAgentChatClient(
+            invocation.getArgument(0, String.class)
+        ));
+    }
 
     @Mock
     private AgentContextService contextService;
@@ -405,7 +418,10 @@ class InterviewAgentServiceTest {
         when(requestSpec.user(anyString())).thenReturn(requestSpec);
         when(requestSpec.stream()).thenReturn(streamResponse);
         when(streamResponse.content()).thenReturn(Flux.just("回答"));
-        when(providerRegistry.getAgentChatClient("primary")).thenReturn(client);
+        when(providerRegistry.getAgentChatClient(
+            eq("primary"), org.mockito.ArgumentMatchers.<String>anySet(),
+            org.mockito.ArgumentMatchers.anyBoolean()
+        )).thenReturn(client);
         AgentMetrics realMetrics = new AgentMetrics(null, false);
         InterviewAgentService service = new InterviewAgentService(
             contextService, conversationService, providerRegistry, promptSanitizer, resourceLoader,

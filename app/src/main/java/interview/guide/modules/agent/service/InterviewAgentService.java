@@ -72,6 +72,7 @@ public class InterviewAgentService {
     private final AgentRetryProperties retryProperties;
     private final AgentLoopPlanner agentLoopPlanner;
     private final AgentAuditService agentAuditService;
+    private final AgentIntentRouter agentIntentRouter;
     private final Set<String> activeSessions = ConcurrentHashMap.newKeySet();
     private final Map<String, Sinks.One<Void>> cancellationSignals = new ConcurrentHashMap<>();
     private final Map<String, AgentTaskHandle> activeTasks = new ConcurrentHashMap<>();
@@ -88,7 +89,7 @@ public class InterviewAgentService {
     ) throws IOException {
         this(
             agentContextService, agentConversationService, llmProviderRegistry, promptSanitizer,
-            resourceLoader, agentMetrics, agentProgressWriter, retryProperties, null
+            resourceLoader, agentMetrics, agentProgressWriter, retryProperties, null, null, null
         );
     }
 
@@ -105,7 +106,7 @@ public class InterviewAgentService {
     ) throws IOException {
         this(
             agentContextService, agentConversationService, llmProviderRegistry, promptSanitizer,
-            resourceLoader, agentMetrics, agentProgressWriter, retryProperties, agentLoopPlanner, null
+            resourceLoader, agentMetrics, agentProgressWriter, retryProperties, agentLoopPlanner, null, null
         );
     }
 
@@ -120,7 +121,8 @@ public class InterviewAgentService {
         AgentProgressWriter agentProgressWriter,
         AgentRetryProperties retryProperties,
         AgentLoopPlanner agentLoopPlanner,
-        AgentAuditService agentAuditService
+        AgentAuditService agentAuditService,
+        AgentIntentRouter agentIntentRouter
     ) throws IOException {
         this.agentContextService = agentContextService;
         this.agentConversationService = agentConversationService;
@@ -131,6 +133,7 @@ public class InterviewAgentService {
         this.retryProperties = retryProperties;
         this.agentLoopPlanner = agentLoopPlanner;
         this.agentAuditService = agentAuditService;
+        this.agentIntentRouter = agentIntentRouter == null ? new AgentIntentRouter() : agentIntentRouter;
         this.systemPromptTemplate = new PromptTemplate(resourceLoader
             .getResource("classpath:prompts/agent-interview-coach-system.st")
             .getContentAsString(StandardCharsets.UTF_8));
@@ -170,13 +173,14 @@ public class InterviewAgentService {
     private Flux<AgentStreamEvent> streamInternal(
         String sessionId, AgentMessageRequest request, String dataOwnerKey
     ) {
-        AgentMessageRequest modeSafeRequest = normalizeRequestMode(sessionId, request);
-        AgentMessageRequest resolvedRequest = resolveProviderForRun(modeSafeRequest);
+        // 先解析 Provider；本轮是否进入复盘/通用模式由模型意图分类决定，
+        // 不能在模型分类前根据旧 goal 或路径中的面试 ID 自动加载报告。
+        AgentMessageRequest preparedRequest = resolveProviderForRun(request);
         return Flux.concat(
             Flux.just(AgentStreamEvent.step("context", "running")),
             Flux.defer(() -> {
-            String activeKey = resolvedRequest.agentSessionId() == null || resolvedRequest.agentSessionId().isBlank()
-                ? sessionId : resolvedRequest.agentSessionId();
+            String activeKey = preparedRequest.agentSessionId() == null || preparedRequest.agentSessionId().isBlank()
+                ? sessionId : preparedRequest.agentSessionId();
             if (!activeSessions.add(activeKey)) {
                 return Flux.just(AgentStreamEvent.error("当前面试已有一个 Agent 任务正在执行，请等待完成后再试"));
             }
@@ -193,30 +197,36 @@ public class InterviewAgentService {
                 // 模型上下文使用净化后的消息；工具授权必须保留原始用户意图，
                 // 否则“忽略指令后预约……”中的危险片段可能先被删除，
                 // 工具只看到“预约”而误把请求当成安全授权。
-                String userIntentMessage = resolvedRequest.message();
+                AgentMessageRequest runRequest = preparedRequest;
+                String userIntentMessage = runRequest.message();
                 String message = promptSanitizer.sanitize(userIntentMessage);
                 List<AgentHistoryMessage> persistedHistory = dataOwnerKey == null || dataOwnerKey.isBlank()
-                    ? resolvedRequest.agentSessionId() == null || resolvedRequest.agentSessionId().isBlank()
+                    ? runRequest.agentSessionId() == null || runRequest.agentSessionId().isBlank()
                         ? agentConversationService.loadHistory(sessionId)
-                        : agentConversationService.loadHistory(sessionId, resolvedRequest.agentSessionId())
+                        : agentConversationService.loadHistory(sessionId, runRequest.agentSessionId())
                     : agentConversationService.loadHistory(
-                        sessionId, resolvedRequest.agentSessionId(), dataOwnerKey
+                        sessionId, runRequest.agentSessionId(), dataOwnerKey
                     );
                 List<AgentHistoryMessage> historyMessages = AgentHistoryPolicy.normalize(
-                    persistedHistory.isEmpty() ? resolvedRequest.history() : persistedHistory
+                    persistedHistory.isEmpty() ? runRequest.history() : persistedHistory
                 );
+                AgentIntentRouter.Decision intentDecision = agentIntentRouter.route(
+                    runRequest, userIntentMessage, historyMessages,
+                    runRequest.providerId(), runTracker
+                );
+                runRequest = agentIntentRouter.applyMode(runRequest, intentDecision);
                 AgentContextService.AgentContext context;
                 AuthUserContext.set(dataOwnerKey);
                 try {
                     // 通用 Agent 永远从 null 报告上下文开始；绑定面试报告只能通过
                     // 当前会话的显式上下文绑定进入，不能根据线程历史自动恢复旧报告。
-                    context = agentContextService.build(sessionId, resolvedRequest, historyMessages);
+                    context = agentContextService.build(sessionId, runRequest, historyMessages);
                 } finally {
                     AuthUserContext.clear();
                 }
 
                 AgentConversationService.PreparedMessage preparedMessage = prepareMessage(
-                    sessionId, resolvedRequest, userIntentMessage, dataOwnerKey
+                    sessionId, runRequest, userIntentMessage, dataOwnerKey
                 );
                 preparedAssistantMessageId = preparedMessage.assistantMessageId();
                 preparedRunIdRef.set(preparedMessage.runId());
@@ -232,7 +242,7 @@ public class InterviewAgentService {
                 );
                 auditPromptSecurity(
                     runTracker, userIntentMessage,
-                    resolvedRequest.goal(), dataOwnerKey, sessionId,
+                    runRequest.goal(), dataOwnerKey, sessionId,
                     resolvedAgentSessionId, preparedMessage.runId()
                 );
                 activeTasks.put(resolvedAgentSessionId, taskHandle);
@@ -242,8 +252,9 @@ public class InterviewAgentService {
                 );
 
                 Flux<AgentStreamEvent> workflow = buildWorkflow(
-                    sessionId, resolvedAgentSessionId, resolvedRequest, message, userIntentMessage,
-                    historyMessages, context, preparedMessage, cancellationSignal, taskHandle, runTracker, null
+                    sessionId, resolvedAgentSessionId, runRequest, message, userIntentMessage,
+                    historyMessages, context, preparedMessage, cancellationSignal, taskHandle, runTracker,
+                    intentDecision, null
                 );
                 // SSE 断开后不缓存全部 token；最终答案由 AgentConversationService 持久化。
                 return Flux.create(emitter -> {
@@ -335,7 +346,10 @@ public class InterviewAgentService {
                     recoveredRun.agentSessionId()
                 );
                 request = resolveProviderForRun(request);
-                request = normalizeRequestMode(recoveredRun.interviewSessionId(), request);
+                AgentIntentRouter.Decision intentDecision = agentIntentRouter.route(
+                    request, userIntentMessage, historyMessages, request.providerId(), runTracker
+                );
+                request = agentIntentRouter.applyMode(request, intentDecision);
                 AgentContextService.AgentContext context;
                 AuthUserContext.set(recoveredRun.ownerKey());
                 try {
@@ -355,7 +369,7 @@ public class InterviewAgentService {
                 Flux<AgentStreamEvent> workflow = buildWorkflow(
                     recoveredRun.interviewSessionId(), activeKey, request, message, userIntentMessage,
                     historyMessages, context, prepared, cancellationSignal, taskHandle, runTracker,
-                    new LoopResumeState(
+                    intentDecision, new LoopResumeState(
                         recoveredRun.loopPlan(),
                         recoveredRun.loopNextStep(),
                         recoveredRun.loopCompletedStepIndices(),
@@ -391,6 +405,7 @@ public class InterviewAgentService {
         Sinks.One<Void> cancellationSignal,
         AgentTaskHandle taskHandle,
         AgentMetrics.RunTracker runTracker,
+        AgentIntentRouter.Decision intentDecision,
         LoopResumeState resumeState
     ) {
         Flux<String> planFlux = resumeState != null && resumeState.hasPlan()
@@ -512,11 +527,15 @@ public class InterviewAgentService {
                             return () -> {
                                 AgentMetrics.ModelCallTracker modelCall = agentMetrics.startModelCall(providerId, runTracker);
                                 try {
-                                    ChatClient chatClient = shouldEnableAgentTools(
-                                        context, request, userIntentMessage
-                                    )
-                                        ? llmProviderRegistry.getAgentChatClient(providerId)
-                                        : llmProviderRegistry.getPlainChatClient(providerId);
+                                    ChatClient chatClient = !intentDecision.useTools()
+                                        ? llmProviderRegistry.getPlainChatClient(providerId)
+                                        : intentDecision.fullToolset()
+                                            ? llmProviderRegistry.getAgentChatClient(providerId)
+                                            : llmProviderRegistry.getAgentChatClient(
+                                                providerId,
+                                                intentDecision.allowedToolNames(),
+                                                intentDecision.includeSkills()
+                                            );
                                     var promptSpec = chatClient.prompt().system(prompt.systemPrompt());
                                     if (!prompt.history().isEmpty()) {
                                         promptSpec = promptSpec.messages(prompt.history());
@@ -697,32 +716,6 @@ public class InterviewAgentService {
             || normalized.contains("面试官")
             || normalized.contains("根据这场面试")
             || normalized.contains("针对这场面试");
-    }
-
-    /**
-     * 普通问答使用无工具 ChatClient，避免模型在没有业务意图时自行触发 Skill、MCP
-     * 或日程工具。需要查询资料、绑定上下文或执行日程动作时才开启受控工具集。
-     */
-    private boolean shouldEnableAgentTools(
-        AgentContextService.AgentContext context,
-        AgentMessageRequest request,
-        String message
-    ) {
-        if (request == null || !"general".equalsIgnoreCase(request.goal())) {
-            return true;
-        }
-        String normalized = message == null ? "" : message.replaceAll("\\s+", " ").trim()
-            .toLowerCase(Locale.ROOT);
-        if (normalized.isBlank()) {
-            return false;
-        }
-        return normalized.matches(".*(?:查询|搜索|查找|列出|查看).{0,20}(面试|报告|日程|会议|简历|资料|文件|知识库).*")
-            || normalized.matches(".*(?:绑定|引用|添加|使用|关联|清除|解绑).{0,20}(面试|报告|简历|资料|文件|知识库|上下文).*")
-            || normalized.matches(".*(?:根据|基于|结合|参考).{0,20}(面试|报告|简历|资料|文件|知识库|上下文).*")
-            || normalized.matches(".*(?:安排|预约|创建|取消|撤销|改期|改到|修改|调整|更新).{0,20}(面试|会议|日程|预约).*")
-            || normalized.matches(".*(?:面试|会议|日程|预约).{0,20}(安排|预约|创建|取消|撤销|改期|改到|修改|调整|更新).*")
-            || normalized.matches(".*(?:加入|导入|审核|确认).{0,20}(知识库|上下文|文件).*")
-            || normalized.matches(".*(?:调用|接入|连接|配置|执行).{0,20}(mcp|工具|tool|tool_call).*");
     }
 
     private AgentConversationService.PreparedMessage prepareMessage(

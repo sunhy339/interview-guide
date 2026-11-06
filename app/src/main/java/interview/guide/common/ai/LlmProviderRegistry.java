@@ -41,6 +41,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.concurrent.ConcurrentHashMap;
 import java.time.Duration;
 import java.time.Instant;
@@ -324,6 +326,26 @@ public class LlmProviderRegistry {
     }
 
     /**
+     * 获取按意图裁剪后的 Agent ChatClient。
+     *
+     * <p>allowedToolNames 为空并不代表全部业务工具；只有 null 才表示完整工具集。
+     * 这样“只允许 Skill”与“普通问题不允许工具”不会因为空集合而混淆。</p>
+     */
+    public ChatClient getAgentChatClient(
+        String providerId, Set<String> allowedToolNames, boolean includeSkills
+    ) {
+        String id = resolveProviderId(providerId);
+        Set<String> safeNames = allowedToolNames == null ? null : Set.copyOf(allowedToolNames);
+        String toolKey = safeNames == null
+            ? "all"
+            : safeNames.stream().sorted().collect(Collectors.joining(","));
+        String cacheKey = id + ":agent:" + (includeSkills ? "skills" : "no-skills") + ":" + toolKey;
+        return clientCache.computeIfAbsent(
+            cacheKey, key -> createAgentChatClient(id, safeNames, includeSkills)
+        );
+    }
+
+    /**
      * 清空缓存，重新加载所有 provider。
      */
     public void reload() {
@@ -390,10 +412,16 @@ public class LlmProviderRegistry {
     }
 
     private ChatClient createAgentChatClient(String providerId) {
+        return createAgentChatClient(providerId, null, true);
+    }
+
+    private ChatClient createAgentChatClient(
+        String providerId, Set<String> allowedToolNames, boolean includeSkills
+    ) {
         OpenAiChatModel chatModel = getChatModel(providerId);
         ChatClient.Builder builder = ChatClient.builder(chatModel);
         List<ToolCallback> agentTools = new ArrayList<>();
-        if (interviewSkillsToolCallback != null) {
+        if (includeSkills && interviewSkillsToolCallback != null) {
             agentTools.add(new AgentObservedToolCallback(
                 interviewSkillsToolCallback, agentMetrics, agentAuditService,
                 new PromptSanitizer(properties)
@@ -401,6 +429,8 @@ public class LlmProviderRegistry {
         }
         if (agentContextToolCallbackFactory != null) {
             agentContextToolCallbackFactory.callbacks().stream()
+                .filter(callback -> allowedToolNames == null
+                    || allowedToolNames.contains(callback.getToolDefinition().name()))
                 .map(callback -> new AgentObservedToolCallback(
                     callback, agentMetrics, agentAuditService, new PromptSanitizer(properties)))
                 .forEach(agentTools::add);
@@ -418,7 +448,8 @@ public class LlmProviderRegistry {
         if (!advisors.isEmpty()) {
             builder.defaultAdvisors(advisors);
         }
-        log.info("[LlmProviderRegistry] Created agent ChatClient (SkillsTool + ToolCall, no memory) for {}", providerId);
+        log.info("[LlmProviderRegistry] Created agent ChatClient (tools={}, skills={}, no memory) for {}",
+            allowedToolNames == null ? "all" : allowedToolNames.size(), includeSkills, providerId);
         return builder.build();
     }
 
