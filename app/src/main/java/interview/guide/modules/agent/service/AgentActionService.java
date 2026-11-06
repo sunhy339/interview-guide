@@ -899,6 +899,26 @@ public class AgentActionService {
         return entity.getInterviewSessionId();
     }
 
+    /**
+     * 重启恢复审批续跑时读取已经提交的动作结果；只允许同一 owner 读取成功或取消结果。
+     * 不重新执行动作，也不接受模型传入的动作参数。
+     */
+    @Transactional
+    public AgentActionResponse loadApprovalResumeAction(String actionId, String ownerKey) {
+        String owner = requireOwner(ownerKey);
+        String safeActionId = requireText(actionId, "Agent 审批动作不能为空", 64);
+        AgentActionRequestEntity entity = repository.findByActionId(safeActionId).orElse(null);
+        if (entity == null || !owner.equals(entity.getOwnerKey())) {
+            return null;
+        }
+        if (entity.getStatus() != AgentActionStatus.SUCCEEDED
+            && entity.getStatus() != AgentActionStatus.CANCELLED) {
+            return null;
+        }
+        sanitizeStoredAction(entity);
+        return safeResponse(entity);
+    }
+
     private AgentActionResponse executeConfirmed(AgentActionRequestEntity entity, boolean retry) {
         if (executionAttempts(entity) >= MAX_EXECUTION_ATTEMPTS) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "该 Agent 动作已达到最大重试次数，请重新生成草稿");

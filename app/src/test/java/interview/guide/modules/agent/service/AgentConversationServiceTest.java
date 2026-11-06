@@ -693,7 +693,9 @@ class AgentConversationServiceTest {
         assertThat(request.actionId()).isEqualTo("action-1");
         assertThat(session.getRunStatus()).isEqualTo(AgentRunStatus.RUNNING);
         assertThat(session.getActiveMessageId()).isEqualTo(23L);
-        verify(runStateService).resume(session);
+        verify(runStateService).resume(
+            session, "action-1", "用户已确认并完成 Agent 动作"
+        );
         verify(eventPublisher).publishEvent(request);
         verify(messageRepository).save(argThat(message ->
             message.getRole() == AgentChatMessageEntity.MessageRole.ASSISTANT
@@ -703,6 +705,54 @@ class AgentConversationServiceTest {
         verify(messageRepository, never()).save(argThat(message ->
             message.getRole() == AgentChatMessageEntity.MessageRole.USER
         ));
+    }
+
+    @Test
+    @DisplayName("审批续跑在应用重启后只恢复回答，不重新生成用户消息和动作")
+    void claimsPersistedApprovalResumeAfterRestart() {
+        AgentChatSessionEntity session = AgentChatSessionEntity.builder()
+            .id(11L)
+            .agentSessionId("agent-1")
+            .interviewSessionId("interview-1")
+            .runId("run-1")
+            .runStatus(AgentRunStatus.RUNNING)
+            .runStep("resume_pending")
+            .runStartedAt(LocalDateTime.now().minusMinutes(3))
+            .activeMessageId(23L)
+            .ownerKey("user-1")
+            .build();
+        AgentChatMessageEntity user = AgentChatMessageEntity.builder()
+            .id(21L).session(session).role(AgentChatMessageEntity.MessageRole.USER)
+            .content("帮我安排明天12点的面试").sequenceNum(0).completed(true).build();
+        AgentChatMessageEntity assistant = AgentChatMessageEntity.builder()
+            .id(23L).session(session).role(AgentChatMessageEntity.MessageRole.ASSISTANT)
+            .content("").sequenceNum(2).completed(false).build();
+        when(sessionRepository.findByAgentSessionIdForUpdate("agent-1"))
+            .thenReturn(Optional.of(session));
+        when(runStateService.findPendingApprovalResume("run-1"))
+            .thenReturn(Optional.of(new AgentRunStateService.ApprovalResumeMarker(
+                "action-1", "应用重启后恢复审批结果"
+            )));
+        when(messageRepository.findById(23L)).thenReturn(Optional.of(assistant));
+        when(messageRepository.findBySessionIdAndCompletedTrueOrderBySequenceNumAsc(11L))
+            .thenReturn(List.of(user));
+        when(messageRepository.save(any(AgentChatMessageEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        when(sessionRepository.save(any(AgentChatSessionEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        service.setRunStateService(runStateService);
+
+        AgentConversationService.ApprovalResumeRequest request = service.claimApprovalResume(
+            "agent-1", "interview-1", LocalDateTime.now().minusMinutes(1)
+        );
+
+        assertThat(request).isNotNull();
+        assertThat(request.runId()).isEqualTo("run-1");
+        assertThat(request.actionId()).isEqualTo("action-1");
+        assertThat(request.assistantMessageId()).isEqualTo(23L);
+        assertThat(session.getRunStep()).isEqualTo("resume");
+        verify(runStateService).markResumeStarted("run-1");
+        verify(messageRepository).save(assistant);
     }
 
     @Test
