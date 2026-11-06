@@ -18,6 +18,8 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.PromptTemplate;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.chat.model.ToolContext;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -30,8 +32,13 @@ import reactor.core.Disposable;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.Duration;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Locale;
@@ -60,6 +67,12 @@ public class InterviewAgentService {
     private static final int CONTEXT_RETRY_SKILL_CHARS = 3_000;
     private static final int CONTEXT_RETRY_RAG_CHARS = 4_000;
     private static final String OUTPUT_TRUNCATION_NOTICE = "\n\n[回答已达到展示上限，后续内容已截断]";
+    private static final String EXPLICIT_ACTION_SYSTEM_PROMPT = """
+        你是受控的面试日程操作 Agent。
+        当前用户明确要求执行一项日程操作。必须先调用当前提供的唯一受控工具，不能只输出
+        Markdown 假设操作已完成，也不能直接写入正式日程。工具参数只能来自当前用户消息；
+        缺少必填信息时不要伪造，先让用户补充。工具返回待确认草稿后，再用简洁中文说明结果。
+        """;
 
     private final AgentContextService agentContextService;
     private final AgentConversationService agentConversationService;
@@ -74,6 +87,8 @@ public class InterviewAgentService {
     private final AgentLoopPlanner agentLoopPlanner;
     private final AgentAuditService agentAuditService;
     private final AgentIntentRouter agentIntentRouter;
+    private final AgentContextToolCallbackFactory agentContextToolCallbackFactory;
+    private final tools.jackson.databind.ObjectMapper objectMapper;
     private final Set<String> activeSessions = ConcurrentHashMap.newKeySet();
     private final Map<String, Sinks.One<Void>> cancellationSignals = new ConcurrentHashMap<>();
     private final Map<String, AgentTaskHandle> activeTasks = new ConcurrentHashMap<>();
@@ -90,7 +105,8 @@ public class InterviewAgentService {
     ) throws IOException {
         this(
             agentContextService, agentConversationService, llmProviderRegistry, promptSanitizer,
-            resourceLoader, agentMetrics, agentProgressWriter, retryProperties, null, null, null
+            resourceLoader, agentMetrics, agentProgressWriter, retryProperties,
+            null, null, null, null, null
         );
     }
 
@@ -107,7 +123,8 @@ public class InterviewAgentService {
     ) throws IOException {
         this(
             agentContextService, agentConversationService, llmProviderRegistry, promptSanitizer,
-            resourceLoader, agentMetrics, agentProgressWriter, retryProperties, agentLoopPlanner, null, null
+            resourceLoader, agentMetrics, agentProgressWriter, retryProperties,
+            agentLoopPlanner, null, null, null, null
         );
     }
 
@@ -123,7 +140,9 @@ public class InterviewAgentService {
         AgentRetryProperties retryProperties,
         AgentLoopPlanner agentLoopPlanner,
         AgentAuditService agentAuditService,
-        AgentIntentRouter agentIntentRouter
+        AgentIntentRouter agentIntentRouter,
+        AgentContextToolCallbackFactory agentContextToolCallbackFactory,
+        tools.jackson.databind.ObjectMapper objectMapper
     ) throws IOException {
         this.agentContextService = agentContextService;
         this.agentConversationService = agentConversationService;
@@ -135,6 +154,8 @@ public class InterviewAgentService {
         this.agentLoopPlanner = agentLoopPlanner;
         this.agentAuditService = agentAuditService;
         this.agentIntentRouter = agentIntentRouter == null ? new AgentIntentRouter() : agentIntentRouter;
+        this.agentContextToolCallbackFactory = agentContextToolCallbackFactory;
+        this.objectMapper = objectMapper;
         this.systemPromptTemplate = new PromptTemplate(resourceLoader
             .getResource("classpath:prompts/agent-interview-coach-system.st")
             .getContentAsString(StandardCharsets.UTF_8));
@@ -515,6 +536,7 @@ public class InterviewAgentService {
                     List<Message> compactHistory = buildModelHistory(AgentHistoryPolicy.normalize(
                         historyMessages, CONTEXT_RETRY_HISTORY_CHARS, CONTEXT_RETRY_MESSAGE_CHARS
                     ));
+                    String requiredTool = agentIntentRouter.requiredToolName(userIntentMessage);
                     PromptVariant normalPrompt = buildPromptVariant(
                         context, request, message, history, safePlan, loopTrace, false,
                         intentDecision
@@ -535,14 +557,17 @@ public class InterviewAgentService {
                                     // 避免把完整目录和强制 tool_choice 一起发送给部分兼容层。
                                     // 每个工具仍会在 AgentObservedToolCallback/业务回调内做 owner、
                                     // 意图和确认校验。
-                                    String requiredTool = agentIntentRouter.requiredToolName(userIntentMessage);
                                     ChatClient chatClient = requiredTool == null
                                         ? llmProviderRegistry.getAgentChatClient(providerId)
                                         : llmProviderRegistry.getAgentChatClient(
                                             providerId, Set.of(requiredTool), false
                                         );
-                                    var promptSpec = chatClient.prompt().system(prompt.systemPrompt());
-                                    if (!prompt.history().isEmpty()) {
+                                    // 明确的业务动作不读取面试报告、Skill、RAG 或历史对话，
+                                    // 避免无关上下文污染工具参数，也避免把大段资料发送给兼容层。
+                                    var promptSpec = requiredTool == null
+                                        ? chatClient.prompt().system(prompt.systemPrompt())
+                                        : chatClient.prompt().system(EXPLICIT_ACTION_SYSTEM_PROMPT);
+                                    if (requiredTool == null && !prompt.history().isEmpty()) {
                                         promptSpec = promptSpec.messages(prompt.history());
                                     }
                                     if (runTracker != null) {
@@ -551,16 +576,15 @@ public class InterviewAgentService {
                                         );
                                     }
                                     if (requiredTool != null) {
-                                        // 明确的业务变更不能只由模型“描述已经完成”。通过本次请求的
-                                        // tool_choice 强制先走对应的受控草稿工具；工具本身仍负责
-                                        // owner、参数、确认和幂等校验，成功后只返回待确认动作。
+                                        // 兼容部分 OpenAI 网关的工具流式请求：当前动作只允许一个
+                                        // 工具，不需要并行调用，避免网关把默认并行参数判为非法。
                                         promptSpec = promptSpec.options(OpenAiChatOptions.builder()
-                                            // 明确动作只挂载一个对应工具，因此使用跨兼容层更稳定的
-                                            // 标准 required，而不是让 Map 形式的函数选择被错误序列化。
-                                            .toolChoice("required")
+                                            .parallelToolCalls(false)
                                         );
                                     }
-                                    var streamSpec = promptSpec.user(prompt.userPrompt()).stream();
+                                    String modelUserPrompt = requiredTool == null
+                                        ? prompt.userPrompt() : userIntentMessage;
+                                    var streamSpec = promptSpec.user(modelUserPrompt).stream();
                                     Flux<ChatResponse> chatResponses = streamSpec.chatResponse();
                                     if (chatResponses == null) {
                                         // 保留对旧的/简化 ChatClient 测试替身和不提供 ChatResponse
@@ -597,11 +621,18 @@ public class InterviewAgentService {
                                 }
                             };
                         };
-                    Flux<AgentStreamEvent> response = streamModelWithRetry(
-                        modelStreamFactory, request.providerId(), sessionId,
-                        preparedMessage.assistantMessageId(), preparedMessage.runId(), context.sources(),
-                        runTracker, taskHandle
-                    );
+                    Flux<AgentStreamEvent> response = requiredTool != null
+                        && agentContextToolCallbackFactory != null && objectMapper != null
+                        ? streamExplicitScheduleAction(
+                            requiredTool, userIntentMessage, sessionId, agentSessionId,
+                            preparedMessage.assistantMessageId(), preparedMessage.runId(),
+                            runTracker, taskHandle
+                        )
+                        : streamModelWithRetry(
+                            modelStreamFactory, request.providerId(), sessionId,
+                            preparedMessage.assistantMessageId(), preparedMessage.runId(), context.sources(),
+                            runTracker, taskHandle
+                        );
                     boolean generalRequest = "general".equalsIgnoreCase(request.goal());
                     boolean hasOptionalSource = context.sources().stream()
                         .anyMatch(source -> source != null
@@ -918,6 +949,227 @@ public class InterviewAgentService {
                 .onErrorReturn(true)
             )
             .filter(active -> !active);
+    }
+
+    /**
+     * 兼容不支持 Spring AI 工具流式续调用的 OpenAI 网关。
+     *
+     * <p>明确日程动作已经由路由器识别并且只允许一个受控工具。这里直接把当前用户消息
+     * 解析成受控工具参数并调用同一个业务回调，仍然经过 owner、意图、参数和确认校验，
+     * 但不再依赖网关对 tool-call continuation 的兼容性；普通问题和资料型请求继续走
+     * 原有的模型驱动 ToolCallingAdvisor。</p>
+     */
+    private Flux<AgentStreamEvent> streamExplicitScheduleAction(
+        String toolName,
+        String userMessage,
+        String sessionId,
+        String agentSessionId,
+        Long assistantMessageId,
+        String runId,
+        AgentMetrics.RunTracker runTracker,
+        AgentTaskHandle taskHandle
+    ) {
+        AtomicReference<String> output = new AtomicReference<>(new String());
+        return Mono.fromCallable(() -> {
+            long startedNanos = System.nanoTime();
+            String toolInput = buildScheduleToolInput(toolName, userMessage);
+            if (toolInput == null) {
+                return "请补充具体日期和时间、公司名称、应聘职位后，我再生成待确认的面试会议草稿。";
+            }
+            ToolCallback callback = agentContextToolCallbackFactory.callbacks().stream()
+                .filter(candidate -> toolName.equals(candidate.getToolDefinition().name()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("未找到受控日程工具：" + toolName));
+            String rawResult = callback.call(
+                toolInput, new ToolContext(agentToolContext(runTracker, userMessage))
+            );
+            agentMetrics.recordToolCall(
+                toolName,
+                rawResult != null && rawResult.contains("ACTION_PROPOSED") ? "success" : "rejected",
+                Duration.ofNanos(Math.max(0, System.nanoTime() - startedNanos))
+            );
+            return renderExplicitScheduleResult(toolName, rawResult);
+        })
+            .subscribeOn(Schedulers.boundedElastic())
+            .flatMapMany(answer -> {
+                output.set(answer == null ? "" : answer);
+                return Flux.just(
+                    AgentStreamEvent.delta(output.get()),
+                    AgentStreamEvent.step("insight", "completed"),
+                    AgentStreamEvent.step("action", "completed"),
+                    AgentStreamEvent.done()
+                );
+            })
+            .doOnComplete(() -> {
+                agentProgressWriter.flush(assistantMessageId);
+                agentConversationService.completeMessage(assistantMessageId, output.get(), runId);
+            })
+            .doOnError(error -> {
+                agentProgressWriter.flush(assistantMessageId);
+                agentConversationService.failMessage(
+                    assistantMessageId, output.get(), toAgentErrorMessage(error), runId
+                );
+            })
+            .doOnCancel(() -> {
+                agentProgressWriter.flush(assistantMessageId);
+                if (taskHandle == null || taskHandle.markCancellationPersisted()) {
+                    agentConversationService.cancelMessage(assistantMessageId, output.get(), runId);
+                }
+            })
+            .doFinally(signal -> {
+                persistRunUsage(assistantMessageId, runId, runTracker);
+                agentMetrics.finishRun(runTracker, switch (signal) {
+                    case ON_COMPLETE -> "success";
+                    case CANCEL -> "cancelled";
+                    default -> "failure";
+                });
+            });
+    }
+
+    private String buildScheduleToolInput(String toolName, String message) {
+        List<LocalDateTime> times = extractScheduleTimes(message);
+        String company = extractScheduleLabel(message, "公司");
+        String position = extractScheduleLabel(message, "职位");
+        Map<String, Object> input = new LinkedHashMap<>();
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm");
+        if (AgentContextToolCallbackFactory.SCHEDULE_DRAFT.equals(toolName)) {
+            if (times.isEmpty() || isBlank(company) || isBlank(position)) {
+                return null;
+            }
+            input.put("companyName", company);
+            input.put("position", position);
+            input.put("interviewTime", times.getFirst().format(formatter));
+        } else if (AgentContextToolCallbackFactory.SCHEDULE_CANCEL_DRAFT.equals(toolName)) {
+            if (!times.isEmpty()) {
+                input.put("interviewTime", times.getFirst().format(formatter));
+            }
+            if (!isBlank(company)) {
+                input.put("companyName", company);
+            }
+            if (!isBlank(position)) {
+                input.put("position", position);
+            }
+        } else if (AgentContextToolCallbackFactory.SCHEDULE_UPDATE_DRAFT.equals(toolName)) {
+            if (!times.isEmpty()) {
+                input.put("currentInterviewTime", times.getFirst().format(formatter));
+            }
+            if (times.size() > 1) {
+                input.put("interviewTime", times.get(1).format(formatter));
+            }
+            if (!isBlank(company)) {
+                input.put("companyName", company);
+            }
+            if (!isBlank(position)) {
+                input.put("position", position);
+            }
+        } else {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(input);
+        } catch (RuntimeException error) {
+            throw new IllegalStateException("日程参数整理失败", error);
+        }
+    }
+
+    private String renderExplicitScheduleResult(String toolName, String rawResult) {
+        String result = rawResult == null ? "" : rawResult;
+        if (result.contains("\"status\":\"NOT_FOUND\"")) {
+            return "没有找到符合条件的面试日程，请补充更具体的时间、公司或职位。";
+        }
+        if (result.contains("\"status\":\"SELECTION_REQUIRED\"")) {
+            return "找到了多个符合条件的面试日程，请补充更具体的时间、公司或职位后再操作。";
+        }
+        if (result.contains("\"status\":\"NO_CHANGE\"")) {
+            return "没有识别到需要修改的字段，请提供新的时间、职位、会议链接或备注。";
+        }
+        if (!result.contains("ACTION_PROPOSED")) {
+            return "当前日程操作未生成草稿，请补充更具体的信息后重试。";
+        }
+        return switch (toolName) {
+            case AgentContextToolCallbackFactory.SCHEDULE_CANCEL_DRAFT ->
+                "已生成待确认的面试取消草稿，请确认后才会取消日程。";
+            case AgentContextToolCallbackFactory.SCHEDULE_UPDATE_DRAFT ->
+                "已生成待确认的面试改期草稿，请确认后才会修改日程。";
+            default -> "已生成待确认的面试会议草稿，请在动作列表中确认后才会写入日程。";
+        };
+    }
+
+    private String extractScheduleLabel(String message, String label) {
+        if (message == null) {
+            return null;
+        }
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
+            java.util.regex.Pattern.quote(label)
+                + "\\s*(?:是|为|叫|[:：])?\\s*([^，,。；;\\n]+)"
+        ).matcher(message);
+        return matcher.find() ? matcher.group(1).trim() : null;
+    }
+
+    private List<LocalDateTime> extractScheduleTimes(String message) {
+        List<LocalDateTime> times = new ArrayList<>();
+        if (message == null || message.isBlank()) {
+            return times;
+        }
+        java.util.regex.Pattern absolute = java.util.regex.Pattern.compile(
+            "(\\d{4})[-/.](\\d{1,2})[-/.](\\d{1,2})\\s*(?:(?:T|日|号)?\\s*)?"
+                + "(上午|下午|晚上|早上)?\\s*(\\d{1,2})(?::|：|点)(\\d{0,2})?"
+        );
+        java.util.regex.Matcher absoluteMatcher = absolute.matcher(message);
+        while (absoluteMatcher.find()) {
+            times.add(toDateTime(
+                LocalDate.of(
+                    Integer.parseInt(absoluteMatcher.group(1)),
+                    Integer.parseInt(absoluteMatcher.group(2)),
+                    Integer.parseInt(absoluteMatcher.group(3))
+                ), absoluteMatcher.group(4), absoluteMatcher.group(5), absoluteMatcher.group(6)
+            ));
+        }
+        java.util.regex.Pattern relative = java.util.regex.Pattern.compile(
+            "(今天|明天|后天|大后天)\\s*(上午|下午|晚上|早上)?\\s*"
+                + "(\\d{1,2})(?::|：|点)(\\d{0,2})?"
+        );
+        java.util.regex.Matcher relativeMatcher = relative.matcher(message);
+        while (relativeMatcher.find()) {
+            int days = switch (relativeMatcher.group(1)) {
+                case "明天" -> 1;
+                case "后天" -> 2;
+                case "大后天" -> 3;
+                default -> 0;
+            };
+            times.add(toDateTime(
+                LocalDate.now(ZoneId.of("Asia/Shanghai")).plusDays(days),
+                relativeMatcher.group(2), relativeMatcher.group(3), relativeMatcher.group(4)
+            ));
+        }
+        java.util.regex.Pattern timeOnly = java.util.regex.Pattern.compile(
+            "(上午|下午|晚上|早上)\\s*(\\d{1,2})(?::|：|点)(\\d{0,2})?"
+        );
+        java.util.regex.Matcher timeMatcher = timeOnly.matcher(message);
+        LocalDate referenceDate = times.isEmpty()
+            ? LocalDate.now(ZoneId.of("Asia/Shanghai")) : times.getFirst().toLocalDate();
+        while (timeMatcher.find()) {
+            LocalDateTime candidate = toDateTime(
+                referenceDate, timeMatcher.group(1), timeMatcher.group(2), timeMatcher.group(3)
+            );
+            if (!times.contains(candidate)) {
+                times.add(candidate);
+            }
+        }
+        return times.stream().distinct().toList();
+    }
+
+    private LocalDateTime toDateTime(LocalDate date, String meridiem, String hourText, String minuteText) {
+        int hour = Integer.parseInt(hourText);
+        if (("下午".equals(meridiem) || "晚上".equals(meridiem)) && hour < 12) {
+            hour += 12;
+        }
+        int minute = minuteText == null || minuteText.isBlank() ? 0 : Integer.parseInt(minuteText);
+        return date.atTime(hour, minute);
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 
     private Flux<AgentStreamEvent> streamModelWithRetry(

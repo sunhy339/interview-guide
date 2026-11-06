@@ -415,7 +415,7 @@ class InterviewAgentServiceTest {
         when(client.prompt()).thenReturn(requestSpec);
         when(requestSpec.system(anyString())).thenReturn(requestSpec);
         when(requestSpec.toolContext(any())).thenReturn(requestSpec);
-        when(requestSpec.options(any())).thenReturn(requestSpec);
+        lenient().when(requestSpec.options(any())).thenReturn(requestSpec);
         when(requestSpec.user(anyString())).thenReturn(requestSpec);
         when(requestSpec.stream()).thenReturn(streamResponse);
         when(streamResponse.content()).thenReturn(Flux.just("回答"));
