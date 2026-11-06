@@ -555,10 +555,9 @@ public class InterviewAgentService {
                                         // tool_choice 强制先走对应的受控草稿工具；工具本身仍负责
                                         // owner、参数、确认和幂等校验，成功后只返回待确认动作。
                                         promptSpec = promptSpec.options(OpenAiChatOptions.builder()
-                                            .toolChoice(Map.of(
-                                                "type", "function",
-                                                "function", Map.of("name", requiredTool)
-                                            ))
+                                            // 明确动作只挂载一个对应工具，因此使用跨兼容层更稳定的
+                                            // 标准 required，而不是让 Map 形式的函数选择被错误序列化。
+                                            .toolChoice("required")
                                         );
                                     }
                                     var streamSpec = promptSpec.user(prompt.userPrompt()).stream();
