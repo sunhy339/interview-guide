@@ -65,6 +65,19 @@ class AgentIntentRouterTest {
     }
 
     @Test
+    @DisplayName("明确日程动作选择对应草稿工具，概念问题不强制工具")
+    void selectsRequiredScheduleToolOnlyForExplicitActions() {
+        assertThat(router.requiredToolName("帮我安排明天12点的面试会议"))
+            .isEqualTo(AgentContextToolCallbackFactory.SCHEDULE_DRAFT);
+        assertThat(router.requiredToolName("帮我取消明天12点的面试"))
+            .isEqualTo(AgentContextToolCallbackFactory.SCHEDULE_CANCEL_DRAFT);
+        assertThat(router.requiredToolName("把明天12点的面试改到下午3点"))
+            .isEqualTo(AgentContextToolCallbackFactory.SCHEDULE_UPDATE_DRAFT);
+        assertThat(router.requiredToolName("什么是 Tool Calling，怎么安排面试"))
+            .isNull();
+    }
+
+    @Test
     @DisplayName("面试复盘保留兼容工具链并进入复盘路由")
     void keepsInterviewReviewCompatibilityRoute() {
         AgentIntentRouter.Decision decision = router.route(request(

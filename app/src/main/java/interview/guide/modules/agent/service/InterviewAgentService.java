@@ -17,6 +17,7 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.PromptTemplate;
+import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -515,10 +516,12 @@ public class InterviewAgentService {
                         historyMessages, CONTEXT_RETRY_HISTORY_CHARS, CONTEXT_RETRY_MESSAGE_CHARS
                     ));
                     PromptVariant normalPrompt = buildPromptVariant(
-                        context, request, message, history, safePlan, loopTrace, false
+                        context, request, message, history, safePlan, loopTrace, false,
+                        intentDecision
                     );
                     PromptVariant compactPrompt = buildPromptVariant(
-                        context, request, message, compactHistory, safePlan, loopTrace, true
+                        context, request, message, compactHistory, safePlan, loopTrace, true,
+                        intentDecision
                     );
                     agentMetrics.recordPromptPrefix(runTracker, normalPrompt.systemPrompt());
                     BiFunction<String, Boolean, Supplier<ModelStream>> modelStreamFactory =
@@ -539,6 +542,18 @@ public class InterviewAgentService {
                                     if (runTracker != null) {
                                         promptSpec = promptSpec.toolContext(
                                             agentToolContext(runTracker, userIntentMessage)
+                                        );
+                                    }
+                                    String requiredTool = agentIntentRouter.requiredToolName(userIntentMessage);
+                                    if (requiredTool != null) {
+                                        // 明确的业务变更不能只由模型“描述已经完成”。通过本次请求的
+                                        // tool_choice 强制先走对应的受控草稿工具；工具本身仍负责
+                                        // owner、参数、确认和幂等校验，成功后只返回待确认动作。
+                                        promptSpec = promptSpec.options(OpenAiChatOptions.builder()
+                                            .toolChoice(Map.of(
+                                                "type", "function",
+                                                "function", Map.of("name", requiredTool)
+                                            ))
                                         );
                                     }
                                     var streamSpec = promptSpec.user(prompt.userPrompt()).stream();
@@ -1295,7 +1310,8 @@ public class InterviewAgentService {
         List<Message> history,
         String plan,
         String loopTrace,
-        boolean compacted
+        boolean compacted,
+        AgentIntentRouter.Decision intentDecision
     ) {
         String report = compacted
             ? compactPromptText(context.interviewReport(), CONTEXT_RETRY_REPORT_CHARS)
@@ -1336,7 +1352,7 @@ public class InterviewAgentService {
             + PromptSecurityConstants.ANTI_INJECTION_INSTRUCTION;
         String userPrompt = fixedContextPromptTemplate.render(fixedContextVariables)
             + "\n\n"
-            + buildAnswerFormatInstruction(context, request, message)
+            + buildAnswerFormatInstruction(context, request, message, intentDecision)
             + "\n\n"
             + userPromptTemplate.render(variables);
         return new PromptVariant(systemPrompt, userPrompt, history);
@@ -1345,11 +1361,21 @@ public class InterviewAgentService {
     private String buildAnswerFormatInstruction(
         AgentContextService.AgentContext context,
         AgentMessageRequest request,
-        String message
+        String message,
+        AgentIntentRouter.Decision intentDecision
     ) {
         String goal = request == null ? "" : request.goal();
         String question = message == null ? "" : message;
         String combined = (goal + "\n" + question).toLowerCase(java.util.Locale.ROOT);
+        String requiredTool = agentIntentRouter.requiredToolName(question);
+        if (requiredTool != null && intentDecision != null
+            && intentDecision.capabilities().contains(AgentIntentRouter.Capability.SCHEDULE)) {
+            return """
+                本轮是明确的面试日程操作请求，必须先调用受控工具生成待确认草稿，再向用户展示工具结果。
+                不能只输出一段 Markdown 假设操作已经完成，也不能直接写入或修改正式日程。
+                工具参数只能来自当前用户消息和可信上下文；缺少必填信息时不要伪造，先向用户询问缺失信息。
+                """;
+        }
         if ("general".equalsIgnoreCase(goal)) {
             return """
                 本轮是通用 Agent 对话，不是面试复盘。

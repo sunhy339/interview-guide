@@ -61,6 +61,18 @@ public class AgentIntentRouter {
         "(?:安排|预约|创建|取消|撤销|删除|删掉|改期|改到|修改|调整|更换|更新).{0,20}(?:面试|会议|日程|预约)"
             + "|(?:面试|会议|日程|预约).{0,20}(?:安排|预约|创建|取消|撤销|删除|删掉|改期|改到|修改|调整|更换|更新)"
     );
+    private static final Pattern SCHEDULE_CREATE_ACTION = Pattern.compile(
+        "(?:安排|预约|创建|添加|新增|发起).{0,24}(?:面试|会议|日程|预约)"
+            + "|(?:面试|会议|日程|预约).{0,24}(?:安排|预约|创建|添加|新增|发起)"
+    );
+    private static final Pattern SCHEDULE_CANCEL_ACTION = Pattern.compile(
+        "(?:取消|撤销|删除|删掉).{0,24}(?:面试|会议|日程|预约)"
+            + "|(?:面试|会议|日程|预约).{0,24}(?:取消|撤销|删除|删掉)"
+    );
+    private static final Pattern SCHEDULE_UPDATE_ACTION = Pattern.compile(
+        "(?:改期|改到|修改|调整|更换|更新|换到).{0,24}(?:面试|会议|日程|预约|约定|安排)"
+            + "|(?:面试|会议|日程|预约|约定|安排).{0,24}(?:改期|改到|修改|调整|更换|更新|换到)"
+    );
     private static final Pattern INTERVIEW_REVIEW = Pattern.compile(
         "(?:复盘|面试表现|面试官|评分|失分|薄弱点|回答质量|本场面试|本次面试|这场面试|这次面试)"
     );
@@ -122,6 +134,30 @@ public class AgentIntentRouter {
     /** 使用未净化的原始消息路由；工具授权仍由回调再次校验。 */
     public Decision route(AgentMessageRequest request, String rawMessage) {
         return fallbackRoute(request, rawMessage);
+    }
+
+    /**
+     * 对明确的日程变更请求给出唯一的受控工具名。
+     *
+     * <p>这是工具选择约束，不是意图路由的替代品：模型仍负责识别普通问题、资料引用和
+     * 多能力组合；只有已经明确表达“替我创建/取消/修改”的日程动作时，主模型才会被要求
+     * 先调用对应草稿工具，避免只生成一段看似完成操作的 Markdown。</p>
+     */
+    public String requiredToolName(String rawMessage) {
+        String message = normalize(rawMessage);
+        if (message.isBlank() || isInformationalOnly(message)) {
+            return null;
+        }
+        if (SCHEDULE_CANCEL_ACTION.matcher(message).find()) {
+            return AgentContextToolCallbackFactory.SCHEDULE_CANCEL_DRAFT;
+        }
+        if (SCHEDULE_UPDATE_ACTION.matcher(message).find()) {
+            return AgentContextToolCallbackFactory.SCHEDULE_UPDATE_DRAFT;
+        }
+        if (SCHEDULE_CREATE_ACTION.matcher(message).find()) {
+            return AgentContextToolCallbackFactory.SCHEDULE_DRAFT;
+        }
+        return null;
     }
 
     /**
