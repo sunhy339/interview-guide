@@ -391,40 +391,8 @@ public class AgentIntentRouter {
     ) {
         Set<Capability> capabilities = requestedCapabilities == null || requestedCapabilities.isEmpty()
             ? defaultCapabilities(route) : Set.copyOf(requestedCapabilities);
-        Set<String> allowedTools = new HashSet<>();
-        if (capabilities.contains(Capability.CONTEXT)
-            || capabilities.contains(Capability.INTERVIEW_REPORT)
-            || capabilities.contains(Capability.RAG)) {
-            allowedTools.addAll(contextTools());
-        }
-        if (capabilities.contains(Capability.SCHEDULE)) {
-            allowedTools.addAll(scheduleTools());
-        }
-        boolean includeSkills = capabilities.contains(Capability.SKILL);
-        boolean useTools = includeSkills || !allowedTools.isEmpty();
         return new Decision(
-            route, useTools, includeSkills, false, Set.copyOf(allowedTools), capabilities,
-            confidence, reason
-        );
-    }
-
-    private static Set<String> contextTools() {
-        return Set.of(
-            AgentContextToolCallbackFactory.INTERVIEW_SEARCH,
-            AgentContextToolCallbackFactory.INTERVIEW_ATTACH,
-            AgentContextToolCallbackFactory.INTERVIEW_CLEAR,
-            AgentContextToolCallbackFactory.CONTEXT_LIST,
-            AgentContextToolCallbackFactory.CONTEXT_ASSET_ACTION
-        );
-    }
-
-    private static Set<String> scheduleTools() {
-        return Set.of(
-            AgentContextToolCallbackFactory.SCHEDULE_LIST,
-            AgentContextToolCallbackFactory.SCHEDULE_CONFLICT,
-            AgentContextToolCallbackFactory.SCHEDULE_DRAFT,
-            AgentContextToolCallbackFactory.SCHEDULE_CANCEL_DRAFT,
-            AgentContextToolCallbackFactory.SCHEDULE_UPDATE_DRAFT
+            route, capabilities, confidence, reason
         );
     }
 
@@ -450,16 +418,12 @@ public class AgentIntentRouter {
 
     public record Decision(
         Route route,
-        boolean useTools,
-        boolean includeSkills,
-        boolean fullToolset,
-        Set<String> allowedToolNames,
         Set<Capability> capabilities,
         double confidence,
         String reason
     ) {
         private static Decision general(String reason) {
-            return new Decision(Route.GENERAL, false, false, false, Set.of(), Set.of(), 0.0d, reason);
+            return new Decision(Route.GENERAL, Set.of(), 0.0d, reason);
         }
 
         private static Decision interviewReview(String reason) {

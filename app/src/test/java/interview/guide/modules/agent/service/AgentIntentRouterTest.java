@@ -25,9 +25,7 @@ class AgentIntentRouterTest {
         ));
 
         assertThat(decision.route()).isEqualTo(AgentIntentRouter.Route.GENERAL);
-        assertThat(decision.useTools()).isFalse();
-        assertThat(decision.allowedToolNames()).isEmpty();
-        assertThat(decision.includeSkills()).isFalse();
+        assertThat(decision.capabilities()).isEmpty();
     }
 
     @Test
@@ -38,19 +36,8 @@ class AgentIntentRouterTest {
         ));
 
         assertThat(decision.route()).isEqualTo(AgentIntentRouter.Route.CONTEXT);
-        assertThat(decision.useTools()).isTrue();
-        assertThat(decision.includeSkills()).isFalse();
-        assertThat(decision.fullToolset()).isFalse();
-        assertThat(decision.allowedToolNames())
-            .containsExactlyInAnyOrder(
-                AgentContextToolCallbackFactory.INTERVIEW_SEARCH,
-                AgentContextToolCallbackFactory.INTERVIEW_ATTACH,
-                AgentContextToolCallbackFactory.INTERVIEW_CLEAR,
-                AgentContextToolCallbackFactory.CONTEXT_LIST,
-                AgentContextToolCallbackFactory.CONTEXT_ASSET_ACTION
-            );
-        assertThat(decision.allowedToolNames())
-            .doesNotContain(AgentContextToolCallbackFactory.SCHEDULE_DRAFT);
+        assertThat(decision.capabilities())
+            .containsExactly(AgentIntentRouter.Capability.CONTEXT);
     }
 
     @Test
@@ -61,10 +48,8 @@ class AgentIntentRouterTest {
         ));
 
         assertThat(decision.route()).isEqualTo(AgentIntentRouter.Route.SKILL);
-        assertThat(decision.useTools()).isTrue();
-        assertThat(decision.includeSkills()).isTrue();
-        assertThat(decision.allowedToolNames()).isEmpty();
-        assertThat(decision.fullToolset()).isFalse();
+        assertThat(decision.capabilities())
+            .containsExactly(AgentIntentRouter.Capability.SKILL);
     }
 
     @Test
@@ -75,18 +60,8 @@ class AgentIntentRouterTest {
         ));
 
         assertThat(decision.route()).isEqualTo(AgentIntentRouter.Route.SCHEDULE);
-        assertThat(decision.includeSkills()).isFalse();
-        assertThat(decision.fullToolset()).isFalse();
-        assertThat(decision.allowedToolNames())
-            .containsExactlyInAnyOrder(
-                AgentContextToolCallbackFactory.SCHEDULE_LIST,
-                AgentContextToolCallbackFactory.SCHEDULE_CONFLICT,
-                AgentContextToolCallbackFactory.SCHEDULE_DRAFT,
-                AgentContextToolCallbackFactory.SCHEDULE_CANCEL_DRAFT,
-                AgentContextToolCallbackFactory.SCHEDULE_UPDATE_DRAFT
-            );
-        assertThat(decision.allowedToolNames())
-            .doesNotContain(AgentContextToolCallbackFactory.INTERVIEW_ATTACH);
+        assertThat(decision.capabilities())
+            .containsExactly(AgentIntentRouter.Capability.SCHEDULE);
     }
 
     @Test
@@ -97,11 +72,12 @@ class AgentIntentRouterTest {
         ));
 
         assertThat(decision.route()).isEqualTo(AgentIntentRouter.Route.INTERVIEW_REVIEW);
-        assertThat(decision.useTools()).isTrue();
-        assertThat(decision.includeSkills()).isTrue();
-        assertThat(decision.fullToolset()).isFalse();
-        assertThat(decision.allowedToolNames())
-            .doesNotContain(AgentContextToolCallbackFactory.SCHEDULE_DRAFT);
+        assertThat(decision.capabilities())
+            .containsExactlyInAnyOrder(
+                AgentIntentRouter.Capability.CONTEXT,
+                AgentIntentRouter.Capability.INTERVIEW_REPORT,
+                AgentIntentRouter.Capability.SKILL
+            );
     }
 
     @Test
@@ -174,7 +150,7 @@ class AgentIntentRouterTest {
         );
 
         assertThat(decision.route()).isEqualTo(AgentIntentRouter.Route.GENERAL);
-        assertThat(decision.useTools()).isFalse();
+        assertThat(decision.capabilities()).isEmpty();
     }
 
     @Test
@@ -210,7 +186,7 @@ class AgentIntentRouterTest {
         );
 
         assertThat(decision.route()).isEqualTo(AgentIntentRouter.Route.GENERAL);
-        assertThat(decision.useTools()).isFalse();
+        assertThat(decision.capabilities()).isEmpty();
     }
 
     @Test
@@ -234,10 +210,11 @@ class AgentIntentRouterTest {
                 AgentIntentRouter.Capability.RAG,
                 AgentIntentRouter.Capability.CONTEXT
             );
-        assertThat(decision.includeSkills()).isTrue();
-        assertThat(decision.allowedToolNames())
-            .contains(AgentContextToolCallbackFactory.CONTEXT_LIST)
-            .doesNotContain(AgentContextToolCallbackFactory.SCHEDULE_DRAFT);
+        assertThat(decision.capabilities()).containsExactlyInAnyOrder(
+            AgentIntentRouter.Capability.SKILL,
+            AgentIntentRouter.Capability.RAG,
+            AgentIntentRouter.Capability.CONTEXT
+        );
     }
 
     @Test
@@ -253,8 +230,11 @@ class AgentIntentRouterTest {
                 AgentIntentRouter.Capability.RAG,
                 AgentIntentRouter.Capability.CONTEXT
             );
-        assertThat(decision.includeSkills()).isTrue();
-        assertThat(decision.useTools()).isTrue();
+        assertThat(decision.capabilities()).contains(
+            AgentIntentRouter.Capability.SKILL,
+            AgentIntentRouter.Capability.RAG,
+            AgentIntentRouter.Capability.CONTEXT
+        );
     }
 
     @Test

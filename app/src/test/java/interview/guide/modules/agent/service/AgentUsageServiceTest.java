@@ -89,7 +89,7 @@ class AgentUsageServiceTest {
             .build();
         AgentRunUsage usage = new AgentRunUsage(
             10, 20, 30, 1, 1_200, null, null, "pixel", "gpt-5.6-luna",
-            "agent-system:v1", "abc123"
+            "agent-system:v2", "abc123"
         );
         when(usageRepository.findByRunId("run-general-1")).thenReturn(Optional.empty());
 
@@ -98,7 +98,7 @@ class AgentUsageServiceTest {
         ArgumentCaptor<AgentRunUsageEntity> captor = ArgumentCaptor.forClass(AgentRunUsageEntity.class);
         verify(usageRepository).save(captor.capture());
         assertThat(captor.getValue().getInterviewSessionId()).isNull();
-        assertThat(captor.getValue().getPromptVersion()).isEqualTo("agent-system:v1");
+        assertThat(captor.getValue().getPromptVersion()).isEqualTo("agent-system:v2");
         assertThat(captor.getValue().getPromptFingerprint()).isEqualTo("abc123");
     }
 

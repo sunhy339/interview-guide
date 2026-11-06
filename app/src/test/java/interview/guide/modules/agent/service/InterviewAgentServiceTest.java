@@ -95,8 +95,8 @@ class InterviewAgentServiceTest {
     }
 
     @Test
-    @DisplayName("普通问题使用无工具模型，明确业务动作才启用 Agent 工具模型")
-    void usesPlainClientForGeneralQuestions() throws Exception {
+    @DisplayName("普通问题也进入受控 Agent 模型，由模型决定是否调用工具")
+    void usesAgentClientForGeneralQuestions() throws Exception {
         when(resourceLoader.getResource(anyString())).thenAnswer(invocation -> {
             String path = invocation.getArgument(0);
             String template = path.contains("system")
@@ -120,8 +120,8 @@ class InterviewAgentServiceTest {
             .thenReturn(new AgentConversationService.PreparedMessage(10L, 1L, "run-1"));
         when(providerRegistry.resolveChatProviderCandidates("primary"))
             .thenReturn(List.of("primary"));
-        ChatClient plainClient = mockStreamClient(Flux.just("Agent 是一种受控的软件系统。"));
-        when(providerRegistry.getPlainChatClient("primary")).thenReturn(plainClient);
+        ChatClient agentClient = mockStreamClient(Flux.just("Agent 是一种受控的软件系统。"));
+        when(providerRegistry.getAgentChatClient("primary")).thenReturn(agentClient);
 
         InterviewAgentService service = new InterviewAgentService(
             contextService, conversationService, providerRegistry, promptSanitizer, resourceLoader,
@@ -136,8 +136,8 @@ class InterviewAgentServiceTest {
 
         assertThat(events).isNotNull().anySatisfy(event ->
             assertThat(event.content()).isEqualTo("Agent 是一种受控的软件系统。"));
-        verify(providerRegistry).getPlainChatClient("primary");
-        verify(providerRegistry, org.mockito.Mockito.never()).getAgentChatClient(anyString());
+        verify(providerRegistry).getAgentChatClient("primary");
+        verify(providerRegistry, org.mockito.Mockito.never()).getPlainChatClient(anyString());
         verify(conversationService).prepareMessage("general-session", "general", "primary",
             "现在想学习一下 Agent 开发相关知识");
     }
@@ -200,7 +200,7 @@ class InterviewAgentServiceTest {
         when(providerRegistry.resolveChatProviderCandidates("primary"))
             .thenReturn(List.of("primary"));
         ChatClient client = mockStreamClient(Flux.just("安全回答"));
-        when(providerRegistry.getPlainChatClient("primary")).thenReturn(client);
+        when(providerRegistry.getAgentChatClient("primary")).thenReturn(client);
 
         InterviewAgentService service = new InterviewAgentService(
             contextService, conversationService, providerRegistry,
@@ -418,10 +418,7 @@ class InterviewAgentServiceTest {
         when(requestSpec.user(anyString())).thenReturn(requestSpec);
         when(requestSpec.stream()).thenReturn(streamResponse);
         when(streamResponse.content()).thenReturn(Flux.just("回答"));
-        when(providerRegistry.getAgentChatClient(
-            eq("primary"), org.mockito.ArgumentMatchers.<String>anySet(),
-            org.mockito.ArgumentMatchers.anyBoolean()
-        )).thenReturn(client);
+        when(providerRegistry.getAgentChatClient("primary")).thenReturn(client);
         AgentMetrics realMetrics = new AgentMetrics(null, false);
         InterviewAgentService service = new InterviewAgentService(
             contextService, conversationService, providerRegistry, promptSanitizer, resourceLoader,
