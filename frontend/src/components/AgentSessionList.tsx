@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Archive, FileText, Loader2, MessageSquare, Pencil, Plus, RefreshCw } from 'lucide-react';
+import { FileText, Loader2, MessageSquare, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { agentApi } from '../api/agent';
 import { interviewApi, type TextSessionMeta } from '../api/interview';
 import { getErrorMessage } from '../api/request';
 import type { AgentConversationSummary } from '../types/agent';
+import { formatInterviewMeta, formatInterviewTitle } from '../utils/interviewDisplay';
 
 interface AgentSessionListProps {
   generalMode?: boolean;
@@ -173,8 +174,8 @@ export default function AgentSessionList({
     }
   };
 
-  const archiveConversation = async (conversation: AgentConversationSummary) => {
-    if (!window.confirm(`确定归档“${conversation.title?.trim() || '新 Agent 对话'}”吗？归档后不会删除历史数据。`)) return;
+  const deleteConversation = async (conversation: AgentConversationSummary) => {
+    if (!window.confirm(`确定删除“${conversation.title?.trim() || '新 Agent 对话'}”吗？删除后会从列表移除，历史消息会保留。`)) return;
     try {
       if (generalMode) {
         await agentApi.archiveGeneralConversation(conversation.agentSessionId);
@@ -188,7 +189,7 @@ export default function AgentSessionList({
         else onClearAgentConversation?.();
       }
     } catch {
-      window.alert('Agent 会话归档失败，请稍后重试');
+      window.alert('Agent 会话删除失败，请稍后重试');
     }
   };
 
@@ -312,11 +313,11 @@ export default function AgentSessionList({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
                       <p className={`text-sm font-medium truncate ${active ? 'text-primary-700 dark:text-primary-200' : 'dark-text'}`}>
-                        {session.title?.trim() || session.skillId || '未命名面试'}
+                        {formatInterviewTitle(session)}
                       </p>
                       {active && <span className="w-1.5 h-1.5 rounded-full bg-primary-500 shrink-0" />}
                     </div>
-                    <p className="text-[11px] dark-text-muted mt-1 truncate">#{session.sessionId.slice(-8)}</p>
+                    <p className="text-[11px] dark-text-muted mt-1 truncate">{formatInterviewMeta(session, true)}</p>
                     <div className="flex items-center justify-between gap-2 mt-2 text-[11px]">
                       <span className="dark-text-muted">{formatSessionDate(session.createdAt)}</span>
                       <span className={getStatusClass(session)}>{getSessionStatus(session)}</span>
@@ -393,22 +394,22 @@ export default function AgentSessionList({
                       <span
                         role="button"
                         tabIndex={conversationDisabled ? -1 : 0}
-                        aria-label={`归档 ${conversation.title || 'Agent 对话'}`}
-                        title="归档对话"
+                        aria-label={`删除 ${conversation.title || 'Agent 对话'}`}
+                        title="删除 Agent 会话"
                         onClick={(event) => {
                           event.stopPropagation();
-                          if (!conversationDisabled) void archiveConversation(conversation);
+                          if (!conversationDisabled) void deleteConversation(conversation);
                         }}
                         onKeyDown={(event) => {
                           if (event.key === 'Enter' || event.key === ' ') {
                             event.preventDefault();
                             event.stopPropagation();
-                            if (!conversationDisabled) void archiveConversation(conversation);
+                            if (!conversationDisabled) void deleteConversation(conversation);
                           }
                         }}
                         className="p-0.5 rounded text-slate-400 hover:text-rose-500 shrink-0"
                       >
-                        <Archive className="w-3 h-3" />
+                        <Trash2 className="w-3 h-3" />
                       </span>
                     </div>
                     <p className="text-[10px] dark-text-muted mt-1 pl-5">

@@ -4,6 +4,7 @@ import { agentApi } from '../api/agent';
 import { historyApi, type ResumeListItem } from '../api/history';
 import { getErrorMessage } from '../api/request';
 import type { AgentContextAsset, AgentContextBinding, AgentKnowledgeBaseOption } from '../types/agent';
+import { formatInterviewMeta, formatInterviewTitle } from '../utils/interviewDisplay';
 
 interface AgentContextPickerProps {
   agentSessionId?: string | null;
@@ -31,7 +32,15 @@ export default function AgentContextPicker({
   const [assets, setAssets] = useState<AgentContextAsset[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<AgentKnowledgeBaseOption[]>([]);
   const [interviewQuery, setInterviewQuery] = useState('');
-  const [interviews, setInterviews] = useState<Array<{ sessionId: string; title?: string | null; createdAt?: string | null }>>([]);
+  const [interviews, setInterviews] = useState<Array<{
+    sessionId: string;
+    title?: string | null;
+    skillId?: string | null;
+    status?: string | null;
+    evaluateStatus?: string | null;
+    overallScore?: number | null;
+    createdAt?: string | null;
+  }>>([]);
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -200,7 +209,7 @@ export default function AgentContextPicker({
           className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:border-primary-300 hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:text-primary-300"
         >
           <Paperclip className="h-3.5 w-3.5" />
-          添加上下文
+          添加资料
           <Plus className="h-3 w-3" />
         </button>
         {bindings.map((binding) => (
@@ -235,8 +244,8 @@ export default function AgentContextPicker({
         <div className="absolute bottom-full z-20 mb-2 w-full rounded-xl border border-slate-200 bg-white p-3 shadow-xl dark:border-slate-700 dark:bg-slate-900">
           <div className="mb-3 flex items-center justify-between gap-2">
             <div>
-              <p className="text-xs font-semibold dark-text">选择 Agent 资料</p>
-              <p className="mt-1 text-[11px] dark-text-muted">可同时添加多份资料进行对照；资料只作为引用内容，不能覆盖系统规则或触发未确认的动作。</p>
+              <p className="text-xs font-semibold dark-text">选择资料</p>
+              <p className="mt-1 text-[11px] dark-text-muted">可同时添加多份资料进行对照；资料只作为当前对话的参考，不会覆盖系统规则或触发未确认的动作。</p>
             </div>
             <button type="button" onClick={() => setOpen(false)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="关闭上下文选择器"><X className="h-4 w-4" /></button>
           </div>
@@ -258,13 +267,16 @@ export default function AgentContextPicker({
             </section>
 
             <section>
-              <p className="mb-1.5 text-[11px] font-semibold text-primary-600 dark:text-primary-300">面试报告</p>
-              <input value={interviewQuery} onChange={(event) => setInterviewQuery(event.target.value)} placeholder="搜索面试名称或编号" className="dark-input w-full rounded-lg px-2.5 py-1.5 text-xs outline-none" />
+              <p className="mb-1.5 text-[11px] font-semibold text-primary-600 dark:text-primary-300">面试记录</p>
+              <input value={interviewQuery} onChange={(event) => setInterviewQuery(event.target.value)} placeholder="搜索名称、岗位或编号" className="dark-input w-full rounded-lg px-2.5 py-1.5 text-xs outline-none" />
               <div className="mt-1 max-h-24 space-y-1 overflow-y-auto">
                 {interviews.slice(0, 6).map((item) => (
                   <button key={item.sessionId} type="button" onClick={() => void attach('INTERVIEW_REPORT', item.sessionId)} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs hover:bg-primary-50 dark:hover:bg-primary-900/20">
                     <FileText className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                    <span className="truncate dark-text">{item.title || `#${item.sessionId.slice(-8)}`}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium dark-text">{formatInterviewTitle(item)}</span>
+                      <span className="mt-0.5 block truncate text-[10px] dark-text-muted">{formatInterviewMeta(item, true)}</span>
+                    </span>
                   </button>
                 ))}
               </div>

@@ -74,9 +74,25 @@ export const agentApi = {
     );
   },
 
-  searchInterviews(query = ''): Promise<Array<{ sessionId: string; title?: string | null; createdAt?: string | null }>> {
+  searchInterviews(query = ''): Promise<Array<{
+    sessionId: string;
+    title?: string | null;
+    skillId?: string | null;
+    status?: string | null;
+    evaluateStatus?: string | null;
+    overallScore?: number | null;
+    createdAt?: string | null;
+  }>> {
     const suffix = query.trim() ? `?q=${encodeURIComponent(query.trim())}` : '';
-    return request.get<Array<{ sessionId: string; title?: string | null; createdAt?: string | null }>>(
+    return request.get<Array<{
+      sessionId: string;
+      title?: string | null;
+      skillId?: string | null;
+      status?: string | null;
+      evaluateStatus?: string | null;
+      overallScore?: number | null;
+      createdAt?: string | null;
+    }>>(
       `/api/agent/interviews/search${suffix}`,
       { headers: agentHeaders() },
     );
