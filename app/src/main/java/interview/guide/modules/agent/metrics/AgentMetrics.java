@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
@@ -239,6 +240,28 @@ public class AgentMetrics {
         }
     }
 
+    /**
+     * 标记一次模型调用首次产生可展示文本的时刻。
+     *
+     * <p>ToolCallingAdvisor 可能在内部继续发起模型轮次；这里的标记绑定到当前
+     * {@link ModelCallTracker}，每个外层模型流只记录一次，避免把心跳或空 chunk
+     * 当成首 Token。该信息只用于低敏 Trace/耗时指标，不保存响应正文。</p>
+     */
+    public boolean markFirstToken(ModelCallTracker tracker) {
+        if (tracker == null) {
+            return false;
+        }
+        return tracker.firstTokenNanos.compareAndSet(0L, System.nanoTime());
+    }
+
+    /** 返回从模型调用开始到首个非空输出的耗时；尚未输出时返回 0。 */
+    public long firstTokenMillis(ModelCallTracker tracker) {
+        if (tracker == null || tracker.firstTokenNanos.get() == 0L) {
+            return 0L;
+        }
+        return Math.max(0L, (tracker.firstTokenNanos.get() - tracker.startedNanos) / 1_000_000L);
+    }
+
     /** 结束一次 Provider 模型调用并发布低基数 Token、调用次数和耗时指标。 */
     public void finishModelCall(ModelCallTracker tracker, String result) {
         if (tracker == null || !tracker.finished.compareAndSet(false, true)) {
@@ -328,6 +351,7 @@ public class AgentMetrics {
         private final String provider;
         private final long startedNanos;
         private final AtomicBoolean finished = new AtomicBoolean();
+        private final AtomicLong firstTokenNanos = new AtomicLong();
         private final AtomicReference<TokenUsage> usage = new AtomicReference<>();
         private final RunTracker runTracker;
         private volatile String model = "unknown";

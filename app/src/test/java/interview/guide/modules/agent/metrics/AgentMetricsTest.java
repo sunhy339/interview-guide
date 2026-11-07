@@ -282,6 +282,20 @@ class AgentMetricsTest {
     }
 
     @Test
+    @DisplayName("模型首个非空输出只记录一次并计算等待耗时")
+    void recordsFirstTokenOnlyOnce() {
+        AgentMetrics metrics = metrics(true);
+        AgentMetrics.ModelCallTracker tracker = metrics.startModelCall("pixel");
+
+        assertThat(metrics.markFirstToken(tracker)).isTrue();
+        assertThat(metrics.markFirstToken(tracker)).isFalse();
+        assertThat(metrics.firstTokenMillis(tracker)).isGreaterThanOrEqualTo(0L);
+
+        metrics.finishModelCall(tracker, "success");
+        assertThat(metrics.firstTokenMillis(tracker)).isGreaterThanOrEqualTo(0L);
+    }
+
+    @Test
     @DisplayName("已配置单价时累计费用达到运行预算后不再发起下一次模型请求")
     void enforcesCostBudgetWhenPricingIsKnown() {
         AgentCostProperties costProperties = new AgentCostProperties();

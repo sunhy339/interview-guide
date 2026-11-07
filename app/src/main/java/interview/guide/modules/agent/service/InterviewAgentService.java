@@ -1605,7 +1605,18 @@ public class InterviewAgentService {
             ModelStream currentCall = modelStream.get();
             Flux<AgentStreamEvent> attemptStream = currentCall.content()
                 .doOnNext(content -> {
-                    modelOutputStarted.set(true);
+                    if (content != null && !content.isBlank()) {
+                        modelOutputStarted.set(true);
+                        if (agentMetrics.markFirstToken(currentCall.tracker())) {
+                            recordRunTrace(
+                                runTracker,
+                                "MODEL_FIRST_TOKEN",
+                                "agent-model",
+                                providerId,
+                                agentMetrics.firstTokenMillis(currentCall.tracker()) + "ms"
+                            );
+                        }
+                    }
                 })
                 .doOnComplete(() -> llmProviderRegistry.markChatProviderSuccess(providerId))
                 .map(content -> appendOutputChunk(content, output))
