@@ -57,6 +57,10 @@ class AgentInteractionMatrixTest {
                     .isInstanceOf(Number.class);
                 assertThat(((Number) step.get("expectedUserMessageCount")).intValue())
                     .isGreaterThanOrEqualTo(1);
+                if (step.containsKey("expectedTraceActions")) {
+                    assertThat(step.get("expectedTraceActions")).isInstanceOf(List.class);
+                    assertThat(traceActions(step)).allMatch(value -> value != null && !value.isBlank());
+                }
                 if ("message".equals(type)) {
                     assertThat(text(step, "message")).isNotBlank();
                 } else {
@@ -100,5 +104,13 @@ class AgentInteractionMatrixTest {
     private String text(Map<String, Object> value, String key) {
         Object item = value.get(key);
         return item instanceof String text ? text : "";
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> traceActions(Map<String, Object> step) {
+        return ((List<Object>) step.getOrDefault("expectedTraceActions", List.of())).stream()
+            .filter(String.class::isInstance)
+            .map(String.class::cast)
+            .toList();
     }
 }
