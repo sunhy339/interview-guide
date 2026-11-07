@@ -56,6 +56,29 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\agent-quality-collector.
 知识库配置与 `dataset-v1.jsonl` 的样本契约匹配。脚本会拒绝组合使用
 `-RunQualityGate -CreateInterview`，避免把随机面试误报成质量回归。
 
+## 多轮交互门禁
+
+`interaction-matrix-v1.jsonl` 专门验证真实 Agent 的状态机，而不是只验证最终文本：
+
+- 普通问题的连续两轮对话仍然是 `COMPLETED`；
+- 缺少日程字段时进入 `WAITING_USER/INPUT`，补充后进入
+  `WAITING_USER/APPROVAL`；
+- 确认动作后原会话恢复并最终进入 `COMPLETED`。
+
+先采集真实运行结果，再执行独立门禁：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\agent-interaction-collector.ps1 `
+  -BaseUrl http://localhost:18083 `
+  -InterviewSessionId <已准备好的面试会话 ID> `
+  -ProviderId pixel `
+  -OutputPath build/agent-eval/interaction-run.jsonl `
+  -RunQualityGate
+```
+
+也可以使用 `-CreateInterview` 做接口和状态机 smoke，但随机面试不代表报告复盘质量。
+脚本会验证每一步的状态、pending 类型和动作状态，失败时不会生成“通过”的结果。
+
 执行真实评测并生成 `JSON + Markdown` 报告：
 
 ```powershell
