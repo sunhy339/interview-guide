@@ -827,6 +827,32 @@ class AgentConversationServiceTest {
     }
 
     @Test
+    @DisplayName("有效运行租约存在时，恢复扫描不得接管仍在执行的会话")
+    void doesNotClaimRecoverableRunWhileLeaseIsLive() {
+        AgentChatSessionEntity session = AgentChatSessionEntity.builder()
+            .id(31L)
+            .agentSessionId("agent-live")
+            .interviewSessionId("interview-live")
+            .runId("run-live")
+            .runStatus(AgentRunStatus.RUNNING)
+            .runStartedAt(LocalDateTime.now().minusMinutes(20))
+            .activeMessageId(32L)
+            .build();
+        when(sessionRepository.findByAgentSessionIdForUpdate("agent-live"))
+            .thenReturn(Optional.of(session));
+        when(runStateService.hasLiveLease("run-live")).thenReturn(true);
+        service.setRunStateService(runStateService);
+
+        AgentConversationService.RecoveredRun recovered = service.claimRecoverableRun(
+            "agent-live", "interview-live", LocalDateTime.now().minusMinutes(15)
+        );
+
+        assertThat(recovered).isNull();
+        verify(messageRepository, never()).findById(32L);
+        verify(runStateService, never()).markInterrupted("run-live");
+    }
+
+    @Test
     @DisplayName("终态只允许写入一次，迟到的取消和进度事件不会覆盖完成结果")
     void ignoresLateTerminalAndProgressEventsAfterCompletion() {
         AgentChatSessionEntity session = AgentChatSessionEntity.builder()

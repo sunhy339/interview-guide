@@ -8,6 +8,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import interview.guide.modules.agent.repository.AgentRunStateRepository;
 import java.util.Optional;
+import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.ObjectProvider;
@@ -126,6 +127,36 @@ class AgentRunStateServiceTest {
         assertThat(state.getModelTurnStatus()).isEqualTo("INTERRUPTED");
         assertThat(state.getModelResultReference()).isEqualTo("status:interrupted");
         assertThat(state.getPhase()).isEqualTo("model_interrupted");
+    }
+
+    @Test
+    void heartbeatExtendsLeaseAndLiveLeaseProtectsActiveRun() {
+        AgentRunStateEntity state = AgentRunStateEntity.builder()
+            .runId("run-1")
+            .agentSessionId("agent-1")
+            .status(AgentRunStatus.RUNNING)
+            .leaseUntil(LocalDateTime.now().minusSeconds(1))
+            .build();
+        when(repository.findByRunId("run-1")).thenReturn(Optional.of(state));
+        when(repository.save(any(AgentRunStateEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+
+        AgentRunStateService service = new AgentRunStateService(repository);
+        AgentMetrics.RunTracker tracker = tracker("run-1");
+
+        service.heartbeat(tracker);
+
+        assertThat(state.getLeaseUntil()).isAfter(LocalDateTime.now());
+        assertThat(service.hasLiveLease("run-1")).isTrue();
+        verify(repository).save(state);
+    }
+
+    @Test
+    void leaseReadFailureDoesNotAllowRecoveryToTakeOver() {
+        when(repository.findByRunId("run-1"))
+            .thenThrow(new IllegalStateException("database unavailable"));
+
+        assertThat(new AgentRunStateService(repository).hasLiveLease("run-1")).isTrue();
     }
 
     private AgentMetrics.RunTracker tracker(String runId) {

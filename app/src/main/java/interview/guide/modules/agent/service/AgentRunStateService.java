@@ -155,6 +155,45 @@ public class AgentRunStateService {
         });
     }
 
+    /**
+     * 延长仍在等待模型/重试的运行租约。
+     *
+     * <p>恢复扫描按会话开始时间筛选候选，但不能仅凭开始时间判断任务已经失联。
+     * 心跳有效时，其他实例不得接管该运行；数据库读取失败时按“仍有租约”处理，
+     * 让安全性优先于自动恢复。</p>
+     */
+    public void heartbeat(AgentMetrics.RunTracker tracker) {
+        String runId = runId(tracker);
+        runSafely("心跳", runId, () -> {
+            if (blank(runId)) {
+                return;
+            }
+            AgentRunStateEntity state = repository.findByRunId(runId).orElse(null);
+            if (state == null || state.getStatus() != AgentRunStatus.RUNNING) {
+                return;
+            }
+            heartbeat(state);
+            repository.save(state);
+        });
+    }
+
+    /** 返回当前运行是否仍受有效租约保护。读取失败时保守地返回 true。 */
+    public boolean hasLiveLease(String runId) {
+        if (blank(runId)) {
+            return false;
+        }
+        try {
+            return repository.findByRunId(runId)
+                .map(state -> state.getStatus() == AgentRunStatus.RUNNING
+                    && state.getLeaseUntil() != null
+                    && state.getLeaseUntil().isAfter(LocalDateTime.now()))
+                .orElse(false);
+        } catch (RuntimeException error) {
+            log.warn("读取 Agent 运行租约失败，暂不接管运行: runId={}", runId, error);
+            return true;
+        }
+    }
+
     /** 审批结果已提交后，复用原 runId 重新进入可执行状态。 */
     public void resume(AgentChatSessionEntity session) {
         resume(session, null, null);
