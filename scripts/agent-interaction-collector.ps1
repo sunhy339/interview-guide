@@ -216,6 +216,24 @@ function Assert-Step(
     }
 }
 
+function Assert-ActionResult(
+    [object]$ScenarioStep,
+    [object]$ActionResponse
+) {
+    $expectedVersion = [string]$ScenarioStep.expectedActionResultContractVersion
+    if ([string]::IsNullOrWhiteSpace($expectedVersion)) { return }
+    Assert-Pass ([string]$ActionResponse.resultContractVersion -eq $expectedVersion) `
+        "动作结果契约版本为 $($ActionResponse.resultContractVersion)（预期 $expectedVersion）"
+    Assert-Pass (-not [string]::IsNullOrWhiteSpace([string]$ActionResponse.resultCode)) `
+        '动作结果包含机器可判断的结果码'
+    Assert-Pass (-not [string]::IsNullOrWhiteSpace([string]$ActionResponse.resultEffect)) `
+        '动作结果包含影响类型'
+    Assert-Pass (-not [string]::IsNullOrWhiteSpace([string]$ActionResponse.resultResourceType)) `
+        '动作结果包含资源类型'
+    Assert-Pass (-not [string]::IsNullOrWhiteSpace([string]$ActionResponse.resultResourceId)) `
+        '动作结果包含真实资源 ID'
+}
+
 function Invoke-ScenarioMessage(
     [object]$Scenario,
     [object]$Step,
@@ -276,6 +294,11 @@ function Invoke-ScenarioConfirm(
         status = [string]$conversation.data.runStatus
         pendingType = Get-PendingType $conversation
         actionStatus = $actionStatus
+        actionResultContractVersion = [string]$confirmed.data.resultContractVersion
+        actionResultCode = [string]$confirmed.data.resultCode
+        actionResultEffect = [string]$confirmed.data.resultEffect
+        actionResultResourceType = [string]$confirmed.data.resultResourceType
+        actionResultResourceId = [string]$confirmed.data.resultResourceId
         runId = [string]$conversation.data.runId
         runRelation = ''
         userMessageCount = Get-UserMessageCount $conversation
@@ -286,6 +309,7 @@ function Invoke-ScenarioConfirm(
         durationMillis = if ($usage) { [long]$usage.durationMillis } else { 0 }
         answer = Get-ConversationAnswer $conversation
     }
+    Assert-ActionResult $Step $confirmed.data
     Assert-Step $Step $stepResult.status $stepResult.pendingType $stepResult.actionStatus $script:stepIndex
     return [pscustomobject]@{ result = $stepResult; conversation = $conversation; usage = $usage }
 }
@@ -308,6 +332,11 @@ function Invoke-ScenarioCancel(
         status = [string]$conversation.data.runStatus
         pendingType = Get-PendingType $conversation
         actionStatus = $actionStatus
+        actionResultContractVersion = [string]$cancelled.data.resultContractVersion
+        actionResultCode = [string]$cancelled.data.resultCode
+        actionResultEffect = [string]$cancelled.data.resultEffect
+        actionResultResourceType = [string]$cancelled.data.resultResourceType
+        actionResultResourceId = [string]$cancelled.data.resultResourceId
         runId = [string]$conversation.data.runId
         runRelation = ''
         userMessageCount = Get-UserMessageCount $conversation
@@ -318,6 +347,7 @@ function Invoke-ScenarioCancel(
         durationMillis = if ($usage) { [long]$usage.durationMillis } else { 0 }
         answer = Get-ConversationAnswer $conversation
     }
+    Assert-ActionResult $Step $cancelled.data
     Assert-Step $Step $stepResult.status $stepResult.pendingType $stepResult.actionStatus $script:stepIndex
     return [pscustomobject]@{ result = $stepResult; conversation = $conversation; usage = $usage }
 }
