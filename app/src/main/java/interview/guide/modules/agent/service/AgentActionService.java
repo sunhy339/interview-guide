@@ -47,6 +47,7 @@ public class AgentActionService {
     public static final String RESUME_IMPORT_TOOL = "resume.import";
     private static final String MEMORY_TOOL = "agent.memory.save";
     private static final String INTERVIEW_TITLE_TOOL = "interview.title.rename";
+    private static final String RESULT_CONTRACT_VERSION = "agent-action.result.v1";
     private static final String DRAFT_RISK = "DRAFT_WRITE";
     private static final String MEMORY_RISK = "MEMORY_WRITE";
     private static final String TITLE_RISK = "BUSINESS_WRITE";
@@ -934,10 +935,16 @@ public class AgentActionService {
         try {
             // 重试前清除上一次失败摘要；执行器若返回专属结果（例如分析投递失败）会覆盖它。
             entity.setResultSummary(null);
+            clearStructuredResult(entity);
             execute(entity);
+            requireStructuredResult(entity);
             entity.setStatus(AgentActionStatus.SUCCEEDED);
             if (entity.getResultSummary() == null) {
                 entity.setResultSummary(successSummary(entity.getToolId()));
+            }
+            if (entity.getResultCode() == null) {
+                setStructuredResult(entity, "ACTION_DRAFT_SAVED", "AGENT_ACTION",
+                    entity.getActionId(), "DRAFT_SAVED");
             }
             entity.setCompletedAt(LocalDateTime.now());
             repository.save(entity);
@@ -946,6 +953,8 @@ public class AgentActionService {
         } catch (RuntimeException error) {
             entity.setStatus(AgentActionStatus.FAILED);
             entity.setResultSummary(failureSummary(entity));
+            setStructuredResult(entity, "ACTION_FAILED", "AGENT_ACTION",
+                entity.getActionId(), "NO_EFFECT");
             entity.setCompletedAt(LocalDateTime.now());
             repository.save(entity);
             audit(entity, "ACTION_FAILED", AgentActionStatus.FAILED.name());
@@ -958,10 +967,25 @@ public class AgentActionService {
             if (memoryService == null) {
                 throw new IllegalStateException("长期记忆服务未配置");
             }
-            memoryService.rememberItem(
+            var snapshot = memoryService.rememberItem(
                 entity.getOwnerKey(), entity.getMemoryCategory(), entity.getDraftContent(),
                 entity.getMemoryJobScope()
             );
+            if (snapshot == null) {
+                throw new IllegalStateException("长期记忆服务未返回保存结果");
+            }
+            String itemId = snapshot.items().stream()
+                .filter(item -> item != null
+                    && java.util.Objects.equals(entity.getMemoryCategory(), item.category())
+                    && java.util.Objects.equals(entity.getDraftContent(), item.content())
+                    && item.revokedAt() == null)
+                .map(interview.guide.modules.agent.model.AgentMemoryItem::id)
+                .findFirst()
+                .orElse(null);
+            if (itemId == null || itemId.isBlank()) {
+                throw new IllegalStateException("长期记忆服务未返回记忆资源 ID");
+            }
+            setStructuredResult(entity, "MEMORY_SAVED", "MEMORY_ITEM", itemId, "MEMORY_WRITE");
             return;
         }
         if (INTERVIEW_TITLE_TOOL.equals(entity.getToolId())) {
@@ -971,13 +995,20 @@ public class AgentActionService {
             interviewPersistenceService.renameSessionForOwner(
                 entity.getInterviewSessionId(), entity.getOwnerKey(), entity.getTargetTitle()
             );
+            setStructuredResult(entity, "INTERVIEW_RENAMED", "INTERVIEW_SESSION",
+                entity.getInterviewSessionId(), "RESOURCE_UPDATED");
             return;
         }
         if (TRAINING_TASK_TOOL.equals(entity.getToolId())) {
             if (trainingTaskService == null) {
                 throw new IllegalStateException("训练任务服务未配置");
             }
-            trainingTaskService.createFromAction(entity);
+            var task = trainingTaskService.createFromAction(entity);
+            if (task == null || task.taskId() == null || task.taskId().isBlank()) {
+                throw new IllegalStateException("训练任务服务未返回任务资源 ID");
+            }
+            setStructuredResult(entity, "TRAINING_TASK_CREATED", "TRAINING_TASK",
+                task.taskId(), "RESOURCE_CREATED");
             return;
         }
         if (INTERVIEW_REPORT_EXPORT_TOOL.equals(entity.getToolId())) {
@@ -987,6 +1018,9 @@ public class AgentActionService {
                 ).isEmpty()) {
                 throw new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND, "面试报告不存在或无权访问");
             }
+            setStructuredResult(entity, "REPORT_EXPORT_READY", "INTERVIEW_REPORT",
+                entity.getInterviewSessionId(), "READ_ONLY");
+            return;
         }
         if (RESUME_EDITOR_SAVE_TOOL.equals(entity.getToolId())) {
             if (resumeEditorService == null || interviewPersistenceService == null) {
@@ -998,9 +1032,14 @@ public class AgentActionService {
             if (resumeId == null) {
                 throw new BusinessException(ErrorCode.BAD_REQUEST, "当前面试没有可编辑的关联简历");
             }
-            resumeEditorService.saveAgentDraftForOwner(
+            var draft = resumeEditorService.saveAgentDraftForOwner(
                 resumeId, entity.getOwnerKey(), entity.getDraftContent()
             );
+            if (draft == null || draft.resumeId() == null) {
+                throw new IllegalStateException("简历编辑服务未返回编辑版资源 ID");
+            }
+            setStructuredResult(entity, "RESUME_EDIT_DRAFT_SAVED", "RESUME_EDITOR_DRAFT",
+                String.valueOf(draft.resumeId()), "DRAFT_WRITE");
             return;
         }
         if (RESUME_IMPORT_TOOL.equals(entity.getToolId())) {
@@ -1011,6 +1050,10 @@ public class AgentActionService {
                 entity.getContextAssetId(), entity.getOwnerKey()
             );
             entity.setResultSummary(result.message());
+            setStructuredResult(entity,
+                result.duplicate() ? "RESUME_IMPORT_REUSED" : "RESUME_IMPORTED",
+                "RESUME", String.valueOf(result.resumeId()),
+                result.duplicate() ? "RESOURCE_REUSED" : "RESOURCE_CREATED");
             return;
         }
         if (INTERVIEW_SCHEDULE_CREATE_TOOL.equals(entity.getToolId())) {
@@ -1026,9 +1069,14 @@ public class AgentActionService {
             request.setRoundNumber(entity.getScheduleRoundNumber());
             request.setInterviewer(entity.getScheduleInterviewer());
             request.setNotes(entity.getScheduleNotes());
-            interviewScheduleService.createForOwner(
+            InterviewScheduleDTO schedule = interviewScheduleService.createForOwner(
                 request, entity.getOwnerKey(), entity.getActionId()
             );
+            if (schedule == null || schedule.getId() == null) {
+                throw new IllegalStateException("面试日程服务未返回日程资源 ID");
+            }
+            setStructuredResult(entity, "SCHEDULE_CREATED", "INTERVIEW_SCHEDULE",
+                String.valueOf(schedule.getId()), "RESOURCE_CREATED");
             return;
         }
         if (INTERVIEW_SCHEDULE_CANCEL_TOOL.equals(entity.getToolId())) {
@@ -1038,7 +1086,14 @@ public class AgentActionService {
             if (entity.getScheduleId() == null) {
                 throw new BusinessException(ErrorCode.INTERVIEW_SCHEDULE_NOT_FOUND, "待取消的面试日程不存在");
             }
-            interviewScheduleService.cancelForOwner(entity.getScheduleId(), entity.getOwnerKey());
+            InterviewScheduleDTO schedule = interviewScheduleService.cancelForOwner(
+                entity.getScheduleId(), entity.getOwnerKey()
+            );
+            if (schedule == null || schedule.getId() == null) {
+                throw new IllegalStateException("取消日程服务未返回日程资源 ID");
+            }
+            setStructuredResult(entity, "SCHEDULE_CANCELLED", "INTERVIEW_SCHEDULE",
+                String.valueOf(schedule.getId()), "RESOURCE_CANCELLED");
             return;
         }
         if (INTERVIEW_SCHEDULE_UPDATE_TOOL.equals(entity.getToolId())) {
@@ -1057,9 +1112,91 @@ public class AgentActionService {
             request.setRoundNumber(entity.getScheduleRoundNumber());
             request.setInterviewer(entity.getScheduleInterviewer());
             request.setNotes(entity.getScheduleNotes());
-            interviewScheduleService.updateForOwner(entity.getScheduleId(), request, entity.getOwnerKey());
+            InterviewScheduleDTO schedule = interviewScheduleService.updateForOwner(
+                entity.getScheduleId(), request, entity.getOwnerKey()
+            );
+            if (schedule == null || schedule.getId() == null) {
+                throw new IllegalStateException("修改日程服务未返回日程资源 ID");
+            }
+            setStructuredResult(entity, "SCHEDULE_UPDATED", "INTERVIEW_SCHEDULE",
+                String.valueOf(schedule.getId()), "RESOURCE_UPDATED");
+            return;
         }
         // 训练计划和练习题的确认结果仍然只保存在动作表，不修改其他业务实体。
+        setStructuredResult(entity, "ACTION_DRAFT_SAVED", "AGENT_ACTION",
+            entity.getActionId(), "DRAFT_SAVED");
+    }
+
+    private void clearStructuredResult(AgentActionRequestEntity entity) {
+        entity.setResultContractVersion(null);
+        entity.setResultCode(null);
+        entity.setResultEffect(null);
+        entity.setResultResourceType(null);
+        entity.setResultResourceId(null);
+    }
+
+    private void setStructuredResult(
+        AgentActionRequestEntity entity,
+        String code,
+        String resourceType,
+        String resourceId,
+        String effect
+    ) {
+        entity.setResultContractVersion(RESULT_CONTRACT_VERSION);
+        entity.setResultCode(code);
+        entity.setResultEffect(effect);
+        entity.setResultResourceType(resourceType);
+        entity.setResultResourceId(resourceId == null || resourceId.isBlank()
+            ? entity.getActionId() : resourceId);
+    }
+
+    /**
+     * 执行器的成功分支必须留下可验证的领域结果，不能只靠 resultSummary 让模型猜测状态。
+     * 这里是最后一道服务端断言；历史动作仍允许没有结果字段，但新执行不能绕过该契约。
+     */
+    private void requireStructuredResult(AgentActionRequestEntity entity) {
+        if (!RESULT_CONTRACT_VERSION.equals(entity.getResultContractVersion())
+            || isBlank(entity.getResultCode())
+            || isBlank(entity.getResultEffect())
+            || isBlank(entity.getResultResourceType())
+            || isBlank(entity.getResultResourceId())) {
+            throw new IllegalStateException("Agent 动作执行器未返回完整结果契约");
+        }
+        String tool = entity.getToolId();
+        String code = entity.getResultCode();
+        String effect = entity.getResultEffect();
+        String type = entity.getResultResourceType();
+        boolean valid = switch (tool) {
+            case MEMORY_TOOL -> "MEMORY_SAVED".equals(code)
+                && "MEMORY_WRITE".equals(effect) && "MEMORY_ITEM".equals(type);
+            case INTERVIEW_TITLE_TOOL -> "INTERVIEW_RENAMED".equals(code)
+                && "RESOURCE_UPDATED".equals(effect) && "INTERVIEW_SESSION".equals(type);
+            case TRAINING_TASK_TOOL -> "TRAINING_TASK_CREATED".equals(code)
+                && "RESOURCE_CREATED".equals(effect) && "TRAINING_TASK".equals(type);
+            case INTERVIEW_REPORT_EXPORT_TOOL -> "REPORT_EXPORT_READY".equals(code)
+                && "READ_ONLY".equals(effect) && "INTERVIEW_REPORT".equals(type);
+            case RESUME_EDITOR_SAVE_TOOL -> "RESUME_EDIT_DRAFT_SAVED".equals(code)
+                && "DRAFT_WRITE".equals(effect) && "RESUME_EDITOR_DRAFT".equals(type);
+            case RESUME_IMPORT_TOOL -> ("RESUME_IMPORTED".equals(code)
+                || "RESUME_IMPORT_REUSED".equals(code))
+                && ("RESOURCE_CREATED".equals(effect) || "RESOURCE_REUSED".equals(effect))
+                && "RESUME".equals(type);
+            case INTERVIEW_SCHEDULE_CREATE_TOOL -> "SCHEDULE_CREATED".equals(code)
+                && "RESOURCE_CREATED".equals(effect) && "INTERVIEW_SCHEDULE".equals(type);
+            case INTERVIEW_SCHEDULE_CANCEL_TOOL -> "SCHEDULE_CANCELLED".equals(code)
+                && "RESOURCE_CANCELLED".equals(effect) && "INTERVIEW_SCHEDULE".equals(type);
+            case INTERVIEW_SCHEDULE_UPDATE_TOOL -> "SCHEDULE_UPDATED".equals(code)
+                && "RESOURCE_UPDATED".equals(effect) && "INTERVIEW_SCHEDULE".equals(type);
+            default -> "ACTION_DRAFT_SAVED".equals(code)
+                && "DRAFT_SAVED".equals(effect) && "AGENT_ACTION".equals(type);
+        };
+        if (!valid) {
+            throw new IllegalStateException("Agent 动作执行结果与领域工具不匹配");
+        }
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 
     @Transactional
@@ -1105,6 +1242,8 @@ public class AgentActionService {
         }
         entity.setStatus(AgentActionStatus.CANCELLED);
         entity.setResultSummary("用户取消了该动作，原始面试资料未被修改。");
+        setStructuredResult(entity, "ACTION_CANCELLED", "AGENT_ACTION",
+            entity.getActionId(), "NO_EFFECT");
         repository.save(entity);
         audit(entity, "ACTION_CANCELLED", AgentActionStatus.CANCELLED.name());
         if (conversationService != null && entity.getRunId() != null) {
@@ -1124,7 +1263,9 @@ public class AgentActionService {
         }
         AgentConversationService.ApprovalResumeRequest resumed = conversationService.prepareApprovalResume(
             entity.getAgentSessionId(), entity.getRunId(), entity.getOwnerKey(),
-            response.actionId(), response.title(), response.status().name(), response.resultSummary(), notice
+            response.actionId(), response.title(), response.status().name(), response.resultSummary(),
+            response.resultContractVersion(), response.resultCode(), response.resultEffect(),
+            response.resultResourceType(), response.resultResourceId(), notice
         );
         if (resumed == null) {
             // 兼容尚未接入事件监听器的旧调用方和单元测试替身。

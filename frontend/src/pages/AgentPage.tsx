@@ -288,6 +288,21 @@ function agentActionResultClass(status: string) {
   return 'text-emerald-700 dark:text-emerald-300';
 }
 
+function formatAgentActionEffect(effect?: string | null) {
+  const labels: Record<string, string> = {
+    DRAFT_SAVED: '已保存为独立草稿',
+    DRAFT_WRITE: '已写入编辑草稿',
+    MEMORY_WRITE: '已写入长期记忆',
+    RESOURCE_CREATED: '已创建资源',
+    RESOURCE_UPDATED: '已更新资源',
+    RESOURCE_CANCELLED: '已取消资源',
+    RESOURCE_REUSED: '已复用已有资源',
+    READ_ONLY: '已校验，可读取',
+    NO_EFFECT: '未产生业务副作用',
+  };
+  return effect ? (labels[effect] || effect) : '';
+}
+
 function compactMemoryDraft(content: string) {
   return content
     .replace(/```[\s\S]*?```/g, ' ')
@@ -2923,6 +2938,11 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                         )}
                       </details>
                       {action.resultSummary ? <p className={`mt-2 text-xs ${agentActionResultClass(action.status)}`}>{action.resultSummary}</p> : null}
+                      {action.resultResourceId ? (
+                        <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                          结果：{formatAgentActionEffect(action.resultEffect)} · {action.resultResourceType || '资源'} #{action.resultResourceId}
+                        </p>
+                      ) : null}
                       {action.status === 'SUCCEEDED'
                         && (action.toolId === 'practice.questions.draft' || action.toolId === 'interview.plan.draft') ? (
                         <button

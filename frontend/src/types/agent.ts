@@ -144,6 +144,11 @@ export interface AgentAction {
   updatedAt?: string | null;
   confirmedAt?: string | null;
   completedAt?: string | null;
+  resultContractVersion?: string | null;
+  resultCode?: string | null;
+  resultEffect?: string | null;
+  resultResourceType?: string | null;
+  resultResourceId?: string | null;
 }
 
 export type AgentTrainingTaskStatus = 'TODO' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
