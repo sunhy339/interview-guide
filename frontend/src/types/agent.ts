@@ -262,10 +262,14 @@ export interface AgentMemoryItem {
 export type AgentStepStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
 
 export interface AgentSource {
-  kind: 'skill' | 'rag';
+  kind: 'skill' | 'rag' | 'interview' | 'resume' | 'file' | string;
   title: string;
   score?: number | null;
   reference: string;
+  sourceId?: string | null;
+  version?: string | null;
+  authority?: string | null;
+  selectedReason?: string | null;
 }
 
 export interface AgentStreamEvent {

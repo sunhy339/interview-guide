@@ -1397,7 +1397,11 @@ public class AgentConversationService {
             promptSanitizer.sanitizeForContext(source.kind()),
             promptSanitizer.sanitizeForContext(source.title()),
             source.score(),
-            promptSanitizer.sanitizeForContext(source.reference())
+            promptSanitizer.sanitizeForContext(source.reference()),
+            promptSanitizer.sanitizeForContext(source.sourceId()),
+            promptSanitizer.sanitizeForContext(source.version()),
+            promptSanitizer.sanitizeForContext(source.authority()),
+            promptSanitizer.sanitizeForContext(source.selectedReason())
         );
     }
 
