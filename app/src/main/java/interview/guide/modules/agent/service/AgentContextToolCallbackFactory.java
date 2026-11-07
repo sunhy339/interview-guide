@@ -358,7 +358,7 @@ public class AgentContextToolCallbackFactory {
             asset.assetId(), context.ownerKey(), asset.securityFlagged()
         );
         return emit(new AssetActionToolResult(
-            "REVIEWED", reviewed.assetId(), reviewed.originalFilename(), reviewed.reviewStatus(),
+            "COMPLETED", "REVIEWED", reviewed.assetId(), reviewed.originalFilename(), reviewed.reviewStatus(),
             reviewed.securityFlagged(), reviewed.securityNotice(), reviewed.knowledgeBaseId()
         ));
     }
@@ -380,7 +380,7 @@ public class AgentContextToolCallbackFactory {
             asset.assetId(), context.ownerKey()
         );
         return emit(new AssetActionToolResult(
-            "KB_IMPORT_PENDING", requested.assetId(), requested.originalFilename(), requested.reviewStatus(),
+            "PENDING", "KB_IMPORT_PENDING", requested.assetId(), requested.originalFilename(), requested.reviewStatus(),
             requested.securityFlagged(), requested.securityNotice(), requested.knowledgeBaseId()
         ));
     }
@@ -396,7 +396,7 @@ public class AgentContextToolCallbackFactory {
             asset.assetId(), context.ownerKey(), asset.originalFilename(), "agent-upload"
         );
         return emit(new AssetActionToolResult(
-            "KB_IMPORT_SUBMITTED", submitted.assetId(), submitted.originalFilename(), submitted.reviewStatus(),
+            "SUBMITTED", "KB_IMPORT_SUBMITTED", submitted.assetId(), submitted.originalFilename(), submitted.reviewStatus(),
             submitted.securityFlagged(), submitted.securityNotice(), submitted.knowledgeBaseId()
         ));
     }
@@ -1008,6 +1008,7 @@ public class AgentContextToolCallbackFactory {
     }
 
     private record AssetActionToolResult(
+        String status,
         String operation,
         String assetId,
         String originalFilename,
