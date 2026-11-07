@@ -52,6 +52,11 @@ class AgentInteractionMatrixTest {
                     "COMPLETED", "WAITING_USER", "FAILED", "CANCELLED"
                 );
                 assertThat(step).containsKey("expectedPendingType");
+                assertThat(text(step, "expectedRunRelation")).isIn("NEW", "SAME");
+                assertThat(step.get("expectedUserMessageCount"))
+                    .isInstanceOf(Number.class);
+                assertThat(((Number) step.get("expectedUserMessageCount")).intValue())
+                    .isGreaterThanOrEqualTo(1);
                 if ("message".equals(type)) {
                     assertThat(text(step, "message")).isNotBlank();
                 } else {
@@ -68,6 +73,8 @@ class AgentInteractionMatrixTest {
             .anyMatch(step -> "INPUT".equals(text(step, "expectedPendingType")));
         assertThat(scenarios.stream().flatMap(item -> steps(item).stream()))
             .anyMatch(step -> "APPROVAL".equals(text(step, "expectedPendingType")));
+        assertThat(scenarios.stream().flatMap(item -> steps(item).stream()))
+            .anyMatch(step -> "SAME".equals(text(step, "expectedRunRelation")));
     }
 
     private List<Map<String, Object>> loadScenarios() throws IOException {
