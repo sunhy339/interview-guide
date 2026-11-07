@@ -6,6 +6,7 @@ import interview.guide.modules.agent.model.AgentConversationResponse;
 import interview.guide.modules.agent.model.AgentConversationSummary;
 import interview.guide.modules.agent.model.AgentMemoryResponse;
 import interview.guide.modules.agent.model.AgentAuditEventResponse;
+import interview.guide.modules.agent.model.AgentRunEventResponse;
 import interview.guide.modules.agent.model.UpdateAgentMemoryItemRequest;
 import interview.guide.modules.agent.model.AgentStreamEvent;
 import interview.guide.modules.agent.model.CreateAgentConversationRequest;
@@ -32,6 +33,7 @@ import interview.guide.modules.agent.service.AgentConversationService;
 import interview.guide.modules.agent.service.AgentActionService;
 import interview.guide.modules.agent.service.AgentMemoryService;
 import interview.guide.modules.agent.service.AgentAuditService;
+import interview.guide.modules.agent.service.AgentRunEventService;
 import interview.guide.modules.agent.service.InterviewAgentService;
 import interview.guide.modules.agent.service.AgentTrainingTaskService;
 import interview.guide.modules.agent.service.AgentUsageService;
@@ -82,6 +84,7 @@ public class AgentController {
     private final AgentConversationService conversationService;
     private final AgentMemoryService memoryService;
     private final AgentAuditService auditService;
+    private final AgentRunEventService runEventService;
     private final AgentActionService actionService;
     private final AgentTrainingTaskService trainingTaskService;
     private final AgentUsageService usageService;
@@ -499,6 +502,20 @@ public class AgentController {
         @RequestHeader(value = "X-User-Id", required = false) String ownerKey
     ) {
         return Result.success(auditService.listTrace(
+            authIdentityService.requireIdentity(ownerKey), agentSessionId, runId, limit
+        ));
+    }
+
+    /** 查询模型轮次和工具批次的低敏关联事件，不返回 Prompt、工具参数或结果正文。 */
+    @GetMapping("/api/agent/sessions/{agentSessionId}/run-events")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
+    public Result<List<AgentRunEventResponse>> listAgentRunEvents(
+        @PathVariable String agentSessionId,
+        @RequestParam(value = "runId", required = false) String runId,
+        @RequestParam(value = "limit", defaultValue = "100") int limit,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        return Result.success(runEventService.listForOwner(
             authIdentityService.requireIdentity(ownerKey), agentSessionId, runId, limit
         ));
     }
