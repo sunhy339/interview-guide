@@ -19,7 +19,8 @@ class AgentToolRegistryTest {
         AgentContextToolCallbackFactory factory = mock(AgentContextToolCallbackFactory.class);
         ToolCallback search = callback(AgentContextToolCallbackFactory.INTERVIEW_SEARCH);
         ToolCallback draft = callback(AgentContextToolCallbackFactory.SCHEDULE_DRAFT);
-        when(factory.callbacks()).thenReturn(List.of(search, draft));
+        ToolCallback action = callback(AgentContextToolCallbackFactory.ACTION_DRAFT);
+        when(factory.callbacks()).thenReturn(List.of(search, draft, action));
 
         AgentToolRegistry registry = new AgentToolRegistry(factory);
 
@@ -42,6 +43,13 @@ class AgentToolRegistryTest {
         assertThat(schedule.idempotency()).isEqualTo(AgentToolDescriptor.Idempotency.IDEMPOTENCY_KEYED);
         assertThat(schedule.retryPolicy()).isEqualTo(AgentToolDescriptor.RetryPolicy.NONE);
         assertThat(schedule.inputSchema()).contains("type", "object");
+        AgentToolDescriptor actionDescriptor = registry.descriptorMap()
+            .get(AgentContextToolCallbackFactory.ACTION_DRAFT);
+        assertThat(actionDescriptor.capability()).isEqualTo(AgentIntentRouter.Capability.ACTION);
+        assertThat(actionDescriptor.requiredPermission()).isEqualTo("agent:action:draft");
+        assertThat(actionDescriptor.requiresApproval()).isTrue();
+        assertThat(actionDescriptor.resultContract())
+            .isEqualTo(AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION);
         assertThat(registry.contractErrors()).isEmpty();
 
         AgentToolDescriptor readOnly = registry.descriptorMap()

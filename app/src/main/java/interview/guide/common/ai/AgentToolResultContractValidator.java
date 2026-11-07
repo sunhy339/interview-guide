@@ -132,13 +132,34 @@ public final class AgentToolResultContractValidator {
         ).contains(status)) {
             return "Agent 动作工具返回了不支持的状态，未确认任何业务状态";
         }
+        if (!textEquals(payload, "contractVersion", "agent-action.v2")) {
+            return "Agent 动作结果缺少受支持的契约版本，未确认任何业务状态";
+        }
+        if (!textField(payload, "operation")) {
+            return "Agent 动作结果缺少 operation，未确认任何业务状态";
+        }
+        JsonNode requiresConfirmation = payload.get("requiresConfirmation");
+        if (requiresConfirmation == null || !requiresConfirmation.isBoolean()
+            || !requiresConfirmation.booleanValue()) {
+            return "Agent 动作结果缺少人工确认标记，未确认任何业务状态";
+        }
+        if (!textField(payload, "effect") || !textField(payload, "impactScope")) {
+            return "Agent 动作结果缺少影响范围，未确认任何业务状态";
+        }
         if (!"ACTION_PROPOSED".equals(status)) {
             return requireMessage(payload, "Agent 动作结果缺少说明，未确认任何业务状态");
         }
-        JsonNode operation = payload.get("operation");
-        if (operation == null || !operation.isTextual() || operation.asText().isBlank()) {
-            return "Agent 动作结果缺少 operation，未确认任何业务状态";
+        if (!"PENDING_CONFIRMATION".equals(payload.get("effect").asText())
+            || !"DRAFT_ONLY".equals(payload.get("impactScope").asText())) {
+            return "Agent 动作结果的状态或影响范围不匹配，未确认任何业务状态";
         }
+        JsonNode resource = payload.get("resource");
+        if (resource == null || !resource.isObject()
+            || !textEquals(resource, "type", "INTERVIEW_REPORT")
+            || !textField(resource, "id")) {
+            return "Agent 动作结果缺少资源作用域，未确认任何业务状态";
+        }
+        JsonNode operation = payload.get("operation");
         JsonNode action = payload.get("action");
         JsonNode actionId = action == null ? null : action.get("actionId");
         if (action == null || !action.isObject()
@@ -166,6 +187,17 @@ public final class AgentToolResultContractValidator {
         JsonNode toolId = action.get("toolId");
         if (toolId == null || !toolId.isTextual() || !expectedTool.equals(toolId.asText())) {
             return "Agent 动作结果的动作类型不匹配，未确认任何业务状态";
+        }
+        String expectedRisk = switch (operation.asText()) {
+            case "memory_save" -> "MEMORY_WRITE";
+            case "rename_interview" -> "BUSINESS_WRITE";
+            default -> "DRAFT_WRITE";
+        };
+        if (!textEquals(action, "status", "PROPOSED")
+            || !textField(action, "agentSessionId")
+            || !textEquals(action, "interviewSessionId", resource.get("id").asText())
+            || !textEquals(action, "riskLevel", expectedRisk)) {
+            return "Agent 动作结果的资源或状态作用域不完整，未确认任何业务状态";
         }
         return null;
     }
@@ -397,6 +429,11 @@ public final class AgentToolResultContractValidator {
     private static boolean booleanField(JsonNode object, String field) {
         JsonNode value = object.get(field);
         return value != null && value.isBoolean();
+    }
+
+    private static boolean textEquals(JsonNode object, String field, String expected) {
+        JsonNode value = object == null ? null : object.get(field);
+        return value != null && value.isTextual() && expected.equals(value.asText());
     }
 
     /** 校验动作草稿仍属于发起该工具的领域，避免错误动作被误挂到当前请求。 */

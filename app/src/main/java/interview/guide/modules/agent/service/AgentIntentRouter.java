@@ -107,7 +107,7 @@ public class AgentIntentRouter {
             + "|(?:面试名称|面试记录名称).{0,24}(?:重命名|改名|修改))"
     );
     private static final Pattern INFORMATIONAL = Pattern.compile(
-        "(?:是什么|什么是|是什么意思|如何理解|怎么理解|解释|介绍|学习|区别|能不能|可以吗|为什么|是否|怎么|怎么做|如何做)"
+        "(?:是什么|什么是|是什么意思|如何|怎样|怎么|如何理解|怎么理解|解释|介绍|学习|区别|能不能|可以吗|为什么|是否|是否可以)"
     );
     private static final Pattern DIRECT_ACTION = Pattern.compile(
         "(?:帮我|替我|直接|现在就|执行|安排一下|预约一下|取消掉|改到|创建一个|更新一下)"
@@ -267,6 +267,16 @@ public class AgentIntentRouter {
             }
             if (route == Route.INTERVIEW_REVIEW && isInformationalOnly(rawMessage)) {
                 return Decision.general("后端安全校验：面试内容是概念询问而非本场复盘");
+            }
+            if (isInformationalOnly(rawMessage)
+                && capabilities.contains(Capability.ACTION)
+                && !DIRECT_ACTION.matcher(normalize(rawMessage)).find()) {
+                Set<Capability> safeCapabilities = new HashSet<>(capabilities);
+                safeCapabilities.remove(Capability.ACTION);
+                if (safeCapabilities.isEmpty()) {
+                    return Decision.general("后端安全校验：动作内容是操作说明而非执行授权");
+                }
+                capabilities = Set.copyOf(safeCapabilities);
             }
             return decision(
                 route, confidence, "模型分类" + (reason.isBlank() ? "" : "：" + reason), capabilities

@@ -66,17 +66,27 @@ class AgentToolResultContractValidatorTest {
     void acceptsUnifiedActionDraftOnlyWhenOperationMatchesDomainTool() {
         String result = sanitizer.wrapWithDelimiters(
             "agent-tool-result",
-            "{\"status\":\"ACTION_PROPOSED\",\"operation\":\"training_task\","
+            "{\"contractVersion\":\"agent-action.v2\",\"status\":\"ACTION_PROPOSED\","
+                + "\"operation\":\"training_task\",\"requiresConfirmation\":true,"
+                + "\"effect\":\"PENDING_CONFIRMATION\",\"impactScope\":\"DRAFT_ONLY\","
+                + "\"resource\":{\"type\":\"INTERVIEW_REPORT\",\"id\":\"interview-1\"},"
                 + "\"actionId\":\"action-1\","
                 + "\"action\":{\"actionId\":\"action-1\","
-                + "\"toolId\":\"training.task.create\"}}"
+                + "\"toolId\":\"training.task.create\",\"status\":\"PROPOSED\","
+                + "\"agentSessionId\":\"agent-1\",\"interviewSessionId\":\"interview-1\","
+                + "\"riskLevel\":\"DRAFT_WRITE\"}}"
         );
         String mismatched = sanitizer.wrapWithDelimiters(
             "agent-tool-result",
-            "{\"status\":\"ACTION_PROPOSED\",\"operation\":\"training_task\","
+            "{\"contractVersion\":\"agent-action.v2\",\"status\":\"ACTION_PROPOSED\","
+                + "\"operation\":\"training_task\",\"requiresConfirmation\":true,"
+                + "\"effect\":\"PENDING_CONFIRMATION\",\"impactScope\":\"DRAFT_ONLY\","
+                + "\"resource\":{\"type\":\"INTERVIEW_REPORT\",\"id\":\"interview-1\"},"
                 + "\"actionId\":\"action-1\","
                 + "\"action\":{\"actionId\":\"action-1\","
-                + "\"toolId\":\"agent.memory.save\"}}"
+                + "\"toolId\":\"agent.memory.save\",\"status\":\"PROPOSED\","
+                + "\"agentSessionId\":\"agent-1\",\"interviewSessionId\":\"interview-1\","
+                + "\"riskLevel\":\"DRAFT_WRITE\"}}"
         );
 
         assertThat(AgentToolResultContractValidator.validateOutput(
@@ -91,7 +101,9 @@ class AgentToolResultContractValidatorTest {
     void acceptsInputRequiredUnifiedActionDraftWithExplanation() {
         String result = sanitizer.wrapWithDelimiters(
             "agent-tool-result",
-            "{\"status\":\"INPUT_REQUIRED\",\"operation\":\"training_task\","
+            "{\"contractVersion\":\"agent-action.v2\",\"status\":\"INPUT_REQUIRED\","
+                + "\"operation\":\"training_task\",\"requiresConfirmation\":true,"
+                + "\"effect\":\"INPUT_REQUIRED\",\"impactScope\":\"NONE\","
                 + "\"message\":\"请先绑定面试报告\"}"
         );
 

@@ -440,8 +440,12 @@ public class AgentContextToolCallbackFactory {
         }
         if (isBlank(interviewSessionId)) {
             return emit(Map.of(
+                "contractVersion", "agent-action.v2",
                 "status", "INPUT_REQUIRED",
                 "operation", operation,
+                "requiresConfirmation", true,
+                "effect", "INPUT_REQUIRED",
+                "impactScope", "NONE",
                 "message", "请先在当前 Agent 会话中绑定一份面试报告，再生成该业务动作草稿。"
             ));
         }
@@ -483,9 +487,17 @@ public class AgentContextToolCallbackFactory {
             default -> throw new BusinessException(ErrorCode.BAD_REQUEST, "不支持的 Agent 动作类型");
         };
         return emit(Map.of(
+            "contractVersion", "agent-action.v2",
             "status", "ACTION_PROPOSED",
             "operation", operation,
             "actionId", action.actionId(),
+            "requiresConfirmation", true,
+            "effect", "PENDING_CONFIRMATION",
+            "impactScope", "DRAFT_ONLY",
+            "resource", Map.of(
+                "type", "INTERVIEW_REPORT",
+                "id", action.interviewSessionId()
+            ),
             "message", "已生成待确认动作草稿；用户确认后才会执行，不会直接修改业务数据。",
             "action", action
         ));
