@@ -760,6 +760,29 @@ public class AgentConversationService {
         String actionResultSummary,
         String notice
     ) {
+        return prepareApprovalResume(
+            agentSessionId, runId, ownerKey, actionId, actionTitle, actionStatus,
+            actionResultSummary, null, null, null, null, null, notice
+        );
+    }
+
+    /** 审批续跑同时携带服务端签名的结构化动作结果，避免只依赖自然语言摘要。 */
+    @Transactional
+    public ApprovalResumeRequest prepareApprovalResume(
+        String agentSessionId,
+        String runId,
+        String ownerKey,
+        String actionId,
+        String actionTitle,
+        String actionStatus,
+        String actionResultSummary,
+        String resultContractVersion,
+        String resultCode,
+        String resultEffect,
+        String resultResourceType,
+        String resultResourceId,
+        String notice
+    ) {
         if (agentSessionId == null || agentSessionId.isBlank()
             || runId == null || runId.isBlank() || eventPublisher == null) {
             return null;
@@ -814,7 +837,8 @@ public class AgentConversationService {
             session.getInterviewSessionId(), session.getAgentSessionId(), session.getGoal(),
             session.getProviderId(), session.getOwnerKey(), session.getMemoryKey(),
             originalUser.getContent(), assistant.getId(), runId, notice,
-            actionId, actionTitle, actionStatus, actionResultSummary
+            actionId, actionTitle, actionStatus, actionResultSummary,
+            resultContractVersion, resultCode, resultEffect, resultResourceType, resultResourceId
         );
         eventPublisher.publishEvent(request);
         return request;
@@ -896,7 +920,7 @@ public class AgentConversationService {
             session.getInterviewSessionId(), session.getAgentSessionId(), session.getGoal(),
             session.getProviderId(), session.getOwnerKey(), session.getMemoryKey(),
             user.getContent(), assistant.getId(), session.getRunId(), marker.notice(),
-            marker.actionId(), null, null, null
+            marker.actionId(), null, null, null, null, null, null, null, null
         );
     }
 
@@ -1916,8 +1940,35 @@ public class AgentConversationService {
         String actionId,
         String actionTitle,
         String actionStatus,
-        String actionResultSummary
+        String actionResultSummary,
+        String resultContractVersion,
+        String resultCode,
+        String resultEffect,
+        String resultResourceType,
+        String resultResourceId
     ) {
+        /** 兼容历史恢复记录和旧测试；结构化结果为空时仍可安全重新生成。 */
+        public ApprovalResumeRequest(
+            String interviewSessionId,
+            String agentSessionId,
+            String goal,
+            String providerId,
+            String ownerKey,
+            String memoryKey,
+            String userContent,
+            Long assistantMessageId,
+            String runId,
+            String approvalNotice,
+            String actionId,
+            String actionTitle,
+            String actionStatus,
+            String actionResultSummary
+        ) {
+            this(interviewSessionId, agentSessionId, goal, providerId, ownerKey, memoryKey,
+                userContent, assistantMessageId, runId, approvalNotice, actionId, actionTitle,
+                actionStatus, actionResultSummary, null, null, null, null, null);
+        }
+
         public ApprovalResumeRequest withAction(AgentActionResponse action) {
             if (action == null) {
                 return this;
@@ -1926,7 +1977,9 @@ public class AgentConversationService {
                 interviewSessionId, agentSessionId, goal, providerId, ownerKey, memoryKey,
                 userContent, assistantMessageId, runId, approvalNotice,
                 action.actionId(), action.title(),
-                action.status() == null ? null : action.status().name(), action.resultSummary()
+                action.status() == null ? null : action.status().name(), action.resultSummary(),
+                action.resultContractVersion(), action.resultCode(), action.resultEffect(),
+                action.resultResourceType(), action.resultResourceId()
             );
         }
     }

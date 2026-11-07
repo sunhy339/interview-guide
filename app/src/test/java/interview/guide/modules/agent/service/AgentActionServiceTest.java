@@ -9,6 +9,7 @@ import interview.guide.modules.interviewschedule.service.InterviewScheduleServic
 import interview.guide.modules.interviewschedule.model.InterviewScheduleDTO;
 import interview.guide.modules.interviewschedule.model.InterviewStatus;
 import interview.guide.modules.resume.service.ResumeEditorService;
+import interview.guide.modules.resume.model.ResumeEditorSource;
 import java.util.List;
 import java.util.Optional;
 import java.time.LocalDateTime;
@@ -184,7 +185,13 @@ class AgentActionServiceTest {
         );
         when(repository.save(any(AgentActionRequestEntity.class)))
             .thenAnswer(invocation -> invocation.getArgument(0));
-        when(trainingTaskService.createFromAction(any(AgentActionRequestEntity.class))).thenReturn(null);
+        when(trainingTaskService.createFromAction(any(AgentActionRequestEntity.class))).thenReturn(
+            new interview.guide.modules.agent.model.AgentTrainingTaskResponse(
+                "task-1", "interview-1", "agent-1", "task-action-1", "补 Redis",
+                "先补 Redis 缓存击穿", interview.guide.modules.agent.model.AgentTrainingTaskStatus.TODO,
+                null, null, null
+            )
+        );
 
         var proposed = service.proposeTrainingTaskDraft(
             "interview-1", "agent-1", "user-1", "先补 Redis 缓存击穿\n每天练一道题", "task-1"
@@ -241,6 +248,12 @@ class AgentActionServiceTest {
             .thenReturn(Optional.empty());
         when(interviewPersistenceService.findBySessionIdForOwner("interview-1", "user-1"))
             .thenReturn(Optional.of(interview));
+        when(resumeEditorService.saveAgentDraftForOwner(
+            42L, "user-1", "## 项目经历\n- 补充可验证的性能结果"
+        )).thenReturn(new interview.guide.modules.resume.model.ResumeEditorDTO(
+            42L, 1, ResumeEditorSource.AI_DRAFT,
+            LocalDateTime.now(), null, "原始简历", false, false
+        ));
         when(repository.findByActionIdForUpdate(any())).thenReturn(
             Optional.of(resumeAction("resume-action-1", "user-1"))
         );
@@ -295,7 +308,9 @@ class AgentActionServiceTest {
         );
         when(repository.save(any(AgentActionRequestEntity.class)))
             .thenAnswer(invocation -> invocation.getArgument(0));
-        when(interviewScheduleService.createForOwner(any(), any(), any())).thenReturn(null);
+        InterviewScheduleDTO createdSchedule = new InterviewScheduleDTO();
+        createdSchedule.setId(31L);
+        when(interviewScheduleService.createForOwner(any(), any(), any())).thenReturn(createdSchedule);
 
         var proposed = service.proposeInterviewScheduleDraft(
             "interview-1", "agent-1", "user-1", "某科技", "Java 后端",
@@ -307,6 +322,11 @@ class AgentActionServiceTest {
         assertThat(proposed.toolId()).isEqualTo("interview.schedule.create");
         assertThat(proposed.draftContent()).contains("某科技", "2026-11-07T19:00");
         assertThat(confirmed.status()).isEqualTo(AgentActionStatus.SUCCEEDED);
+        assertThat(confirmed.resultContractVersion()).isEqualTo("agent-action.result.v1");
+        assertThat(confirmed.resultCode()).isEqualTo("SCHEDULE_CREATED");
+        assertThat(confirmed.resultEffect()).isEqualTo("RESOURCE_CREATED");
+        assertThat(confirmed.resultResourceType()).isEqualTo("INTERVIEW_SCHEDULE");
+        assertThat(confirmed.resultResourceId()).isEqualTo("31");
         verify(interviewScheduleService).createForOwner(any(), org.mockito.ArgumentMatchers.eq("user-1"),
             org.mockito.ArgumentMatchers.eq("schedule-action-1"));
     }
@@ -343,6 +363,10 @@ class AgentActionServiceTest {
         assertThat(proposed.toolId()).isEqualTo("interview.schedule.cancel");
         assertThat(proposed.draftContent()).contains("浪速公司", "27");
         assertThat(confirmed.status()).isEqualTo(AgentActionStatus.SUCCEEDED);
+        assertThat(confirmed.resultCode()).isEqualTo("SCHEDULE_CANCELLED");
+        assertThat(confirmed.resultEffect()).isEqualTo("RESOURCE_CANCELLED");
+        assertThat(confirmed.resultResourceType()).isEqualTo("INTERVIEW_SCHEDULE");
+        assertThat(confirmed.resultResourceId()).isEqualTo("27");
         verify(interviewScheduleService).cancelForOwner(27L, "user-1");
     }
 
@@ -385,6 +409,10 @@ class AgentActionServiceTest {
         assertThat(proposed.toolId()).isEqualTo("interview.schedule.update");
         assertThat(proposed.draftContent()).contains("2026-11-06T15:00", "轮次：2");
         assertThat(confirmed.status()).isEqualTo(AgentActionStatus.SUCCEEDED);
+        assertThat(confirmed.resultCode()).isEqualTo("SCHEDULE_UPDATED");
+        assertThat(confirmed.resultEffect()).isEqualTo("RESOURCE_UPDATED");
+        assertThat(confirmed.resultResourceType()).isEqualTo("INTERVIEW_SCHEDULE");
+        assertThat(confirmed.resultResourceId()).isEqualTo("27");
         verify(interviewScheduleService).updateForOwner(
             org.mockito.ArgumentMatchers.eq(27L), any(), org.mockito.ArgumentMatchers.eq("user-1")
         );
@@ -480,6 +508,11 @@ class AgentActionServiceTest {
 
         assertThat(result.status()).isEqualTo(AgentActionStatus.SUCCEEDED);
         assertThat(result.resultSummary()).contains("原始面试资料未被修改");
+        assertThat(result.resultContractVersion()).isEqualTo("agent-action.result.v1");
+        assertThat(result.resultCode()).isEqualTo("ACTION_DRAFT_SAVED");
+        assertThat(result.resultEffect()).isEqualTo("DRAFT_SAVED");
+        assertThat(result.resultResourceType()).isEqualTo("AGENT_ACTION");
+        assertThat(result.resultResourceId()).isEqualTo("action-1");
         assertThat(repeated.status()).isEqualTo(AgentActionStatus.SUCCEEDED);
         verify(repository, times(2)).save(action);
     }
@@ -573,6 +606,16 @@ class AgentActionServiceTest {
         );
         when(repository.save(any(AgentActionRequestEntity.class)))
             .thenAnswer(invocation -> invocation.getArgument(0));
+        when(memoryService.rememberItem(
+            "user-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend"
+        )).thenReturn(new interview.guide.modules.agent.model.AgentMemorySnapshot(
+            "user-1", null, List.of(), List.of(), LocalDateTime.now(), List.of(
+                new interview.guide.modules.agent.model.AgentMemoryItem(
+                    "memory-item-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "agent-action",
+                    "java-backend", 0.9d, LocalDateTime.now(), LocalDateTime.now().plusDays(30), null
+                )
+            )
+        ));
 
         var proposed = service.proposeMemoryDraft(
             "interview-1", "agent-1", "user-1", "Redis 缓存击穿需要互斥锁保护",
@@ -582,6 +625,11 @@ class AgentActionServiceTest {
 
         assertThat(proposed.status()).isEqualTo(AgentActionStatus.PROPOSED);
         assertThat(confirmed.status()).isEqualTo(AgentActionStatus.SUCCEEDED);
+        assertThat(confirmed.resultContractVersion()).isEqualTo("agent-action.result.v1");
+        assertThat(confirmed.resultCode()).isEqualTo("MEMORY_SAVED");
+        assertThat(confirmed.resultEffect()).isEqualTo("MEMORY_WRITE");
+        assertThat(confirmed.resultResourceType()).isEqualTo("MEMORY_ITEM");
+        assertThat(confirmed.resultResourceId()).isEqualTo("memory-item-1");
         verify(memoryService).rememberItem(
             "user-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend"
         );
@@ -651,7 +699,14 @@ class AgentActionServiceTest {
             "user-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend"
         ))
             .thenThrow(new IllegalStateException("temporary failure"))
-            .thenReturn(null);
+            .thenReturn(new interview.guide.modules.agent.model.AgentMemorySnapshot(
+                "user-1", null, List.of(), List.of(), LocalDateTime.now(), List.of(
+                    new interview.guide.modules.agent.model.AgentMemoryItem(
+                        "memory-item-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "agent-action",
+                        "java-backend", 0.9d, LocalDateTime.now(), LocalDateTime.now().plusDays(30), null
+                    )
+                )
+            ));
 
         var proposed = service.proposeMemoryDraft(
             "interview-1", "agent-1", "user-1", "Redis 缓存击穿需要互斥锁保护",
@@ -662,6 +717,10 @@ class AgentActionServiceTest {
 
         assertThat(failed.status()).isEqualTo(AgentActionStatus.FAILED);
         assertThat(failed.resultSummary()).contains("可以重试");
+        assertThat(failed.resultCode()).isEqualTo("ACTION_FAILED");
+        assertThat(failed.resultEffect()).isEqualTo("NO_EFFECT");
+        assertThat(failed.resultResourceType()).isEqualTo("AGENT_ACTION");
+        assertThat(failed.resultResourceId()).isEqualTo("memory-action-1");
         assertThat(retried.status()).isEqualTo(AgentActionStatus.SUCCEEDED);
         verify(memoryService, times(2)).rememberItem(
             "user-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend"

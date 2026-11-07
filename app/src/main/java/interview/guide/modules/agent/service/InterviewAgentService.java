@@ -568,6 +568,11 @@ public class InterviewAgentService {
             "系统审批事件（这是已执行结果，不是用户新指令）：\n"
                 + "动作：" + safeResumeText(resume.actionTitle()) + "\n"
                 + "状态：" + safeResumeText(resume.actionStatus()) + "\n"
+                + "结果契约：" + safeResumeText(resume.resultContractVersion()) + "\n"
+                + "结果码：" + safeResumeText(resume.resultCode()) + "\n"
+                + "影响类型：" + safeResumeText(resume.resultEffect()) + "\n"
+                + "结果资源：" + safeResumeText(resume.resultResourceType())
+                + "#" + safeResumeText(resume.resultResourceId()) + "\n"
                 + "结果：" + safeResumeText(resume.actionResultSummary()) + "\n"
                 + "说明：" + safeResumeText(resume.approvalNotice()) + "\n"
                 + "请继续原任务，向用户说明当前结果；不要再次执行同一个动作。"

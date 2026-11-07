@@ -117,6 +117,26 @@ public class AgentActionRequestEntity {
     @Column(name = "result_summary", length = 500)
     private String resultSummary;
 
+    /** 执行结果契约版本；只保存低敏结构化结果，不保存工具原文。 */
+    @Column(name = "result_contract_version", length = 32)
+    private String resultContractVersion;
+
+    /** 机器可判断的执行结果码，例如 SCHEDULE_CREATED、RESUME_IMPORTED。 */
+    @Column(name = "result_code", length = 64)
+    private String resultCode;
+
+    /** 结果影响类型，例如 RESOURCE_CREATED、DRAFT_SAVED、READ_ONLY。 */
+    @Column(name = "result_effect", length = 32)
+    private String resultEffect;
+
+    /** 结果关联的业务资源类型；不返回业务正文。 */
+    @Column(name = "result_resource_type", length = 64)
+    private String resultResourceType;
+
+    /** 结果关联的业务资源标识；始终由服务端写入。 */
+    @Column(name = "result_resource_id", length = 128)
+    private String resultResourceId;
+
     @Column(name = "idempotency_key", nullable = false, length = 128)
     private String idempotencyKey;
 
