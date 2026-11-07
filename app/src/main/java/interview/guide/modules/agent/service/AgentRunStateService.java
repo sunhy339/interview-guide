@@ -29,9 +29,16 @@ public class AgentRunStateService {
     private static final int MAX_MODEL_PROVIDER = 64;
 
     private final AgentRunStateRepository repository;
+    private AgentRunEventService eventService;
 
     public AgentRunStateService(AgentRunStateRepository repository) {
         this.repository = repository;
+    }
+
+    /** 新增事件表采用可选注入，迁移期间缺少表时不影响原有检查点。 */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setEventService(AgentRunEventService eventService) {
+        this.eventService = eventService;
     }
 
     public void start(AgentChatSessionEntity session) {
@@ -103,6 +110,10 @@ public class AgentRunStateService {
             state.setFinishedAt(null);
             heartbeat(state);
             repository.save(state);
+            if (eventService != null) {
+                eventService.append(tracker, "MODEL_TURN_STARTED", state.getModelTurnId(), null,
+                    null, null, null, compacted ? "compacted" : "normal");
+            }
         });
     }
 
@@ -128,6 +139,10 @@ public class AgentRunStateService {
             state.setPhase("model");
             heartbeat(state);
             repository.save(state);
+            if (eventService != null) {
+                eventService.append(tracker, "MODEL_TURN_COMPLETED", state.getModelTurnId(), null,
+                    null, null, null, status);
+            }
         });
     }
 
@@ -324,6 +339,10 @@ public class AgentRunStateService {
             state.setPhase("tool");
             heartbeat(state);
             repository.save(state);
+            if (eventService != null) {
+                eventService.append(tracker, "TOOL_STARTED", tracker.currentModelTurnId(), toolCallId,
+                    toolName, toolInput, null, "started");
+            }
         });
         return toolCallId;
     }
@@ -361,6 +380,10 @@ public class AgentRunStateService {
             state.setPhase(pendingApproval ? "waiting_user" : "tool");
             heartbeat(state);
             repository.save(state);
+            if (eventService != null) {
+                eventService.append(tracker, "TOOL_COMPLETED", tracker.currentModelTurnId(), toolCallId,
+                    toolName, null, result, pendingApproval ? "waiting_user" : "completed");
+            }
         });
     }
 

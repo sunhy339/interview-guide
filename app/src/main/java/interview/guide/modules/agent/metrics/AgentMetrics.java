@@ -385,6 +385,7 @@ public class AgentMetrics {
         private final AtomicInteger reservedModelCalls = new AtomicInteger();
         private final AtomicInteger reservedToolCalls = new AtomicInteger();
         private final AtomicInteger modelTurnSequence = new AtomicInteger();
+        private final AtomicReference<String> currentModelTurnId = new AtomicReference<>();
         private final AtomicInteger toolCallSequence = new AtomicInteger();
         private final AtomicInteger modelCalls = new AtomicInteger();
         private final LongAdder promptTokens = new LongAdder();
@@ -441,7 +442,14 @@ public class AgentMetrics {
         }
 
         private String nextModelTurnId() {
-            return "turn-" + modelTurnSequence.incrementAndGet();
+            String id = "turn-" + modelTurnSequence.incrementAndGet();
+            currentModelTurnId.set(id);
+            return id;
+        }
+
+        /** 当前模型轮次的低敏 ID，供工具事件与模型轮次关联。 */
+        public String currentModelTurnId() {
+            return currentModelTurnId.get();
         }
 
         /** 为当前 Agent Run 内的逻辑工具调用生成低敏、递增的关联标识。 */
