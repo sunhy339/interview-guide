@@ -217,7 +217,15 @@ public class AgentMetrics {
         if (runTracker != null) {
             runTracker.reserveModelCall();
         }
-        return new ModelCallTracker(safeTag(providerId, "unknown"), System.nanoTime(), runTracker);
+        String modelTurnId = runTracker == null ? null : runTracker.nextModelTurnId();
+        return new ModelCallTracker(
+            safeTag(providerId, "unknown"), System.nanoTime(), runTracker, modelTurnId
+        );
+    }
+
+    /** 返回本次模型尝试在当前 Agent Run 内的稳定低敏轮次标识。 */
+    public String modelTurnId(ModelCallTracker tracker) {
+        return tracker == null ? null : tracker.modelTurnId;
     }
 
     /** 记录流式响应中的 usage 快照；Provider 可能只在最后一个 chunk 返回 usage。 */
@@ -354,12 +362,16 @@ public class AgentMetrics {
         private final AtomicLong firstTokenNanos = new AtomicLong();
         private final AtomicReference<TokenUsage> usage = new AtomicReference<>();
         private final RunTracker runTracker;
+        private final String modelTurnId;
         private volatile String model = "unknown";
 
-        private ModelCallTracker(String provider, long startedNanos, RunTracker runTracker) {
+        private ModelCallTracker(
+            String provider, long startedNanos, RunTracker runTracker, String modelTurnId
+        ) {
             this.provider = provider;
             this.startedNanos = startedNanos;
             this.runTracker = runTracker;
+            this.modelTurnId = modelTurnId;
         }
     }
 
@@ -372,6 +384,7 @@ public class AgentMetrics {
         private final AtomicBoolean finished = new AtomicBoolean();
         private final AtomicInteger reservedModelCalls = new AtomicInteger();
         private final AtomicInteger reservedToolCalls = new AtomicInteger();
+        private final AtomicInteger modelTurnSequence = new AtomicInteger();
         private final AtomicInteger modelCalls = new AtomicInteger();
         private final LongAdder promptTokens = new LongAdder();
         private final LongAdder completionTokens = new LongAdder();
@@ -424,6 +437,10 @@ public class AgentMetrics {
                 reservedToolCalls.decrementAndGet();
                 throw new AgentRunBudgetExceededException("工具调用", maxToolCalls);
             }
+        }
+
+        private String nextModelTurnId() {
+            return "turn-" + modelTurnSequence.incrementAndGet();
         }
 
         private void setAuditContext(AuditContext context) {
