@@ -275,7 +275,9 @@ class AgentMetricsTest {
 
         assertThatThrownBy(() -> metrics.startModelCall("pixel", run))
             .isInstanceOf(AgentRunBudgetExceededException.class)
-            .hasMessageContaining("总 Token");
+            .hasMessageContaining("总 Token")
+            .hasMessageContaining("100）")
+            .hasMessageNotContaining("100 次");
         assertThat(metrics.snapshot(run).totalTokens()).isEqualTo(100);
     }
 
