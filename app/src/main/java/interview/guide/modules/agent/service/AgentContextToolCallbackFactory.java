@@ -371,7 +371,9 @@ public class AgentContextToolCallbackFactory {
             new AttachAgentResourceRequest("FILE", asset.assetId(), "SESSION", null),
             context.ownerKey()
         );
-        return emit(Map.of("status", "ATTACHED", "binding", binding));
+        return emit(Map.of(
+            "status", "ATTACHED", "operation", "ATTACHED", "assetId", asset.assetId(), "binding", binding
+        ));
     }
 
     private String requestKnowledgeBase(AgentContextAssetResponse asset, ToolContextData context) {

@@ -18,6 +18,7 @@ import tools.jackson.databind.ObjectMapper;
  */
 public final class AgentToolResultContractValidator {
 
+    private static final String CONTEXT_ASSET_ACTION_TOOL = "agent_context_asset_action";
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final Pattern RESULT_BOUNDARY = Pattern.compile(
         "(?s)^\\s*<data-boundary-([0-9a-f]{8})-agent-tool-result>\\s*(.*?)\\s*"
@@ -79,6 +80,40 @@ public final class AgentToolResultContractValidator {
             if (message == null || !message.isTextual() || message.asText().isBlank()) {
                 return "工具确认请求缺少说明，未确认任何业务状态";
             }
+        }
+        String domainError = validateContextAssetAction(payload, contract, statusValue);
+        if (domainError != null) {
+            return domainError;
+        }
+        return null;
+    }
+
+    /**
+     * 资源工具除了通用 status 外，还必须返回能够定位本次资源操作的字段。
+     * 等待确认和动作草稿是有意的中间态，分别由 message/actionId 校验；只有已经
+     * 产生资源状态变化的结果才要求 operation + assetId，避免模型把不完整结果
+     * 解释成“文件已审核/已导入”。
+     */
+    private static String validateContextAssetAction(
+        JsonNode payload, AgentToolDescriptor contract, String status
+    ) {
+        if (contract == null || !CONTEXT_ASSET_ACTION_TOOL.equals(contract.name())
+            || "ACTION_PROPOSED".equals(status)
+            || "USER_CONFIRMATION_REQUIRED".equals(status)
+            || "SECURITY_CONFIRMATION_REQUIRED".equals(status)) {
+            return null;
+        }
+        if (!"COMPLETED".equals(status) && !"PENDING".equals(status)
+            && !"SUBMITTED".equals(status) && !"ATTACHED".equals(status)) {
+            return null;
+        }
+        JsonNode operation = payload.get("operation");
+        JsonNode assetId = payload.get("assetId");
+        if (operation == null || !operation.isTextual() || operation.asText().isBlank()) {
+            return "资源工具结果缺少 operation，未确认任何资源状态";
+        }
+        if (assetId == null || !assetId.isTextual() || assetId.asText().isBlank()) {
+            return "资源工具结果缺少 assetId，未确认任何资源状态";
         }
         return null;
     }
