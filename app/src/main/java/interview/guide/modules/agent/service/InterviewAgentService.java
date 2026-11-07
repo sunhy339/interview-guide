@@ -1461,6 +1461,12 @@ public class InterviewAgentService {
                     runTracker, "GROUNDING_CHECK", "agent-grounding", "answer",
                     grounding.status().auditValue()
                 );
+                AgentSourceIntegrityPolicy.Assessment sourceIntegrity =
+                    AgentSourceIntegrityPolicy.assess(sources);
+                recordRunTrace(
+                    runTracker, "SOURCE_INTEGRITY_CHECK", "agent-grounding", "sources",
+                    sourceIntegrity.auditValue()
+                );
                 String notice = grounding.notice();
                 String emittedNotice = appendOutputChunk(notice, output);
                 if (emittedNotice.isBlank()) {
