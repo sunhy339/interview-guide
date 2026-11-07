@@ -59,7 +59,10 @@ class AgentQualityEvaluationTest {
             AgentQualityEvaluator.Sample sample = samples.get(run.sampleId());
             assertThat(sample).as("未知评测样本: %s", run.sampleId()).isNotNull();
             AgentQualityEvaluator.Evaluation evaluation = evaluator.evaluate(
-                sample, run.answer(), run.sources(), run.loopIterations()
+                sample, run.answer(), run.sources(), run.loopIterations(),
+                new AgentQualityEvaluator.RunObservation(
+                    run.runStatus(), run.runError(), run.pendingType(), run.modelCalls(), run.durationMillis()
+                )
             );
             if (evaluation.passed()) {
                 passed++;
@@ -145,6 +148,11 @@ class AgentQualityEvaluationTest {
         result.put("promptTokens", run.promptTokens());
         result.put("completionTokens", run.completionTokens());
         result.put("cost", run.cost());
+        result.put("runStatus", run.runStatus());
+        result.put("runError", run.runError());
+        result.put("pendingType", run.pendingType());
+        result.put("modelCalls", run.modelCalls());
+        result.put("durationMillis", run.durationMillis());
         result.put("passed", evaluation.passed());
         result.put("overallScore", evaluation.overallScore());
         result.put("scores", evaluation.scores());
@@ -177,7 +185,12 @@ class AgentQualityEvaluationTest {
         Integer completionTokens,
         Double cost,
         List<AgentSource> sources,
-        List<AgentLoopEngine.LoopIteration> loopIterations
+        List<AgentLoopEngine.LoopIteration> loopIterations,
+        String runStatus,
+        String runError,
+        String pendingType,
+        int modelCalls,
+        long durationMillis
     ) {
         @SuppressWarnings("unchecked")
         private static RunSample fromMap(Map<String, Object> raw) {
@@ -208,7 +221,12 @@ class AgentQualityEvaluationTest {
                 number(raw.get("completionTokens")),
                 raw.get("cost") instanceof Number cost ? cost.doubleValue() : null,
                 sources,
-                iterations
+                iterations,
+                (String) raw.getOrDefault("runStatus", ""),
+                (String) raw.getOrDefault("runError", ""),
+                (String) raw.getOrDefault("pendingType", ""),
+                raw.get("modelCalls") instanceof Number calls ? calls.intValue() : 0,
+                raw.get("durationMillis") instanceof Number duration ? duration.longValue() : 0L
             );
         }
 
