@@ -473,7 +473,8 @@ public class AgentIntentRouter {
         AgentContextToolCallbackFactory.INTERVIEW_ATTACH,
         AgentContextToolCallbackFactory.INTERVIEW_CLEAR,
         AgentContextToolCallbackFactory.CONTEXT_LIST,
-        AgentContextToolCallbackFactory.CONTEXT_ASSET_ACTION
+        AgentContextToolCallbackFactory.CONTEXT_ASSET_ACTION,
+        AgentContextToolCallbackFactory.CONTEXT_ASSET_STATUS
     );
 
     private static final Set<String> SCHEDULE_TOOLS = Set.of(

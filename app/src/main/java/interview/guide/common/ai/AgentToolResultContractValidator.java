@@ -25,6 +25,8 @@ public final class AgentToolResultContractValidator {
     private static final String INTERVIEW_ATTACH_TOOL = "interview_attach_context";
     private static final String INTERVIEW_CLEAR_TOOL = "interview_clear_context";
     private static final String CONTEXT_LIST_TOOL = "agent_context_list";
+    private static final String CONTEXT_ASSET_STATUS_TOOL = "agent_context_asset_status";
+    private static final String CONTEXT_ASSET_STATUS_CONTRACT = "agent-context-asset-status.v1";
     private static final String SCHEDULE_CREATE_TOOL = "schedule_create_draft";
     private static final String SCHEDULE_CANCEL_TOOL = "schedule_cancel_draft";
     private static final String SCHEDULE_UPDATE_TOOL = "schedule_update_draft";
@@ -76,6 +78,9 @@ public final class AgentToolResultContractValidator {
         }
         if (CONTEXT_LIST_TOOL.equals(contract.name())) {
             return validateContextResult(payload, contract, null);
+        }
+        if (CONTEXT_ASSET_STATUS_TOOL.equals(contract.name())) {
+            return validateContextAssetStatus(payload);
         }
 
         JsonNode status = payload.get("status");
@@ -209,7 +214,8 @@ public final class AgentToolResultContractValidator {
 
     private static boolean isStructuredReadOnlyTool(String toolName) {
         return SCHEDULE_LIST_TOOL.equals(toolName) || SCHEDULE_CONFLICT_TOOL.equals(toolName)
-            || INTERVIEW_SEARCH_TOOL.equals(toolName) || CONTEXT_LIST_TOOL.equals(toolName);
+            || INTERVIEW_SEARCH_TOOL.equals(toolName) || CONTEXT_LIST_TOOL.equals(toolName)
+            || CONTEXT_ASSET_STATUS_TOOL.equals(toolName);
     }
 
     private static String validateInterviewSearch(JsonNode payload) {
@@ -456,6 +462,58 @@ public final class AgentToolResultContractValidator {
                 }
             }
             default -> { }
+        }
+        return null;
+    }
+
+    /** 知识库异步状态只读结果：必须来自真实 KB 状态，不允许模型自行推断完成。 */
+    private static String validateContextAssetStatus(JsonNode payload) {
+        if (!textEquals(payload, "contractVersion", CONTEXT_ASSET_STATUS_CONTRACT)
+            || !textEquals(payload, "operation", "KB_VECTOR_STATUS")) {
+            return "知识库状态结果缺少受支持的契约版本或操作，未确认任何查询结果";
+        }
+        if (!textField(payload, "assetId") || !textField(payload, "reviewStatus")
+            || !textField(payload, "effect")) {
+            return "知识库状态结果字段不完整，未确认任何查询结果";
+        }
+        JsonNode status = payload.get("status");
+        if (status == null || !status.isTextual()) {
+            return "知识库状态结果缺少状态，未确认任何查询结果";
+        }
+        String statusValue = status.asText();
+        switch (statusValue) {
+            case "NOT_IMPORTED" -> {
+                if (!"NO_KNOWLEDGE_BASE".equals(payload.get("effect").asText())
+                    || payload.get("knowledgeBaseId") != null && !payload.get("knowledgeBaseId").isNull()
+                    || payload.get("vectorStatus") != null && !payload.get("vectorStatus").isNull()) {
+                    return "未导入知识库的状态结果不一致，未确认任何查询结果";
+                }
+            }
+            case "PENDING", "PROCESSING" -> {
+                if (!"VECTOR_INDEX_IN_PROGRESS".equals(payload.get("effect").asText())
+                    || !textEquals(payload, "vectorStatus", statusValue)
+                    || !positiveIntegralField(payload, "knowledgeBaseId")) {
+                    return "知识库处理中状态结果不一致，未确认任何查询结果";
+                }
+            }
+            case "COMPLETED" -> {
+                if (!"VECTOR_INDEX_READY".equals(payload.get("effect").asText())
+                    || !textEquals(payload, "vectorStatus", "COMPLETED")
+                    || !positiveIntegralField(payload, "knowledgeBaseId")) {
+                    return "知识库完成状态结果不一致，未确认任何查询结果";
+                }
+            }
+            case "FAILED" -> {
+                if (!"VECTOR_INDEX_FAILED".equals(payload.get("effect").asText())
+                    || !textEquals(payload, "vectorStatus", "FAILED")
+                    || !positiveIntegralField(payload, "knowledgeBaseId")
+                    || !textField(payload, "vectorError")) {
+                    return "知识库失败状态结果不一致，未确认任何查询结果";
+                }
+            }
+            default -> {
+                return "知识库状态结果包含不支持的状态，未确认任何查询结果";
+            }
         }
         return null;
     }

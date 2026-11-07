@@ -293,6 +293,33 @@ class AgentToolResultContractValidatorTest {
         )).isEqualTo("资源工具完成结果的 operation 不受支持，未确认任何资源状态");
     }
 
+    @Test
+    void validatesKnowledgeBaseStatusAgainstTheActualVectorStatus() {
+        String processing = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"contractVersion\":\"agent-context-asset-status.v1\","
+                + "\"status\":\"PROCESSING\",\"operation\":\"KB_VECTOR_STATUS\","
+                + "\"effect\":\"VECTOR_INDEX_IN_PROGRESS\",\"assetId\":\"asset-1\","
+                + "\"originalFilename\":\"guide.pdf\",\"reviewStatus\":\"KB_IMPORT_COMPLETED\","
+                + "\"knowledgeBaseId\":42,\"vectorStatus\":\"PROCESSING\"}"
+        );
+        String falseCompleted = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"contractVersion\":\"agent-context-asset-status.v1\","
+                + "\"status\":\"COMPLETED\",\"operation\":\"KB_VECTOR_STATUS\","
+                + "\"effect\":\"VECTOR_INDEX_READY\",\"assetId\":\"asset-1\","
+                + "\"reviewStatus\":\"KB_IMPORT_COMPLETED\",\"knowledgeBaseId\":42,"
+                + "\"vectorStatus\":\"PROCESSING\"}"
+        );
+
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            processing, contract("agent_context_asset_status", AgentToolDescriptor.ResultContract.DATA_BOUNDARY)
+        )).isNull();
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            falseCompleted, contract("agent_context_asset_status", AgentToolDescriptor.ResultContract.DATA_BOUNDARY)
+        )).isEqualTo("知识库完成状态结果不一致，未确认任何查询结果");
+    }
+
     private AgentToolDescriptor contextAssetContract() {
         return new AgentToolDescriptor(
             "agent_context_asset_action",
