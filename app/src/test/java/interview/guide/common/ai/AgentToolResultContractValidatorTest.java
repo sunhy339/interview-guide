@@ -63,6 +63,38 @@ class AgentToolResultContractValidatorTest {
     }
 
     @Test
+    void requiresCandidatesWhenScheduleCancellationNeedsUserSelection() {
+        String missingCandidates = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"status\":\"SELECTION_REQUIRED\",\"message\":\"请选择一条\"}"
+        );
+        String valid = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"status\":\"SELECTION_REQUIRED\",\"message\":\"请选择一条\","
+                + "\"schedules\":[{\"id\":17,\"companyName\":\"浪速公司\"}]}"
+        );
+
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            missingCandidates, scheduleContract("schedule_cancel_draft")
+        )).isEqualTo("日程候选选择结果缺少候选列表，未确认任何业务状态");
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            valid, scheduleContract("schedule_cancel_draft")
+        )).isNull();
+    }
+
+    @Test
+    void rejectsUnsupportedScheduleIntermediateStatus() {
+        String result = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"status\":\"COMPLETED\",\"message\":\"已取消\"}"
+        );
+
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            result, scheduleContract("schedule_cancel_draft")
+        )).isEqualTo("日程工具返回了不支持的状态，未确认任何业务状态");
+    }
+
+    @Test
     void validatesResumeImportActionIdentityAtTheResourceBoundary() {
         String result = sanitizer.wrapWithDelimiters(
             "agent-tool-result",
