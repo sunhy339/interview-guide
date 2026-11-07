@@ -1447,7 +1447,14 @@ public class InterviewAgentService {
         );
         return providerStream
             .concatWith(Flux.defer(() -> {
-                String notice = AgentAnswerGroundingPolicy.buildNotice(output.get().toString(), sources);
+                AgentAnswerGroundingPolicy.Assessment grounding = AgentAnswerGroundingPolicy.assess(
+                    output.get().toString(), sources
+                );
+                recordRunTrace(
+                    runTracker, "GROUNDING_CHECK", "agent-grounding", "answer",
+                    grounding.status().auditValue()
+                );
+                String notice = grounding.notice();
                 String emittedNotice = appendOutputChunk(notice, output);
                 if (emittedNotice.isBlank()) {
                     return Flux.empty();
