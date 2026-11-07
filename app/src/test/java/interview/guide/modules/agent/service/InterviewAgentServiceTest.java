@@ -9,6 +9,7 @@ import interview.guide.modules.agent.model.AgentHistoryMessage;
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.lang.reflect.Method;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -28,6 +29,9 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.ResourceLoader;
+import org.springframework.ai.chat.model.ToolContext;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.definition.ToolDefinition;
 import reactor.core.publisher.Flux;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -1044,6 +1048,60 @@ class InterviewAgentServiceTest {
         assertThat(events).anySatisfy(event -> assertThat(event.message()).contains("切换备用模型"));
         assertThat(events).anySatisfy(event -> assertThat(event.content()).isEqualTo("备用模型完成"));
         verify(conversationService).completeMessage(10L, "备用模型完成", "run-1");
+    }
+
+    @Test
+    @DisplayName("兼容日程路径记录工具开始和完成轨迹")
+    void recordsTraceForCompatibilitySchedulePath() throws Exception {
+        when(resourceLoader.getResource(anyString())).thenAnswer(invocation ->
+            new ByteArrayResource("系统规则 {context} {skill} {memory} {goal} {question} {rag} {plan} {summary}"
+                .getBytes(StandardCharsets.UTF_8)));
+
+        AgentContextToolCallbackFactory callbackFactory = mock(AgentContextToolCallbackFactory.class);
+        ToolCallback callback = mock(ToolCallback.class);
+        ToolDefinition definition = ToolDefinition.builder()
+            .name(AgentContextToolCallbackFactory.SCHEDULE_DRAFT)
+            .description("生成面试会议草稿")
+            .inputSchema("{}")
+            .build();
+        when(callback.getToolDefinition()).thenReturn(definition);
+        when(callback.call(anyString(), any(ToolContext.class)))
+            .thenReturn("{\"status\":\"ACTION_PROPOSED\",\"action\":{\"actionId\":\"action-1\"}}");
+        when(callbackFactory.callbacks()).thenReturn(List.of(callback));
+
+        AgentAuditService auditService = mock(AgentAuditService.class);
+        AgentMetrics realMetrics = new AgentMetrics(null, false);
+        AgentMetrics.RunTracker tracker = realMetrics.startRun(4, 4);
+        realMetrics.setAuditContext(tracker, "owner-1", "interview-1", "agent-1", "run-1");
+        InterviewAgentService service = new InterviewAgentService(
+            contextService, conversationService, providerRegistry,
+            new PromptSanitizer(new LlmProviderProperties()), resourceLoader,
+            realMetrics, agentProgressWriter, retryProperties,
+            null, auditService, null, callbackFactory, new tools.jackson.databind.ObjectMapper()
+        );
+
+        Method method = java.util.Arrays.stream(InterviewAgentService.class.getDeclaredMethods())
+            .filter(candidate -> candidate.getName().equals("streamExplicitScheduleAction"))
+            .findFirst()
+            .orElseThrow();
+        method.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Flux<AgentStreamEvent> events = (Flux<AgentStreamEvent>) method.invoke(
+            service,
+            AgentContextToolCallbackFactory.SCHEDULE_DRAFT,
+            "帮我安排明天12点的面试会议，公司是浪速公司，职位是 Agent 开发工程师",
+            "interview-1", "agent-1", 22L, "run-1", tracker, null
+        );
+
+        assertThat(events.collectList().block(Duration.ofSeconds(5)))
+            .isNotNull()
+            .anySatisfy(event -> assertThat(event.type()).isEqualTo("done"));
+        verify(auditService).recordRunTrace(
+            tracker, "TOOL_STARTED", "agent-tool", AgentContextToolCallbackFactory.SCHEDULE_DRAFT, "started"
+        );
+        verify(auditService).recordRunTrace(
+            tracker, "TOOL_CALLED", "agent-tool", AgentContextToolCallbackFactory.SCHEDULE_DRAFT, "success"
+        );
     }
 
     private ChatClient mockStreamClient(Flux<String> content) {
