@@ -54,6 +54,29 @@ class AgentIntentRouterTest {
     }
 
     @Test
+    @DisplayName("自然表达的训练和出题请求也能进入动作能力")
+    void routesNaturalActionRequestsWithoutBroadeningHowToQuestions() {
+        AgentIntentRouter.Decision plan = router.route(request(
+            "general", "帮我安排一个训练计划"
+        ));
+        AgentIntentRouter.Decision questions = router.route(request(
+            "general", "帮我把几道练习题保存成训练草稿"
+        ));
+        AgentIntentRouter.Decision howTo = router.route(request(
+            "general", "如何保存一道练习题？"
+        ));
+
+        assertThat(plan.capabilities()).containsExactly(AgentIntentRouter.Capability.ACTION);
+        assertThat(questions.capabilities()).containsExactly(AgentIntentRouter.Capability.ACTION);
+        assertThat(howTo.capabilities()).isEmpty();
+        assertThat(router.toolPolicy(plan).allowedToolNames())
+            .containsExactly(AgentContextToolCallbackFactory.ACTION_DRAFT);
+        assertThat(router.toolPolicy(questions).allowedToolNames())
+            .containsExactly(AgentContextToolCallbackFactory.ACTION_DRAFT);
+        assertThat(router.toolPolicy(howTo).allowedToolNames()).isEmpty();
+    }
+
+    @Test
     @DisplayName("将上传文件加入简历管理路由为上下文能力")
     void routesResumeManagementImportToContextTools() {
         AgentIntentRouter.Decision decision = router.route(request(

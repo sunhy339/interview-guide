@@ -505,18 +505,41 @@ public class AgentContextToolCallbackFactory {
 
     private void requireActionIntent(String operation, String userMessage) {
         switch (operation) {
-            case "training_plan" -> requireMutationIntent(userMessage, "训练计划", "训练规划", "训练安排");
-            case "practice_questions" -> requireMutationIntent(userMessage, "练习题", "练习题目", "专项题目");
-            case "training_task" -> requireMutationIntent(userMessage, "训练任务", "练习任务");
-            case "memory_save" -> requireMutationIntent(userMessage, "长期记忆", "保存记忆", "记住");
+            case "training_plan" -> requireActionTargetIntent(
+                userMessage, new String[] {"训练计划", "训练规划", "训练安排", "训练"},
+                "生成", "制定", "安排", "创建"
+            );
+            case "practice_questions" -> requireActionTargetIntent(
+                userMessage, new String[] {"练习题", "练习题目", "专项题目", "题目", "题"},
+                "保存", "创建", "加入", "导入"
+            );
+            case "training_task" -> requireActionTargetIntent(
+                userMessage, new String[] {"训练任务", "练习任务", "任务"},
+                "生成", "创建", "制定", "安排"
+            );
+            case "memory_save" -> requireActionTargetIntent(
+                userMessage, new String[] {"长期记忆", "记忆"}, "保存", "记住", "添加"
+            );
             case "resume_edit" -> {
                 requireUserIntent(userMessage, "简历");
                 requireMutationIntent(userMessage, "修改", "编辑", "保存");
             }
-            case "report_export" -> requireMutationIntent(userMessage, "导出面试报告", "下载面试报告", "导出报告");
-            case "rename_interview" -> requireMutationIntent(userMessage, "修改面试名称", "修改面试记录名称", "重命名面试", "给面试改名");
+            case "report_export" -> requireActionTargetIntent(
+                userMessage, new String[] {"面试报告", "报告"}, "导出", "下载"
+            );
+            case "rename_interview" -> requireActionTargetIntent(
+                userMessage, new String[] {"面试名称", "面试记录名称", "面试"},
+                "修改", "重命名", "改名"
+            );
             default -> throw new BusinessException(ErrorCode.BAD_REQUEST, "不支持的 Agent 动作类型");
         }
+    }
+
+    private void requireActionTargetIntent(
+        String userMessage, String[] targets, String... verbs
+    ) {
+        requireUserIntent(userMessage, targets);
+        requireMutationIntent(userMessage, verbs);
     }
 
     private String requiredActionContent(String value, String message) {
