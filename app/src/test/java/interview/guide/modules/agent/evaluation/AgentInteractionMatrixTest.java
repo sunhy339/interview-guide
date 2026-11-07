@@ -31,7 +31,7 @@ class AgentInteractionMatrixTest {
     @DisplayName("覆盖普通多轮、缺信息续跑和确认恢复")
     void validatesInteractionMatrix() throws IOException {
         List<Map<String, Object>> scenarios = loadScenarios();
-        assertThat(scenarios).hasSize(3);
+        assertThat(scenarios).hasSize(4);
         Set<String> ids = new HashSet<>();
         Set<String> stepTypes = new HashSet<>();
         for (Map<String, Object> scenario : scenarios) {
@@ -61,7 +61,9 @@ class AgentInteractionMatrixTest {
                 }
             }
         }
-        assertThat(stepTypes).containsExactlyInAnyOrder("message", "confirm_latest_action");
+        assertThat(stepTypes).containsExactlyInAnyOrder(
+            "message", "confirm_latest_action", "cancel_latest_action"
+        );
         assertThat(scenarios.stream().flatMap(item -> steps(item).stream()))
             .anyMatch(step -> "INPUT".equals(text(step, "expectedPendingType")));
         assertThat(scenarios.stream().flatMap(item -> steps(item).stream()))
