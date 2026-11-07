@@ -41,6 +41,19 @@ class AgentIntentRouterTest {
     }
 
     @Test
+    @DisplayName("明确要求生成业务动作时暴露统一草稿工具")
+    void routesExplicitActionDraftRequestToActionTool() {
+        AgentIntentRouter.Decision decision = router.route(request(
+            "general", "请根据本场面试生成一个训练任务"
+        ));
+
+        assertThat(decision.capabilities())
+            .contains(AgentIntentRouter.Capability.ACTION);
+        assertThat(router.toolPolicy(decision).allowedToolNames())
+            .contains(AgentContextToolCallbackFactory.ACTION_DRAFT);
+    }
+
+    @Test
     @DisplayName("将上传文件加入简历管理路由为上下文能力")
     void routesResumeManagementImportToContextTools() {
         AgentIntentRouter.Decision decision = router.route(request(

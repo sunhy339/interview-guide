@@ -63,6 +63,44 @@ class AgentToolResultContractValidatorTest {
     }
 
     @Test
+    void acceptsUnifiedActionDraftOnlyWhenOperationMatchesDomainTool() {
+        String result = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"status\":\"ACTION_PROPOSED\",\"operation\":\"training_task\","
+                + "\"actionId\":\"action-1\","
+                + "\"action\":{\"actionId\":\"action-1\","
+                + "\"toolId\":\"training.task.create\"}}"
+        );
+        String mismatched = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"status\":\"ACTION_PROPOSED\",\"operation\":\"training_task\","
+                + "\"actionId\":\"action-1\","
+                + "\"action\":{\"actionId\":\"action-1\","
+                + "\"toolId\":\"agent.memory.save\"}}"
+        );
+
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            result, actionDraftContract()
+        )).isNull();
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            mismatched, actionDraftContract()
+        )).isEqualTo("Agent 动作结果的动作类型不匹配，未确认任何业务状态");
+    }
+
+    @Test
+    void acceptsInputRequiredUnifiedActionDraftWithExplanation() {
+        String result = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"status\":\"INPUT_REQUIRED\",\"operation\":\"training_task\","
+                + "\"message\":\"请先绑定面试报告\"}"
+        );
+
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            result, actionDraftContract()
+        )).isNull();
+    }
+
+    @Test
     void requiresCandidatesWhenScheduleCancellationNeedsUserSelection() {
         String missingCandidates = sanitizer.wrapWithDelimiters(
             "agent-tool-result",
@@ -224,6 +262,17 @@ class AgentToolResultContractValidatorTest {
             "agent:schedule:draft", 5_000L, 1, AgentToolDescriptor.RetryPolicy.NONE,
             AgentToolDescriptor.Idempotency.IDEMPOTENCY_KEYED,
             resultContract,
+            "{\"type\":\"object\"}", mock(ToolCallback.class)
+        );
+    }
+
+    private AgentToolDescriptor actionDraftContract() {
+        return new AgentToolDescriptor(
+            "agent_action_draft", "v1", AgentIntentRouter.Capability.ACTION,
+            AgentToolDescriptor.RiskLevel.DRAFT_WRITE, true, true,
+            "agent:action:draft", 5_000L, 1, AgentToolDescriptor.RetryPolicy.NONE,
+            AgentToolDescriptor.Idempotency.IDEMPOTENCY_KEYED,
+            AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION,
             "{\"type\":\"object\"}", mock(ToolCallback.class)
         );
     }

@@ -10,3 +10,6 @@
 {"id":"schedule-update","goal":"general","message":"帮我把明天12点的面试改到下午3点","route":"SCHEDULE","capabilities":["SCHEDULE"],"tools":["schedule_list","schedule_check_conflict","schedule_create_draft","schedule_cancel_draft","schedule_update_draft"],"includeSkills":false,"requiredTool":"schedule_update_draft"}
 {"id":"rag-only-knowledge","goal":"general","message":"请使用知识库检索相关资料回答这个问题","route":"GENERAL","capabilities":["RAG"],"tools":[],"includeSkills":false,"requiredTool":""}
 {"id":"review-report-question-not-review","goal":"review","message":"什么是面试复盘？请解释一下这个概念","route":"GENERAL","capabilities":[],"tools":[],"includeSkills":false,"requiredTool":""}
+{"id":"training-task-action","goal":"general","message":"请根据本场面试生成一个训练任务","route":"GENERAL","capabilities":["ACTION"],"tools":["agent_action_draft"],"includeSkills":false,"requiredTool":""}
+{"id":"resume-edit-request","goal":"general","message":"请修改这份简历的项目经历并保存为编辑版","route":"GENERAL","capabilities":["ACTION"],"tools":["agent_action_draft"],"includeSkills":false,"requiredTool":""}
+{"id":"resume-generation-advice","goal":"general","message":"请帮我生成一份简历初稿","route":"GENERAL","capabilities":[],"tools":[],"includeSkills":false,"requiredTool":""}
