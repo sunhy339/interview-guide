@@ -1206,9 +1206,20 @@ public class InterviewAgentService {
                 .filter(candidate -> toolName.equals(candidate.getToolDefinition().name()))
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("未找到受控日程工具：" + toolName));
-            String rawResult = callback.call(
-                toolInput, new ToolContext(agentToolContext(runTracker, userMessage))
-            );
+            recordRunTrace(runTracker, "TOOL_STARTED", "agent-tool", toolName, "started");
+            String rawResult;
+            try {
+                rawResult = callback.call(
+                    toolInput, new ToolContext(agentToolContext(runTracker, userMessage))
+                );
+                recordRunTrace(
+                    runTracker, "TOOL_CALLED", "agent-tool", toolName,
+                    rawResult != null && rawResult.contains("ACTION_PROPOSED") ? "success" : "rejected"
+                );
+            } catch (RuntimeException error) {
+                recordRunTrace(runTracker, "TOOL_CALLED", "agent-tool", toolName, "failure");
+                throw error;
+            }
             agentMetrics.recordToolCall(
                 toolName,
                 rawResult != null && rawResult.contains("ACTION_PROPOSED") ? "success" : "rejected",
