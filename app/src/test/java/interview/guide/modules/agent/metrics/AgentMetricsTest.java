@@ -175,6 +175,23 @@ class AgentMetricsTest {
     }
 
     @Test
+    @DisplayName("为同一运行的模型尝试生成稳定且递增的轮次标识")
+    void assignsStableModelTurnIdsPerRun() {
+        AgentMetrics metrics = metrics(false);
+        AgentMetrics.RunTracker firstRun = metrics.startRun();
+        AgentMetrics.RunTracker secondRun = metrics.startRun();
+
+        AgentMetrics.ModelCallTracker first = metrics.startModelCall("pixel", firstRun);
+        AgentMetrics.ModelCallTracker retry = metrics.startModelCall("pixel", firstRun);
+        AgentMetrics.ModelCallTracker otherRun = metrics.startModelCall("pixel", secondRun);
+
+        assertThat(metrics.modelTurnId(first)).isEqualTo("turn-1");
+        assertThat(metrics.modelTurnId(retry)).isEqualTo("turn-2");
+        assertThat(metrics.modelTurnId(otherRun)).isEqualTo("turn-1");
+        assertThat(metrics.modelTurnId(null)).isNull();
+    }
+
+    @Test
     @DisplayName("显式配置单价时按输入输出 Token 累计费用")
     void recordsConfiguredModelCost() {
         AgentCostProperties costProperties = new AgentCostProperties();

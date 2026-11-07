@@ -721,13 +721,20 @@ public class InterviewAgentService {
                         (providerId, compacted) -> {
                             PromptVariant prompt = compacted ? compactPrompt : normalPrompt;
                             return () -> {
+                                AgentMetrics.ModelCallTracker modelCall = agentMetrics.startModelCall(providerId, runTracker);
+                                String modelTurnId = agentMetrics.modelTurnId(modelCall);
                                 recordRunTrace(
                                     runTracker, "MODEL_STARTED", "agent-model", providerId,
                                     compacted ? "compacted" : "normal"
                                 );
-                                AgentMetrics.ModelCallTracker modelCall = agentMetrics.startModelCall(providerId, runTracker);
+                                recordRunTrace(
+                                    runTracker, "MODEL_TURN_STARTED", "agent-model-turn", modelTurnId,
+                                    compacted ? "compacted" : "normal"
+                                );
                                 if (runStateService != null) {
-                                    runStateService.modelTurnStarted(runTracker, providerId, compacted);
+                                    runStateService.modelTurnStarted(
+                                        runTracker, providerId, compacted, modelTurnId
+                                    );
                                 }
                                 try {
                                     // 运行时只向模型暴露本轮能力策略允许的工具；普通问题默认
@@ -1644,6 +1651,13 @@ public class InterviewAgentService {
                                 providerId,
                                 agentMetrics.firstTokenMillis(currentCall.tracker()) + "ms"
                             );
+                            recordRunTrace(
+                                runTracker,
+                                "MODEL_TURN_FIRST_TOKEN",
+                                "agent-model-turn",
+                                agentMetrics.modelTurnId(currentCall.tracker()),
+                                agentMetrics.firstTokenMillis(currentCall.tracker()) + "ms"
+                            );
                         }
                     }
                 })
@@ -1738,11 +1752,13 @@ public class InterviewAgentService {
         String runId,
         AgentMetrics.RunTracker runTracker
     ) {
+        String modelTurnId = agentMetrics.modelTurnId(tracker);
         agentMetrics.finishModelCall(tracker, result);
         if (runStateService != null) {
             runStateService.modelTurnFinished(runTracker, providerId, result);
         }
         recordRunTrace(runTracker, "MODEL_COMPLETED", "agent-model", providerId, result);
+        recordRunTrace(runTracker, "MODEL_TURN_COMPLETED", "agent-model-turn", modelTurnId, result);
         // 必须在外层 completeMessage/failMessage 之前写入，避免活动消息栅栏关闭后被忽略。
         persistRunUsage(assistantMessageId, runId, runTracker);
     }

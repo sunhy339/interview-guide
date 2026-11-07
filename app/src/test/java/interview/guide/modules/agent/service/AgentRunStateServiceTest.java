@@ -100,8 +100,7 @@ class AgentRunStateServiceTest {
             .agentSessionId("agent-1")
             .status(AgentRunStatus.RUNNING)
             .build();
-        when(repository.findByRunId("run-1"))
-            .thenReturn(Optional.of(state), Optional.of(state), Optional.of(state));
+        when(repository.findByRunId("run-1")).thenReturn(Optional.of(state));
         when(repository.save(any(AgentRunStateEntity.class)))
             .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -116,6 +115,10 @@ class AgentRunStateServiceTest {
         assertThat(state.getModelTurnStatus()).isEqualTo("STARTED");
         assertThat(state.getPhase()).isEqualTo("model");
         assertThat(state.getModelResultReference()).isNull();
+
+        service.modelTurnStarted(tracker, "pixel", true, "turn-17");
+        assertThat(state.getModelTurnIndex()).isEqualTo(2);
+        assertThat(state.getModelTurnId()).isEqualTo("turn-17");
 
         service.modelTurnFinished(tracker, "pixel", "success");
 

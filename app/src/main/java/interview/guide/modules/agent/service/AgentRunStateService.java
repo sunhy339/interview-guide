@@ -71,6 +71,19 @@ public class AgentRunStateService {
     public void modelTurnStarted(
         AgentMetrics.RunTracker tracker, String providerId, boolean compacted
     ) {
+        modelTurnStarted(tracker, providerId, compacted, null);
+    }
+
+    /**
+     * 记录带有编排层轮次标识的模型检查点，便于把持久化状态与低敏 Trace 对齐。
+     * 旧的三参数入口继续使用服务端生成的兼容 ID。
+     */
+    public void modelTurnStarted(
+        AgentMetrics.RunTracker tracker,
+        String providerId,
+        boolean compacted,
+        String requestedTurnId
+    ) {
         String runId = runId(tracker);
         runSafely("模型轮次开始", runId, () -> {
             if (blank(runId)) {
@@ -79,7 +92,10 @@ public class AgentRunStateService {
             AgentRunStateEntity state = findOrCreate(runId);
             int index = value(state.getModelTurnIndex()) + 1;
             state.setModelTurnIndex(index);
-            state.setModelTurnId("turn-" + hash(runId + ":" + index).substring(0, 32));
+            String safeTurnId = clean(requestedTurnId, 64);
+            state.setModelTurnId(safeTurnId == null
+                ? "turn-" + hash(runId + ":" + index).substring(0, 32)
+                : safeTurnId);
             state.setModelProvider(clean(providerId, MAX_MODEL_PROVIDER));
             state.setModelTurnStatus("STARTED");
             state.setModelResultReference(null);
