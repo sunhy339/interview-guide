@@ -17,7 +17,10 @@ class AgentToolResultContractValidatorTest {
     void acceptsCompletedContextAssetResultWithStableIdentityFields() {
         String result = sanitizer.wrapWithDelimiters(
             "agent-tool-result",
-            "{\"status\":\"COMPLETED\",\"operation\":\"REVIEWED\",\"assetId\":\"asset-1\"}"
+            "{\"contractVersion\":\"agent-context-asset.v1\",\"status\":\"COMPLETED\","
+                + "\"operation\":\"REVIEWED\",\"effect\":\"CONTEXT_APPROVED\","
+                + "\"async\":false,\"requiresConfirmation\":false,\"assetId\":\"asset-1\","
+                + "\"reviewStatus\":\"APPROVED_FOR_CONTEXT\"}"
         );
 
         assertThat(AgentToolResultContractValidator.validateOutput(result, contextAssetContract()))
@@ -28,7 +31,10 @@ class AgentToolResultContractValidatorTest {
     void rejectsContextAssetResultWithoutIdentityFields() {
         String result = sanitizer.wrapWithDelimiters(
             "agent-tool-result",
-            "{\"status\":\"COMPLETED\",\"operation\":\"REVIEWED\"}"
+            "{\"contractVersion\":\"agent-context-asset.v1\",\"status\":\"COMPLETED\","
+                + "\"operation\":\"REVIEWED\",\"effect\":\"CONTEXT_APPROVED\","
+                + "\"async\":false,\"requiresConfirmation\":false,"
+                + "\"reviewStatus\":\"APPROVED_FOR_CONTEXT\"}"
         );
 
         assertThat(AgentToolResultContractValidator.validateOutput(result, contextAssetContract()))
@@ -39,7 +45,10 @@ class AgentToolResultContractValidatorTest {
     void keepsPendingConfirmationContractFocusedOnMessage() {
         String result = sanitizer.wrapWithDelimiters(
             "agent-tool-result",
-            "{\"status\":\"USER_CONFIRMATION_REQUIRED\",\"message\":\"请确认\"}"
+            "{\"contractVersion\":\"agent-context-asset.v1\",\"status\":\"USER_CONFIRMATION_REQUIRED\","
+                + "\"operation\":\"confirm_knowledge_base\",\"effect\":\"CONFIRMATION_REQUIRED\","
+                + "\"async\":false,\"requiresConfirmation\":true,\"assetId\":\"asset-1\","
+                + "\"message\":\"请确认\"}"
         );
 
         assertThat(AgentToolResultContractValidator.validateOutput(result, contextAssetContract()))
@@ -175,7 +184,9 @@ class AgentToolResultContractValidatorTest {
         String result = sanitizer.wrapWithDelimiters(
             "agent-tool-result",
             "{\"status\":\"ACTION_PROPOSED\",\"operation\":\"IMPORT_RESUME\","
-                + "\"assetId\":\"asset-1\",\"action\":{"
+                + "\"contractVersion\":\"agent-context-asset.v1\","
+                + "\"effect\":\"ACTION_PROPOSED\",\"async\":false,"
+                + "\"requiresConfirmation\":true,\"assetId\":\"asset-1\",\"action\":{"
                 + "\"actionId\":\"action-1\",\"toolId\":\"resume.import\"}}"
         );
 
@@ -240,6 +251,46 @@ class AgentToolResultContractValidatorTest {
         assertThat(AgentToolResultContractValidator.validateOutput(
             cleared, contract("interview_clear_context", AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION)
         )).isNull();
+    }
+
+    @Test
+    void requiresExplicitAsyncKnowledgeBaseResultBoundary() {
+        String submitted = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"contractVersion\":\"agent-context-asset.v1\",\"status\":\"SUBMITTED\","
+                + "\"operation\":\"KB_IMPORT_SUBMITTED\",\"effect\":\"ASYNC_JOB_SUBMITTED\","
+                + "\"async\":true,\"requiresConfirmation\":false,\"assetId\":\"asset-1\","
+                + "\"reviewStatus\":\"KB_IMPORT_COMPLETED\",\"knowledgeBaseId\":42}"
+        );
+        String missingId = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"contractVersion\":\"agent-context-asset.v1\",\"status\":\"SUBMITTED\","
+                + "\"operation\":\"KB_IMPORT_SUBMITTED\",\"effect\":\"ASYNC_JOB_SUBMITTED\","
+                + "\"async\":true,\"requiresConfirmation\":false,\"assetId\":\"asset-1\","
+                + "\"reviewStatus\":\"KB_IMPORT_COMPLETED\"}"
+        );
+
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            submitted, contextAssetContract()
+        )).isNull();
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            missingId, contextAssetContract()
+        )).isEqualTo("知识库异步任务结果缺少有效知识库 ID，未确认任何资源状态");
+    }
+
+    @Test
+    void rejectsContextAssetStatusOperationMismatch() {
+        String result = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"contractVersion\":\"agent-context-asset.v1\",\"status\":\"COMPLETED\","
+                + "\"operation\":\"KB_IMPORT_SUBMITTED\",\"effect\":\"ASYNC_JOB_SUBMITTED\","
+                + "\"async\":true,\"requiresConfirmation\":false,\"assetId\":\"asset-1\","
+                + "\"reviewStatus\":\"KB_IMPORT_COMPLETED\",\"knowledgeBaseId\":42}"
+        );
+
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            result, contextAssetContract()
+        )).isEqualTo("资源工具完成结果的 operation 不受支持，未确认任何资源状态");
     }
 
     private AgentToolDescriptor contextAssetContract() {

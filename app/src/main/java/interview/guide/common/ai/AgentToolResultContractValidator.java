@@ -19,6 +19,7 @@ import tools.jackson.databind.ObjectMapper;
 public final class AgentToolResultContractValidator {
 
     private static final String CONTEXT_ASSET_ACTION_TOOL = "agent_context_asset_action";
+    private static final String CONTEXT_ASSET_RESULT_CONTRACT = "agent-context-asset.v1";
     private static final String ACTION_DRAFT_TOOL = "agent_action_draft";
     private static final String INTERVIEW_SEARCH_TOOL = "interview_search";
     private static final String INTERVIEW_ATTACH_TOOL = "interview_attach_context";
@@ -337,31 +338,124 @@ public final class AgentToolResultContractValidator {
     }
 
     /**
-     * 资源工具除了通用 status 外，还必须返回能够定位本次资源操作的字段。
-     * 等待确认和动作草稿是有意的中间态，分别由 message/actionId 校验；只有已经
-     * 产生资源状态变化的结果才要求 operation + assetId，避免模型把不完整结果
-     * 解释成“文件已审核/已导入”。
+     * 资源工具除了通用 status 外，还必须返回可验证的事实契约。
+     * 特别是知识库导入是异步流程，SUBMITTED 只表示任务已投递，不能被解释成
+     * 向量化已经完成；FAILED 也可能表示知识库记录已创建但任务没有投递成功。
      */
     private static String validateContextAssetAction(
         JsonNode payload, AgentToolDescriptor contract, String status
     ) {
-        if (contract == null || !CONTEXT_ASSET_ACTION_TOOL.equals(contract.name())
-            || "ACTION_PROPOSED".equals(status)
-            || "USER_CONFIRMATION_REQUIRED".equals(status)
-            || "SECURITY_CONFIRMATION_REQUIRED".equals(status)) {
+        if (contract == null || !CONTEXT_ASSET_ACTION_TOOL.equals(contract.name())) {
             return null;
         }
-        if (!"COMPLETED".equals(status) && !"PENDING".equals(status)
-            && !"SUBMITTED".equals(status) && !"ATTACHED".equals(status)) {
-            return null;
+        if (!java.util.Set.of(
+            "ACTION_PROPOSED", "USER_CONFIRMATION_REQUIRED", "SECURITY_CONFIRMATION_REQUIRED",
+            "COMPLETED", "PENDING", "SUBMITTED", "FAILED", "ATTACHED"
+        ).contains(status)) {
+            return "资源工具返回了不支持的状态，未确认任何资源状态";
         }
-        JsonNode operation = payload.get("operation");
-        JsonNode assetId = payload.get("assetId");
-        if (operation == null || !operation.isTextual() || operation.asText().isBlank()) {
+        if (!textEquals(payload, "contractVersion", CONTEXT_ASSET_RESULT_CONTRACT)) {
+            return "资源工具结果缺少受支持的契约版本，未确认任何资源状态";
+        }
+        if (!textField(payload, "operation")) {
             return "资源工具结果缺少 operation，未确认任何资源状态";
         }
-        if (assetId == null || !assetId.isTextual() || assetId.asText().isBlank()) {
+        if (!textField(payload, "assetId")) {
             return "资源工具结果缺少 assetId，未确认任何资源状态";
+        }
+        if (!textField(payload, "effect") || !booleanField(payload, "async")
+            || !booleanField(payload, "requiresConfirmation")) {
+            return "资源工具结果缺少状态效果字段，未确认任何资源状态";
+        }
+        String operation = payload.get("operation").asText();
+        String effect = payload.get("effect").asText();
+        boolean async = payload.get("async").booleanValue();
+        boolean requiresConfirmation = payload.get("requiresConfirmation").booleanValue();
+        switch (status) {
+            case "ACTION_PROPOSED" -> {
+                if (!"IMPORT_RESUME".equals(operation) || !"ACTION_PROPOSED".equals(effect)
+                    || async || !requiresConfirmation) {
+                    return "简历导入资源结果的状态或效果不匹配，未确认任何业务状态";
+                }
+            }
+            case "USER_CONFIRMATION_REQUIRED" -> {
+                if (!"confirm_knowledge_base".equals(operation)
+                    || !"CONFIRMATION_REQUIRED".equals(effect) || async || !requiresConfirmation) {
+                    return "知识库确认结果的状态或效果不匹配，未确认任何业务状态";
+                }
+                String messageError = requireMessage(payload, "资源工具确认请求缺少说明，未确认任何资源状态");
+                if (messageError != null) {
+                    return messageError;
+                }
+            }
+            case "SECURITY_CONFIRMATION_REQUIRED" -> {
+                if (!"review".equals(operation)
+                    || !"SECURITY_CONFIRMATION_REQUIRED".equals(effect) || async || !requiresConfirmation) {
+                    return "文件安全确认结果的状态或效果不匹配，未确认任何业务状态";
+                }
+                String messageError = requireMessage(payload, "文件安全确认请求缺少说明，未确认任何资源状态");
+                if (messageError != null) {
+                    return messageError;
+                }
+            }
+            case "COMPLETED" -> {
+                if ("REVIEWED".equals(operation)) {
+                    if (!"CONTEXT_APPROVED".equals(effect) || async || requiresConfirmation
+                        || !textEquals(payload, "reviewStatus", "APPROVED_FOR_CONTEXT")) {
+                        return "文件审核结果的状态或效果不匹配，未确认任何业务状态";
+                    }
+                } else if ("KB_IMPORT_REUSED".equals(operation)) {
+                    if (!"RESOURCE_REUSED".equals(effect) || async || requiresConfirmation
+                        || !textEquals(payload, "reviewStatus", "KB_IMPORT_COMPLETED")) {
+                        return "知识库复用结果的状态或效果不匹配，未确认任何业务状态";
+                    }
+                    if (!positiveIntegralField(payload, "knowledgeBaseId")) {
+                        return "知识库复用结果缺少有效知识库 ID，未确认任何资源状态";
+                    }
+                } else {
+                    return "资源工具完成结果的 operation 不受支持，未确认任何资源状态";
+                }
+            }
+            case "PENDING" -> {
+                if (!"KB_IMPORT_PENDING".equals(operation)
+                    || !"CONFIRMATION_PENDING".equals(effect) || async || !requiresConfirmation
+                    || !textEquals(payload, "reviewStatus", "KB_IMPORT_PENDING")) {
+                    return "知识库导入申请结果的状态或效果不匹配，未确认任何业务状态";
+                }
+            }
+            case "SUBMITTED" -> {
+                if (!"KB_IMPORT_SUBMITTED".equals(operation)
+                    || !"ASYNC_JOB_SUBMITTED".equals(effect) || !async || requiresConfirmation
+                    || !textEquals(payload, "reviewStatus", "KB_IMPORT_COMPLETED")) {
+                    return "知识库异步任务结果的状态或效果不匹配，未确认任何业务状态";
+                }
+                if (!positiveIntegralField(payload, "knowledgeBaseId")) {
+                    return "知识库异步任务结果缺少有效知识库 ID，未确认任何资源状态";
+                }
+            }
+            case "FAILED" -> {
+                if (!"KB_IMPORT_FAILED".equals(operation)
+                    || !"ASYNC_JOB_FAILED".equals(effect) || !async || requiresConfirmation
+                    || !textEquals(payload, "reviewStatus", "KB_IMPORT_FAILED")) {
+                    return "知识库异步失败结果的状态或效果不匹配，未确认任何业务状态";
+                }
+                if (!textField(payload, "securityNotice")) {
+                    return "知识库异步失败结果缺少失败说明，未确认任何资源状态";
+                }
+            }
+            case "ATTACHED" -> {
+                if (!"ATTACHED".equals(operation) || !"CONTEXT_BOUND".equals(effect)
+                    || async || requiresConfirmation) {
+                    return "文件上下文绑定结果的状态或效果不匹配，未确认任何业务状态";
+                }
+                JsonNode binding = payload.get("binding");
+                if (binding == null || !binding.isObject()
+                    || !textField(binding, "contextType") || !textField(binding, "resourceId")
+                    || !textField(binding, "scope") || !booleanField(binding, "active")) {
+                    return "文件上下文绑定结果字段不完整，未确认任何绑定结果";
+                }
+            }
+            default -> { }
         }
         return null;
     }
@@ -429,6 +523,11 @@ public final class AgentToolResultContractValidator {
     private static boolean booleanField(JsonNode object, String field) {
         JsonNode value = object.get(field);
         return value != null && value.isBoolean();
+    }
+
+    private static boolean positiveIntegralField(JsonNode object, String field) {
+        JsonNode value = object.get(field);
+        return value != null && value.isIntegralNumber() && value.asLong() > 0;
     }
 
     private static boolean textEquals(JsonNode object, String field, String expected) {
