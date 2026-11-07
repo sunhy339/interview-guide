@@ -109,7 +109,9 @@ public class AgentToolRegistry {
 
     private AgentToolDescriptor describe(ToolCallback callback) {
         String name = callback.getToolDefinition().name();
-        AgentIntentRouter.Capability capability = name.startsWith("schedule_")
+        AgentIntentRouter.Capability capability = AgentContextToolCallbackFactory.ACTION_DRAFT.equals(name)
+            ? AgentIntentRouter.Capability.ACTION
+            : name.startsWith("schedule_")
             ? AgentIntentRouter.Capability.SCHEDULE
             : AgentIntentRouter.Capability.CONTEXT;
         AgentToolDescriptor.RiskLevel risk = switch (name) {
@@ -121,7 +123,9 @@ public class AgentToolRegistry {
             default -> AgentToolDescriptor.RiskLevel.DRAFT_WRITE;
         };
         boolean readOnly = risk == AgentToolDescriptor.RiskLevel.READ_ONLY;
-        String permission = capability == AgentIntentRouter.Capability.SCHEDULE
+        String permission = capability == AgentIntentRouter.Capability.ACTION
+            ? "agent:action:draft"
+            : capability == AgentIntentRouter.Capability.SCHEDULE
             ? readOnly ? "agent:schedule:read" : "agent:schedule:draft"
             : readOnly ? "agent:context:read" : "agent:context:draft";
         return new AgentToolDescriptor(

@@ -44,10 +44,11 @@ public class AgentIntentRouter {
         - INTERVIEW_REVIEW：用户明确要求复盘本场/本次面试、评价实际回答、评分、表现或改进点。
         - SCHEDULE：用户明确要求创建、查询、修改、取消或安排面试会议/日程。
         - CONTEXT：用户明确要求使用、绑定、查找、上传、查看简历、简历管理、面试报告、文件或会话资料；把已审核上传文件加入简历管理也属于 CONTEXT。
+        - ACTION：用户明确要求生成训练计划、练习题、训练任务、保存长期记忆、编辑简历、导出报告或修改面试名称；这类能力只生成待确认草稿，不直接写入业务数据。
         - INTERVIEW_REPORT：需要读取明确指定的面试报告。
         - SKILL：需要加载或参考 Skill、技能资料或参考资料。
         - RAG：需要使用知识库检索；如果当前会话没有绑定知识库，应说明需要先绑定或选择。
-        capabilities 可以是 CONTEXT、INTERVIEW_REPORT、SKILL、RAG、SCHEDULE 的任意组合，不能因为选择了 SKILL 就删除 RAG 或 CONTEXT。
+        capabilities 可以是 CONTEXT、INTERVIEW_REPORT、SKILL、RAG、SCHEDULE、ACTION 的任意组合，不能因为选择了某一个能力就删除其他真实需要的能力。
 
         “什么是取消面试”“如何理解 Tool Calling”“怎么学习 Agent”属于 GENERAL，
         只是询问如何操作不等于授权你实际执行；只有“帮我/请替我/直接安排/取消”这类明确动作才属于 SCHEDULE。
@@ -74,7 +75,10 @@ public class AgentIntentRouter {
             + "|(?:面试|会议|日程|预约|约定|安排).{0,24}(?:改期|改到|修改|调整|更换|更新|换到)"
     );
     private static final Pattern INTERVIEW_REVIEW = Pattern.compile(
-        "(?:复盘|面试表现|面试官|评分|失分|薄弱点|回答质量|本场面试|本次面试|这场面试|这次面试)"
+        "(?:复盘|分析|评价|评估|评分|指出|总结).{0,16}"
+            + "(?:面试|回答|表现|面试官|失分|薄弱点|改进点|回答质量)"
+            + "|(?:面试|回答|表现|面试官).{0,16}"
+            + "(?:复盘|分析|评价|评估|评分|失分|薄弱点|改进点|回答质量)"
     );
     private static final Pattern CONTEXT_ACTION = Pattern.compile(
         "(?:根据|基于|结合|参考|使用|引用|绑定|选中|添加|上传|查看|搜索|查询|检索).{0,24}"
@@ -93,6 +97,14 @@ public class AgentIntentRouter {
     private static final Pattern RAG_ACTION = Pattern.compile(
         "(?:知识库|知识检索|向量库|RAG|检索相关知识)",
         Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern AGENT_ACTION = Pattern.compile(
+        "(?:生成|制定).{0,24}(?:训练计划|训练规划|练习题|练习任务|训练任务)"
+            + "|(?:保存|记住).{0,24}(?:长期记忆|记忆)"
+            + "|(?:(?:修改|编辑|保存).{0,24}简历|简历.{0,24}(?:修改|编辑|保存))"
+            + "|(?:导出|下载).{0,24}(?:面试报告|报告)"
+            + "|(?:(?:重命名|改名|修改).{0,24}(?:面试名称|面试记录名称)"
+            + "|(?:面试名称|面试记录名称).{0,24}(?:重命名|改名|修改))"
     );
     private static final Pattern INFORMATIONAL = Pattern.compile(
         "(?:是什么|什么是|是什么意思|如何理解|怎么理解|解释|介绍|学习|区别|能不能|可以吗|为什么|是否|怎么|怎么做|如何做)"
@@ -360,6 +372,9 @@ public class AgentIntentRouter {
         if (!informational && RAG_ACTION.matcher(message).find()) {
             capabilities.add(Capability.RAG);
         }
+        if (!informational && AGENT_ACTION.matcher(message).find()) {
+            capabilities.add(Capability.ACTION);
+        }
         if (capabilities.isEmpty()) {
             return Decision.general("规则兜底：未识别到需要外部资料或业务工具的意图");
         }
@@ -435,6 +450,9 @@ public class AgentIntentRouter {
         if (capabilities.contains(Capability.SCHEDULE)) {
             tools.addAll(SCHEDULE_TOOLS);
         }
+        if (capabilities.contains(Capability.ACTION)) {
+            tools.add(AgentContextToolCallbackFactory.ACTION_DRAFT);
+        }
         return new ToolPolicy(Set.copyOf(tools), capabilities.contains(Capability.SKILL));
     }
 
@@ -485,7 +503,8 @@ public class AgentIntentRouter {
         INTERVIEW_REPORT,
         SKILL,
         RAG,
-        SCHEDULE
+        SCHEDULE,
+        ACTION
     }
 
     public record Decision(

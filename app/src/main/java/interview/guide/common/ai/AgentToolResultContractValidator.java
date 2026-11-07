@@ -19,6 +19,7 @@ import tools.jackson.databind.ObjectMapper;
 public final class AgentToolResultContractValidator {
 
     private static final String CONTEXT_ASSET_ACTION_TOOL = "agent_context_asset_action";
+    private static final String ACTION_DRAFT_TOOL = "agent_action_draft";
     private static final String INTERVIEW_SEARCH_TOOL = "interview_search";
     private static final String INTERVIEW_ATTACH_TOOL = "interview_attach_context";
     private static final String INTERVIEW_CLEAR_TOOL = "interview_clear_context";
@@ -100,6 +101,10 @@ public final class AgentToolResultContractValidator {
                 return "工具确认请求缺少说明，未确认任何业务状态";
             }
         }
+        String actionError = validateAgentActionDraft(payload, contract, statusValue);
+        if (actionError != null) {
+            return actionError;
+        }
         String scheduleError = validateScheduleResult(payload, contract, statusValue);
         if (scheduleError != null) {
             return scheduleError;
@@ -111,6 +116,56 @@ public final class AgentToolResultContractValidator {
         String contextError = validateContextResult(payload, contract, statusValue);
         if (contextError != null) {
             return contextError;
+        }
+        return null;
+    }
+
+    /** 非日程业务动作统一要求 operation 与动作服务 toolId 一一对应。 */
+    private static String validateAgentActionDraft(
+        JsonNode payload, AgentToolDescriptor contract, String status
+    ) {
+        if (contract == null || !ACTION_DRAFT_TOOL.equals(contract.name())) {
+            return null;
+        }
+        if (!java.util.Set.of(
+            "ACTION_PROPOSED", "INPUT_REQUIRED", "USER_CONFIRMATION_REQUIRED", "NOT_FOUND"
+        ).contains(status)) {
+            return "Agent 动作工具返回了不支持的状态，未确认任何业务状态";
+        }
+        if (!"ACTION_PROPOSED".equals(status)) {
+            return requireMessage(payload, "Agent 动作结果缺少说明，未确认任何业务状态");
+        }
+        JsonNode operation = payload.get("operation");
+        if (operation == null || !operation.isTextual() || operation.asText().isBlank()) {
+            return "Agent 动作结果缺少 operation，未确认任何业务状态";
+        }
+        JsonNode action = payload.get("action");
+        JsonNode actionId = action == null ? null : action.get("actionId");
+        if (action == null || !action.isObject()
+            || actionId == null || !actionId.isTextual() || actionId.asText().isBlank()) {
+            return "Agent 动作草稿缺少 actionId，未确认任何业务状态";
+        }
+        JsonNode topLevelActionId = payload.get("actionId");
+        if (topLevelActionId == null || !topLevelActionId.isTextual()
+            || !actionId.asText().equals(topLevelActionId.asText())) {
+            return "Agent 动作结果的顶层 actionId 不完整，未确认任何业务状态";
+        }
+        String expectedTool = switch (operation.asText()) {
+            case "training_plan" -> "interview.plan.draft";
+            case "practice_questions" -> "practice.questions.draft";
+            case "training_task" -> "training.task.create";
+            case "memory_save" -> "agent.memory.save";
+            case "resume_edit" -> "resume.editor.save";
+            case "report_export" -> "interview.report.export";
+            case "rename_interview" -> "interview.title.rename";
+            default -> null;
+        };
+        if (expectedTool == null) {
+            return "Agent 动作结果的 operation 不受支持，未确认任何业务状态";
+        }
+        JsonNode toolId = action.get("toolId");
+        if (toolId == null || !toolId.isTextual() || !expectedTool.equals(toolId.asText())) {
+            return "Agent 动作结果的动作类型不匹配，未确认任何业务状态";
         }
         return null;
     }
