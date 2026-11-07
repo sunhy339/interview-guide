@@ -152,6 +152,18 @@ function Get-TraceActions([string]$AgentSessionId, [string]$RunId) {
     }
 }
 
+function Get-TraceResources([string]$AgentSessionId, [string]$RunId) {
+    if ([string]::IsNullOrWhiteSpace($RunId)) { return @() }
+    try {
+        $trace = Invoke-JsonApi "/api/agent/sessions/$AgentSessionId/trace?runId=$([Uri]::EscapeDataString($RunId))&limit=100"
+        return @($trace.data | ForEach-Object { [string]$_.resourceId } |
+            Where-Object { $_ } | Select-Object -Unique)
+    } catch {
+        # 资源名是质量诊断补充，核心状态仍由会话接口校验。
+        return @()
+    }
+}
+
 function Get-CodeVersion {
     try {
         $version = (& git rev-parse --short HEAD 2>$null).Trim()
@@ -224,6 +236,7 @@ function Invoke-ScenarioMessage(
         runRelation = ''
         userMessageCount = Get-UserMessageCount $conversation
         traceActions = @(Get-TraceActions $AgentSessionId ([string]$conversation.data.runId))
+        traceResources = @(Get-TraceResources $AgentSessionId ([string]$conversation.data.runId))
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
         durationMillis = if ($usage) { [long]$usage.durationMillis } else { 0 }
         answer = Get-ConversationAnswer $conversation
@@ -254,6 +267,7 @@ function Invoke-ScenarioConfirm(
         runRelation = ''
         userMessageCount = Get-UserMessageCount $conversation
         traceActions = @(Get-TraceActions $AgentSessionId ([string]$conversation.data.runId))
+        traceResources = @(Get-TraceResources $AgentSessionId ([string]$conversation.data.runId))
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
         durationMillis = if ($usage) { [long]$usage.durationMillis } else { 0 }
         answer = Get-ConversationAnswer $conversation
@@ -284,6 +298,7 @@ function Invoke-ScenarioCancel(
         runRelation = ''
         userMessageCount = Get-UserMessageCount $conversation
         traceActions = @(Get-TraceActions $AgentSessionId ([string]$conversation.data.runId))
+        traceResources = @(Get-TraceResources $AgentSessionId ([string]$conversation.data.runId))
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
         durationMillis = if ($usage) { [long]$usage.durationMillis } else { 0 }
         answer = Get-ConversationAnswer $conversation

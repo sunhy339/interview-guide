@@ -108,6 +108,7 @@ class AgentInteractionEvaluationTest {
             compare(violations, index, "runRelation", expected, actual);
             compareNumber(violations, index, "userMessageCount", expected, actual);
             compareRequiredTraceActions(violations, index, expected, actual);
+            compareRequiredTraceResources(violations, index, expected, actual);
             if ("confirm_latest_action".equals(text(expected, "type"))
                 || "cancel_latest_action".equals(text(expected, "type"))) {
                 compare(violations, index, "actionStatus", expected, actual);
@@ -138,6 +139,26 @@ class AgentInteractionEvaluationTest {
             if (!actualActions.contains(action)) {
                 violations.add(prefix + " Trace 缺少动作: " + action
                     + "，实际动作: " + String.join(",", actualActions));
+            }
+        }
+    }
+
+    private void compareRequiredTraceResources(
+        List<String> violations,
+        int index,
+        Map<String, Object> expected,
+        Map<String, Object> actual
+    ) {
+        List<String> required = strings(expected.get("expectedTraceResources"));
+        if (required.isEmpty()) {
+            return;
+        }
+        List<String> actualResources = strings(actual.get("traceResources"));
+        String prefix = "第 " + (index + 1) + " 步";
+        for (String resource : required) {
+            if (!actualResources.contains(resource)) {
+                violations.add(prefix + " Trace 缺少资源: " + resource
+                    + "，实际资源: " + String.join(",", actualResources));
             }
         }
     }
