@@ -296,10 +296,16 @@ public class AgentRunStateService {
         });
     }
 
-    /** 记录一次工具调用的安全摘要；工具参数正文永远不落库。 */
-    public void recordToolCall(
+    /**
+     * 记录一次工具调用的安全摘要；工具参数正文永远不落库。
+     *
+     * <p>返回值只是在当前 Run 内递增的关联标识，方便把同一次工具调用的结果
+     * 与开始检查点对齐；它不包含工具参数、用户内容或外部资源 ID。</p>
+     */
+    public String recordToolCall(
         AgentMetrics.RunTracker tracker, String toolName, String toolInput
     ) {
+        String toolCallId = tracker == null ? null : tracker.nextToolCallId();
         runSafely("工具调用", tracker == null ? null : tracker.auditContext().runId(), () -> {
             if (tracker == null) {
                 return;
@@ -309,7 +315,7 @@ public class AgentRunStateService {
                 return;
             }
             AgentRunStateEntity state = findOrCreate(audit.runId());
-            state.setToolCallId(clean(toolName, MAX_TOOL_NAME) + ":" + hash(toolInput));
+            state.setToolCallId(clean(toolCallId, MAX_TOOL_NAME));
             state.setToolName(clean(toolName, MAX_TOOL_NAME));
             state.setToolArgumentsHash(hash(toolInput));
             state.setToolResultReference(null);
@@ -319,11 +325,23 @@ public class AgentRunStateService {
             heartbeat(state);
             repository.save(state);
         });
+        return toolCallId;
+    }
+
+    /** 兼容旧调用方：记录工具结果但沿用当前检查点的工具关联标识。 */
+    public void recordToolResult(
+        AgentMetrics.RunTracker tracker, String toolName, String result, boolean pendingApproval
+    ) {
+        recordToolResult(tracker, toolName, null, result, pendingApproval);
     }
 
     /** 记录工具结果的摘要和是否产生人工确认，不保存结果正文。 */
     public void recordToolResult(
-        AgentMetrics.RunTracker tracker, String toolName, String result, boolean pendingApproval
+        AgentMetrics.RunTracker tracker,
+        String toolName,
+        String toolCallId,
+        String result,
+        boolean pendingApproval
     ) {
         runSafely("工具结果", tracker == null ? null : tracker.auditContext().runId(), () -> {
             if (tracker == null) {
@@ -334,6 +352,9 @@ public class AgentRunStateService {
                 return;
             }
             AgentRunStateEntity state = findOrCreate(audit.runId());
+            if (!blank(toolCallId)) {
+                state.setToolCallId(clean(toolCallId, MAX_TOOL_NAME));
+            }
             state.setToolName(clean(toolName, MAX_TOOL_NAME));
             state.setToolResultReference("sha256:" + hash(result));
             state.setPendingApproval(pendingApproval);

@@ -404,6 +404,8 @@ class AgentObservedToolCallbackTest {
             ));
         when(delegate.call(eq("{\"skill\":\"java\"}"), eq(context)))
             .thenReturn("Redis 技能参考");
+        when(runStateService.recordToolCall(run, "load_skill", "{\"skill\":\"java\"}"))
+            .thenReturn("tool-1");
 
         observed.call("{\"skill\":\"java\"}", context);
 
@@ -412,6 +414,7 @@ class AgentObservedToolCallbackTest {
         );
         verify(runStateService).recordToolResult(
             eq(run), eq("load_skill"),
+            eq("tool-1"),
             org.mockito.ArgumentMatchers.<String>argThat(
                 value -> value.startsWith("<data-boundary-")
             ),

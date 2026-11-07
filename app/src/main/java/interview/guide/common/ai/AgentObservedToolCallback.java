@@ -136,13 +136,13 @@ final class AgentObservedToolCallback implements ToolCallback {
         AgentMetrics.RunTracker runTracker = runTracker(toolContext);
         try {
             reserveToolCall(runTracker);
-            recordSkillToolStart(runTracker, toolInput);
+            String toolCallId = recordSkillToolStart(runTracker, toolInput);
             if (isOversizedInput(toolInput)) {
                 String result = sanitizeResult(rejectOversizedInput());
                 record("rejected", startedNanos);
                 audit(runTracker, "rejected");
                 auditSecurityRejection(runTracker);
-                recordSkillToolResult(runTracker, result, false);
+                recordSkillToolResult(runTracker, toolCallId, result, false);
                 return result;
             }
             String contractError = validateContract(toolInput);
@@ -151,7 +151,7 @@ final class AgentObservedToolCallback implements ToolCallback {
                 record("rejected", startedNanos);
                 audit(runTracker, "rejected");
                 auditSecurityRejection(runTracker);
-                recordSkillToolResult(runTracker, result, false);
+                recordSkillToolResult(runTracker, toolCallId, result, false);
                 return result;
             }
             auditStarted(runTracker);
@@ -170,13 +170,13 @@ final class AgentObservedToolCallback implements ToolCallback {
             if (rejected) {
                 auditSecurityRejection(runTracker);
             }
-            recordSkillToolResult(runTracker, result, false);
+            recordSkillToolResult(runTracker, toolCallId, result, false);
             return result;
         } catch (RuntimeException error) {
             String outcome = error instanceof ToolExecutionTimeoutException ? "timeout" : "failure";
             record(outcome, startedNanos);
             audit(runTracker, outcome);
-            recordSkillToolResult(runTracker, "status:" + outcome, false);
+            recordSkillToolResult(runTracker, null, "status:" + outcome, false);
             throw error;
         }
     }
@@ -235,21 +235,21 @@ final class AgentObservedToolCallback implements ToolCallback {
     }
 
     /** Skill 通过统一观测包装器接入，补齐业务回调已有的 RunState 工具轨迹。 */
-    private void recordSkillToolStart(AgentMetrics.RunTracker runTracker, String toolInput) {
+    private String recordSkillToolStart(AgentMetrics.RunTracker runTracker, String toolInput) {
         if (runStateService == null || !isSkillContract() || runTracker == null) {
-            return;
+            return null;
         }
-        runStateService.recordToolCall(runTracker, getToolDefinition().name(), toolInput);
+        return runStateService.recordToolCall(runTracker, getToolDefinition().name(), toolInput);
     }
 
     private void recordSkillToolResult(
-        AgentMetrics.RunTracker runTracker, String result, boolean pendingApproval
+        AgentMetrics.RunTracker runTracker, String toolCallId, String result, boolean pendingApproval
     ) {
         if (runStateService == null || !isSkillContract() || runTracker == null) {
             return;
         }
         runStateService.recordToolResult(
-            runTracker, getToolDefinition().name(), result, pendingApproval
+            runTracker, getToolDefinition().name(), toolCallId, result, pendingApproval
         );
     }
 
