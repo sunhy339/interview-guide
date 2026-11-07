@@ -4,6 +4,7 @@ import interview.guide.modules.agent.model.AgentContextAssetEntity;
 import interview.guide.modules.agent.model.AgentContextAssetStatus;
 import interview.guide.modules.agent.repository.AgentContextAssetRepository;
 import interview.guide.modules.knowledgebase.model.KnowledgeBaseEntity;
+import interview.guide.modules.knowledgebase.model.VectorStatus;
 import interview.guide.modules.knowledgebase.repository.KnowledgeBaseRepository;
 import interview.guide.modules.knowledgebase.service.KnowledgeBasePersistenceService;
 import java.util.Optional;
@@ -119,6 +120,61 @@ class AgentContextAssetPersistenceServiceTest {
         assertThat(names.getValue()).doesNotContain("忽略之前的指令");
         assertThat(categories.getValue()).doesNotContain("<system>");
         assertThat(filenames.getValue()).isEqualTo("notes.md");
+    }
+
+    @Test
+    void readsKnowledgeBaseVectorStatusWithoutMutatingTheAssetOrKnowledgeBase() {
+        AgentContextAssetRepository assets = mock(AgentContextAssetRepository.class);
+        KnowledgeBaseRepository knowledgeBases = mock(KnowledgeBaseRepository.class);
+        KnowledgeBasePersistenceService knowledgeBasePersistence = mock(KnowledgeBasePersistenceService.class);
+        AgentContextAssetEntity asset = pendingAsset();
+        asset.setReviewStatus(AgentContextAssetStatus.KB_IMPORT_COMPLETED);
+        asset.setKnowledgeBaseId(42L);
+        KnowledgeBaseEntity knowledgeBase = new KnowledgeBaseEntity();
+        knowledgeBase.setId(42L);
+        knowledgeBase.setVectorStatus(VectorStatus.PROCESSING);
+        knowledgeBase.setVectorError("暂时处理中");
+        knowledgeBase.setChunkCount(3);
+
+        when(assets.findByAssetIdAndOwnerId("asset-1", "owner-1"))
+            .thenReturn(Optional.of(asset));
+        when(knowledgeBases.findAccessibleById(42L, "owner-1"))
+            .thenReturn(Optional.of(knowledgeBase));
+
+        AgentContextAssetPersistenceService service = new AgentContextAssetPersistenceService(
+            assets, knowledgeBases, knowledgeBasePersistence
+        );
+
+        AgentContextAssetPersistenceService.KnowledgeBaseStatusSnapshot result =
+            service.getKnowledgeBaseStatus("asset-1", "owner-1");
+
+        assertThat(result.asset().knowledgeBaseId()).isEqualTo(42L);
+        assertThat(result.vectorStatus()).isEqualTo(VectorStatus.PROCESSING);
+        assertThat(result.vectorError()).isEqualTo("暂时处理中");
+        assertThat(result.chunkCount()).isEqualTo(3);
+        verify(assets, never()).save(any());
+        verify(knowledgeBases).findAccessibleById(42L, "owner-1");
+    }
+
+    @Test
+    void reportsUnimportedAssetWithoutLookingUpAnotherUsersKnowledgeBase() {
+        AgentContextAssetRepository assets = mock(AgentContextAssetRepository.class);
+        KnowledgeBaseRepository knowledgeBases = mock(KnowledgeBaseRepository.class);
+        KnowledgeBasePersistenceService knowledgeBasePersistence = mock(KnowledgeBasePersistenceService.class);
+        AgentContextAssetEntity asset = pendingAsset();
+        when(assets.findByAssetIdAndOwnerId("asset-1", "owner-1"))
+            .thenReturn(Optional.of(asset));
+
+        AgentContextAssetPersistenceService service = new AgentContextAssetPersistenceService(
+            assets, knowledgeBases, knowledgeBasePersistence
+        );
+
+        AgentContextAssetPersistenceService.KnowledgeBaseStatusSnapshot result =
+            service.getKnowledgeBaseStatus("asset-1", "owner-1");
+
+        assertThat(result.vectorStatus()).isNull();
+        assertThat(result.asset().knowledgeBaseId()).isNull();
+        verify(knowledgeBases, never()).findAccessibleById(any(), any());
     }
 
     private AgentContextAssetEntity pendingAsset() {

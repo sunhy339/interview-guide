@@ -9,6 +9,7 @@ import interview.guide.modules.agent.model.AgentContextAssetResponse;
 import interview.guide.modules.agent.model.AgentContextAssetStatus;
 import interview.guide.modules.agent.repository.AgentContextAssetRepository;
 import interview.guide.modules.knowledgebase.model.KnowledgeBaseEntity;
+import interview.guide.modules.knowledgebase.model.VectorStatus;
 import interview.guide.modules.knowledgebase.repository.KnowledgeBaseRepository;
 import interview.guide.modules.knowledgebase.service.KnowledgeBasePersistenceService;
 import java.util.Optional;
@@ -102,6 +103,27 @@ public class AgentContextAssetPersistenceService {
         return AgentContextAssetResponse.from(repository.save(asset));
     }
 
+    /** 只读读取 Agent 素材对应知识库的真实向量化状态，不修改任何任务状态。 */
+    @Transactional(readOnly = true)
+    public KnowledgeBaseStatusSnapshot getKnowledgeBaseStatus(String assetId, String ownerId) {
+        AgentContextAssetEntity asset = findReadable(assetId, ownerId);
+        AgentContextAssetResponse response = AgentContextAssetResponse.from(asset);
+        if (asset.getKnowledgeBaseId() == null) {
+            return new KnowledgeBaseStatusSnapshot(response, null, null, null, null, null);
+        }
+        KnowledgeBaseEntity knowledgeBase = knowledgeBaseRepository.findAccessibleById(
+            asset.getKnowledgeBaseId(), ownerId.trim()
+        ).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "关联知识库不存在"));
+        return new KnowledgeBaseStatusSnapshot(
+            response,
+            knowledgeBase.getVectorStatus(),
+            knowledgeBase.getVectorError(),
+            knowledgeBase.getChunkCount(),
+            knowledgeBase.getVectorizedAt(),
+            knowledgeBase.getVectorUpdatedAt()
+        );
+    }
+
     @Transactional
     public void reject(String assetId, String ownerId) {
         AgentContextAssetEntity asset = find(assetId, ownerId);
@@ -123,6 +145,17 @@ public class AgentContextAssetPersistenceService {
             .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "Agent 素材不存在"));
     }
 
+    private AgentContextAssetEntity findReadable(String assetId, String ownerId) {
+        if (assetId == null || assetId.isBlank()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "素材 ID 不能为空");
+        }
+        if (ownerId == null || ownerId.isBlank()) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED, "Agent 身份已失效，请刷新页面后重试");
+        }
+        return repository.findByAssetIdAndOwnerId(assetId.trim(), ownerId.trim())
+            .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "Agent 素材不存在"));
+    }
+
     /** 知识库名称、分类和文件名会成为可检索元数据，不能绕过 Agent 资料边界直接落库。 */
     private String sanitizeMetadata(String value, int maxLength) {
         if (value == null || value.isBlank()) {
@@ -139,6 +172,16 @@ public class AgentContextAssetPersistenceService {
     public record KnowledgeBaseImportPreparation(
         AgentContextAssetResponse asset,
         boolean vectorizationRequired
+    ) {
+    }
+
+    public record KnowledgeBaseStatusSnapshot(
+        AgentContextAssetResponse asset,
+        VectorStatus vectorStatus,
+        String vectorError,
+        Integer chunkCount,
+        java.time.LocalDateTime vectorizedAt,
+        java.time.LocalDateTime vectorUpdatedAt
     ) {
     }
 }

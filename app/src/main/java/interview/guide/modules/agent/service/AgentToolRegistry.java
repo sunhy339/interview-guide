@@ -117,6 +117,7 @@ public class AgentToolRegistry {
         AgentToolDescriptor.RiskLevel risk = switch (name) {
             case AgentContextToolCallbackFactory.INTERVIEW_SEARCH,
                 AgentContextToolCallbackFactory.CONTEXT_LIST,
+                AgentContextToolCallbackFactory.CONTEXT_ASSET_STATUS,
                 AgentContextToolCallbackFactory.SCHEDULE_LIST,
                 AgentContextToolCallbackFactory.SCHEDULE_CONFLICT ->
                 AgentToolDescriptor.RiskLevel.READ_ONLY;

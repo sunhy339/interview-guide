@@ -156,6 +156,14 @@ public class AgentContextAssetService {
         return AgentContextAssetResponse.from(find(assetId, ownerId));
     }
 
+    /** 读取素材对应知识库的真实向量化状态，供 Agent 只读状态工具使用。 */
+    @Transactional(readOnly = true)
+    public AgentContextAssetPersistenceService.KnowledgeBaseStatusSnapshot getKnowledgeBaseStatus(
+        String assetId, String ownerId
+    ) {
+        return persistenceService.getKnowledgeBaseStatus(assetId, requireOwner(ownerId));
+    }
+
     @Transactional(readOnly = true)
     public AgentContextAssetEntity requireApproved(String assetId, String ownerId) {
         AgentContextAssetEntity asset = find(assetId, ownerId);
