@@ -107,6 +107,7 @@ class AgentInteractionEvaluationTest {
             compare(violations, index, "pendingType", expected, actual);
             compare(violations, index, "runRelation", expected, actual);
             compareNumber(violations, index, "userMessageCount", expected, actual);
+            compareRequiredTraceActions(violations, index, expected, actual);
             if ("confirm_latest_action".equals(text(expected, "type"))
                 || "cancel_latest_action".equals(text(expected, "type"))) {
                 compare(violations, index, "actionStatus", expected, actual);
@@ -119,6 +120,26 @@ class AgentInteractionEvaluationTest {
         compare(violations, -1, "finalStatus", scenario, run);
         compare(violations, -1, "finalPendingType", scenario, run);
         return violations;
+    }
+
+    private void compareRequiredTraceActions(
+        List<String> violations,
+        int index,
+        Map<String, Object> expected,
+        Map<String, Object> actual
+    ) {
+        List<String> required = strings(expected.get("expectedTraceActions"));
+        if (required.isEmpty()) {
+            return;
+        }
+        List<String> actualActions = strings(actual.get("traceActions"));
+        String prefix = "第 " + (index + 1) + " 步";
+        for (String action : required) {
+            if (!actualActions.contains(action)) {
+                violations.add(prefix + " Trace 缺少动作: " + action
+                    + "，实际动作: " + String.join(",", actualActions));
+            }
+        }
     }
 
     private void compare(
@@ -221,5 +242,16 @@ class AgentInteractionEvaluationTest {
 
     private int number(Object value) {
         return value instanceof Number number ? number.intValue() : 0;
+    }
+
+    private List<String> strings(Object value) {
+        if (!(value instanceof List<?> values)) {
+            return List.of();
+        }
+        return values.stream()
+            .filter(String.class::isInstance)
+            .map(String.class::cast)
+            .filter(item -> !item.isBlank())
+            .toList();
     }
 }
