@@ -262,4 +262,42 @@ class AgentMetricsTest {
             .hasMessageContaining("2");
         assertThat(metrics.snapshot(run).modelCalls()).isEqualTo(2);
     }
+
+    @Test
+    @DisplayName("累计 Token 达到运行预算后不再发起下一次模型请求")
+    void enforcesTotalTokenBudget() {
+        AgentMetrics metrics = metrics(true);
+        AgentMetrics.RunTracker run = metrics.startRun(4, 4, 100, BigDecimal.ZERO);
+
+        AgentMetrics.ModelCallTracker first = metrics.startModelCall("pixel", run);
+        metrics.observeModelUsage(first, 60, 40, 100, "gpt-5.6-luna");
+        metrics.finishModelCall(first, "success");
+
+        assertThatThrownBy(() -> metrics.startModelCall("pixel", run))
+            .isInstanceOf(AgentRunBudgetExceededException.class)
+            .hasMessageContaining("总 Token");
+        assertThat(metrics.snapshot(run).totalTokens()).isEqualTo(100);
+    }
+
+    @Test
+    @DisplayName("已配置单价时累计费用达到运行预算后不再发起下一次模型请求")
+    void enforcesCostBudgetWhenPricingIsKnown() {
+        AgentCostProperties costProperties = new AgentCostProperties();
+        AgentCostProperties.Pricing pricing = new AgentCostProperties.Pricing();
+        pricing.setInputPerMillion(new BigDecimal("2"));
+        pricing.setOutputPerMillion(new BigDecimal("3"));
+        pricing.setCurrency("CNY");
+        costProperties.getProviders().put("pixel", pricing);
+        AgentMetrics metrics = metrics(true, costProperties);
+        AgentMetrics.RunTracker run = metrics.startRun(4, 4, 10_000, new BigDecimal("0.00048"));
+
+        AgentMetrics.ModelCallTracker first = metrics.startModelCall("pixel", run);
+        metrics.observeModelUsage(first, 120, 80, 200, "gpt-5.6-luna");
+        metrics.finishModelCall(first, "success");
+
+        assertThatThrownBy(() -> metrics.startModelCall("pixel", run))
+            .isInstanceOf(AgentRunBudgetExceededException.class)
+            .hasMessageContaining("费用");
+        assertThat(metrics.snapshot(run).cost()).isEqualByComparingTo("0.00048");
+    }
 }

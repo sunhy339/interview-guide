@@ -219,7 +219,8 @@ public class InterviewAgentService {
             cancellationSignals.put(activeKey, cancellationSignal);
             Long preparedAssistantMessageId = null;
             AgentMetrics.RunTracker runTracker = agentMetrics.startRun(
-                retryProperties.getMaxModelCallsPerRun(), retryProperties.getMaxToolCallsPerRun()
+                retryProperties.getMaxModelCallsPerRun(), retryProperties.getMaxToolCallsPerRun(),
+                retryProperties.getMaxTotalTokensPerRun(), retryProperties.getMaxCostPerRun()
             );
             AtomicReference<AgentTaskHandle> taskHandleRef = new AtomicReference<>();
             AtomicReference<String> activeAgentSessionKeyRef = new AtomicReference<>(activeKey);
@@ -358,7 +359,8 @@ public class InterviewAgentService {
             Sinks.One<Void> cancellationSignal = Sinks.one();
             cancellationSignals.put(activeKey, cancellationSignal);
             AgentMetrics.RunTracker runTracker = agentMetrics.startRun(
-                retryProperties.getMaxModelCallsPerRun(), retryProperties.getMaxToolCallsPerRun()
+                retryProperties.getMaxModelCallsPerRun(), retryProperties.getMaxToolCallsPerRun(),
+                retryProperties.getMaxTotalTokensPerRun(), retryProperties.getMaxCostPerRun()
             );
             agentMetrics.setAuditContext(
                 runTracker,
@@ -471,7 +473,8 @@ public class InterviewAgentService {
             Sinks.One<Void> cancellationSignal = Sinks.one();
             cancellationSignals.put(activeKey, cancellationSignal);
             AgentMetrics.RunTracker runTracker = agentMetrics.startRun(
-                retryProperties.getMaxModelCallsPerRun(), retryProperties.getMaxToolCallsPerRun()
+                retryProperties.getMaxModelCallsPerRun(), retryProperties.getMaxToolCallsPerRun(),
+                retryProperties.getMaxTotalTokensPerRun(), retryProperties.getMaxCostPerRun()
             );
             AgentTaskHandle taskHandle = new AgentTaskHandle(
                 resume.assistantMessageId(), resume.runId(), cancellationSignal

@@ -96,10 +96,20 @@ public class AgentMetrics {
 
     /** 创建同时限制模型请求和只读工具调用的 Agent 运行追踪器。 */
     public RunTracker startRun(int maxModelCalls, int maxToolCalls) {
+        return startRun(maxModelCalls, maxToolCalls, Integer.MAX_VALUE, BigDecimal.ZERO);
+    }
+
+    /** 创建同时限制模型调用、工具调用、累计 Token 和费用的 Agent 运行追踪器。 */
+    public RunTracker startRun(
+        int maxModelCalls,
+        int maxToolCalls,
+        int maxTotalTokens,
+        BigDecimal maxCost
+    ) {
         if (enabled) {
             registry.counter(RUNS, "result", "started").increment();
         }
-        return new RunTracker(System.nanoTime(), maxModelCalls, maxToolCalls);
+        return new RunTracker(System.nanoTime(), maxModelCalls, maxToolCalls, maxTotalTokens, maxCost);
     }
 
     /** 为当前运行绑定低敏审计上下文；不放入 Prompt 或指标标签。 */
@@ -333,6 +343,8 @@ public class AgentMetrics {
         private final long startedNanos;
         private final int maxModelCalls;
         private final int maxToolCalls;
+        private final int maxTotalTokens;
+        private final BigDecimal maxCost;
         private final AtomicBoolean finished = new AtomicBoolean();
         private final AtomicInteger reservedModelCalls = new AtomicInteger();
         private final AtomicInteger reservedToolCalls = new AtomicInteger();
@@ -352,13 +364,28 @@ public class AgentMetrics {
             new AtomicReference<>(List.of());
         private volatile AuditContext auditContext = AuditContext.empty();
 
-        private RunTracker(long startedNanos, int maxModelCalls, int maxToolCalls) {
+        private RunTracker(
+            long startedNanos,
+            int maxModelCalls,
+            int maxToolCalls,
+            int maxTotalTokens,
+            BigDecimal maxCost
+        ) {
             this.startedNanos = startedNanos;
             this.maxModelCalls = Math.max(1, maxModelCalls);
             this.maxToolCalls = Math.max(0, maxToolCalls);
+            this.maxTotalTokens = Math.max(1, maxTotalTokens);
+            this.maxCost = maxCost == null || maxCost.signum() < 0 ? BigDecimal.ZERO : maxCost;
         }
 
         private void reserveModelCall() {
+            if (totalTokens.sum() >= maxTotalTokens) {
+                throw new AgentRunBudgetExceededException("总 Token", maxTotalTokens);
+            }
+            BigDecimal currentCost = cost.get();
+            if (maxCost.signum() > 0 && currentCost != null && currentCost.compareTo(maxCost) >= 0) {
+                throw new AgentRunBudgetExceededException("费用", maxCost);
+            }
             int reserved = reservedModelCalls.incrementAndGet();
             if (reserved > maxModelCalls) {
                 reservedModelCalls.decrementAndGet();
