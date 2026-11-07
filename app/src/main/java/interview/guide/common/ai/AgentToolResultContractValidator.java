@@ -19,6 +19,10 @@ import tools.jackson.databind.ObjectMapper;
 public final class AgentToolResultContractValidator {
 
     private static final String CONTEXT_ASSET_ACTION_TOOL = "agent_context_asset_action";
+    private static final String INTERVIEW_SEARCH_TOOL = "interview_search";
+    private static final String INTERVIEW_ATTACH_TOOL = "interview_attach_context";
+    private static final String INTERVIEW_CLEAR_TOOL = "interview_clear_context";
+    private static final String CONTEXT_LIST_TOOL = "agent_context_list";
     private static final String SCHEDULE_CREATE_TOOL = "schedule_create_draft";
     private static final String SCHEDULE_CANCEL_TOOL = "schedule_cancel_draft";
     private static final String SCHEDULE_UPDATE_TOOL = "schedule_update_draft";
@@ -62,8 +66,14 @@ public final class AgentToolResultContractValidator {
         } catch (JacksonException error) {
             return "工具结果不是合法结构化数据，未确认任何业务状态";
         }
+        if (INTERVIEW_SEARCH_TOOL.equals(contract.name())) {
+            return validateInterviewSearch(payload);
+        }
         if (payload == null || !payload.isObject()) {
             return "工具结果必须是结构化对象，未确认任何业务状态";
+        }
+        if (CONTEXT_LIST_TOOL.equals(contract.name())) {
+            return validateContextResult(payload, contract, null);
         }
 
         JsonNode status = payload.get("status");
@@ -98,6 +108,10 @@ public final class AgentToolResultContractValidator {
         if (domainError != null) {
             return domainError;
         }
+        String contextError = validateContextResult(payload, contract, statusValue);
+        if (contextError != null) {
+            return contextError;
+        }
         return null;
     }
 
@@ -106,7 +120,22 @@ public final class AgentToolResultContractValidator {
     }
 
     private static boolean isStructuredReadOnlyTool(String toolName) {
-        return SCHEDULE_LIST_TOOL.equals(toolName) || SCHEDULE_CONFLICT_TOOL.equals(toolName);
+        return SCHEDULE_LIST_TOOL.equals(toolName) || SCHEDULE_CONFLICT_TOOL.equals(toolName)
+            || INTERVIEW_SEARCH_TOOL.equals(toolName) || CONTEXT_LIST_TOOL.equals(toolName);
+    }
+
+    private static String validateInterviewSearch(JsonNode payload) {
+        if (payload == null || !payload.isArray()) {
+            return "面试搜索结果必须是列表，未确认任何查询结果";
+        }
+        for (JsonNode item : payload) {
+            JsonNode sessionId = item == null ? null : item.get("sessionId");
+            if (item == null || !item.isObject()
+                || sessionId == null || !sessionId.isTextual() || sessionId.asText().isBlank()) {
+                return "面试搜索结果缺少有效会话标识，未确认任何查询结果";
+            }
+        }
+        return null;
     }
 
     /**
@@ -248,6 +277,71 @@ public final class AgentToolResultContractValidator {
             return "资源工具结果缺少 assetId，未确认任何资源状态";
         }
         return null;
+    }
+
+    /** 校验面试上下文查询、绑定和清除结果，防止模型把半结构化结果解释成已完成。 */
+    private static String validateContextResult(
+        JsonNode payload, AgentToolDescriptor contract, String status
+    ) {
+        if (contract == null) {
+            return null;
+        }
+        if (CONTEXT_LIST_TOOL.equals(contract.name())) {
+            JsonNode bindings = payload.get("bindings");
+            JsonNode assets = payload.get("assets");
+            if (bindings == null || !bindings.isArray() || assets == null || !assets.isArray()) {
+                return "当前上下文结果缺少 bindings 或 assets 列表，未确认任何查询结果";
+            }
+            for (JsonNode binding : bindings) {
+                if (binding == null || !binding.isObject()
+                    || !textField(binding, "contextType")
+                    || !textField(binding, "resourceId")
+                    || !textField(binding, "scope")
+                    || !booleanField(binding, "active")) {
+                    return "当前上下文绑定结果字段不完整，未确认任何查询结果";
+                }
+            }
+            for (JsonNode asset : assets) {
+                if (asset == null || !asset.isObject()
+                    || !textField(asset, "assetId") || !textField(asset, "reviewStatus")
+                    || !booleanField(asset, "securityFlagged")) {
+                    return "上传文件状态结果字段不完整，未确认任何查询结果";
+                }
+            }
+            return null;
+        }
+        if (INTERVIEW_ATTACH_TOOL.equals(contract.name())) {
+            if (!"ATTACHED".equals(status)) {
+                return "面试上下文绑定工具返回了不支持的状态，未确认任何绑定结果";
+            }
+            if (requireMessage(payload, "面试上下文绑定结果缺少说明，未确认任何绑定结果") != null) {
+                return "面试上下文绑定结果缺少说明，未确认任何绑定结果";
+            }
+            JsonNode binding = payload.get("binding");
+            if (binding == null || !binding.isObject()
+                || !textField(binding, "contextType") || !textField(binding, "resourceId")
+                || !textField(binding, "scope") || !booleanField(binding, "active")) {
+                return "面试上下文绑定结果字段不完整，未确认任何绑定结果";
+            }
+            return null;
+        }
+        if (INTERVIEW_CLEAR_TOOL.equals(contract.name())) {
+            if (!"CLEARED".equals(status)) {
+                return "面试上下文清除工具返回了不支持的状态，未确认任何清除结果";
+            }
+            return requireMessage(payload, "面试上下文清除结果缺少说明，未确认任何清除结果");
+        }
+        return null;
+    }
+
+    private static boolean textField(JsonNode object, String field) {
+        JsonNode value = object.get(field);
+        return value != null && value.isTextual() && !value.asText().isBlank();
+    }
+
+    private static boolean booleanField(JsonNode object, String field) {
+        JsonNode value = object.get(field);
+        return value != null && value.isBoolean();
     }
 
     /** 校验动作草稿仍属于发起该工具的领域，避免错误动作被误挂到当前请求。 */
