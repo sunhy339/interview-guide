@@ -409,6 +409,8 @@ public class AgentContextToolCallbackFactory {
         );
         return emit(Map.of(
             "status", "ACTION_PROPOSED",
+            "operation", "IMPORT_RESUME",
+            "assetId", asset.assetId(),
             "message", "已生成简历导入待确认动作；确认后才会写入简历管理，原始上传文件会保留",
             "action", action
         ));

@@ -46,6 +46,35 @@ class AgentToolResultContractValidatorTest {
             .isNull();
     }
 
+    @Test
+    void acceptsScheduleActionOnlyWhenToolTypeMatchesTheCallingTool() {
+        String result = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"status\":\"ACTION_PROPOSED\",\"action\":{"
+                + "\"actionId\":\"action-1\",\"toolId\":\"interview.schedule.create\"}}"
+        );
+
+        assertThat(AgentToolResultContractValidator.validateOutput(result, scheduleContract(
+            "schedule_create_draft"
+        ))).isNull();
+        assertThat(AgentToolResultContractValidator.validateOutput(result, scheduleContract(
+            "schedule_cancel_draft"
+        ))).isEqualTo("日程工具结果的动作类型不匹配，未确认任何业务状态");
+    }
+
+    @Test
+    void validatesResumeImportActionIdentityAtTheResourceBoundary() {
+        String result = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"status\":\"ACTION_PROPOSED\",\"operation\":\"IMPORT_RESUME\","
+                + "\"assetId\":\"asset-1\",\"action\":{"
+                + "\"actionId\":\"action-1\",\"toolId\":\"resume.import\"}}"
+        );
+
+        assertThat(AgentToolResultContractValidator.validateOutput(result, contextAssetContract()))
+            .isNull();
+    }
+
     private AgentToolDescriptor contextAssetContract() {
         return new AgentToolDescriptor(
             "agent_context_asset_action",
@@ -62,6 +91,17 @@ class AgentToolResultContractValidatorTest {
             AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION,
             "{\"type\":\"object\"}",
             mock(ToolCallback.class)
+        );
+    }
+
+    private AgentToolDescriptor scheduleContract(String name) {
+        return new AgentToolDescriptor(
+            name, "v1", AgentIntentRouter.Capability.SCHEDULE,
+            AgentToolDescriptor.RiskLevel.DRAFT_WRITE, true, true,
+            "agent:schedule:draft", 5_000L, 1, AgentToolDescriptor.RetryPolicy.NONE,
+            AgentToolDescriptor.Idempotency.IDEMPOTENCY_KEYED,
+            AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION,
+            "{\"type\":\"object\"}", mock(ToolCallback.class)
         );
     }
 }
