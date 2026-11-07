@@ -164,6 +164,11 @@ function Get-ConversationAnswer($Conversation) {
     return [string]$assistant[0].content
 }
 
+function Get-PendingType($Conversation) {
+    if ($null -eq $Conversation.data.pendingInteraction) { return '' }
+    return [string]$Conversation.data.pendingInteraction.type
+}
+
 function Get-RunSources($Conversation) {
     return @($Conversation.data.runSources | ForEach-Object {
         [ordered]@{
@@ -285,6 +290,11 @@ try {
             promptTokens = if ($usage) { [int]$usage.promptTokens } else { 0 }
             completionTokens = if ($usage) { [int]$usage.completionTokens } else { 0 }
             cost = if ($usage -and $null -ne $usage.cost) { [double]$usage.cost } else { $null }
+            runStatus = [string]$conversation.data.runStatus
+            runError = if ($conversation.data.runError) { [string]$conversation.data.runError } else { '' }
+            pendingType = Get-PendingType $conversation
+            modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
+            durationMillis = if ($usage) { [long]$usage.durationMillis } else { 0 }
             sources = @(Get-RunSources $conversation)
             loopIterations = @(Get-LoopIterations $events)
         }

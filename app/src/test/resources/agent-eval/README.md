@@ -1,5 +1,7 @@
 # Agent 质量评测
 
+当前评测器版本为 `agent-quality-v2`，除回答、引用和 Loop 外，还校验真实运行状态与待处理交互。
+
 ## 离线门禁
 
 普通测试和 `agentEvaluation` 会校验 `dataset-v1.jsonl`、引用边界、Markdown 基本格式和
@@ -23,12 +25,14 @@ Loop 预算，不调用模型：
 将每次 Agent 运行整理为 JSONL，每行至少包含以下字段：
 
 ```json
-{"sampleId":"review-completeness-001","provider":"pixel","model":"gpt-5.6-luna","promptVersion":"agent-coach-v1","codeVersion":"git-sha","answer":"## 结论\n...","promptTokens":120,"completionTokens":80,"cost":0.00048,"sources":[],"loopIterations":[]}
+{"sampleId":"review-completeness-001","provider":"pixel","model":"gpt-5.6-luna","promptVersion":"agent-coach-v1","codeVersion":"git-sha","answer":"## 结论\n...","promptTokens":120,"completionTokens":80,"cost":0.00048,"runStatus":"COMPLETED","runError":"","pendingType":"","modelCalls":1,"durationMillis":2100,"sources":[],"loopIterations":[]}
 ```
 
 `sampleId` 必须存在于 `dataset-v1.jsonl`；`provider`、`model`、`promptVersion` 和
 `codeVersion` 用于比较不同运行；`answer` 会参与评分，但不会写入最终报告；`sources`
-和 `loopIterations` 用于检查 RAG 引用和 Loop 边界。
+和 `loopIterations` 用于检查 RAG 引用和 Loop 边界。`runStatus`、`runError`、`pendingType`、
+`modelCalls` 和 `durationMillis` 用于检查任务是否真正完成；默认样本期望 `COMPLETED`，
+如需评测补充信息或审批场景，可在样本中声明 `expectedRunStatus`。
 
 不再需要手工整理真实运行结果时，可使用采集脚本自动登录、创建临时面试、逐条运行语料，
 并从持久化会话读取最终回答和用量：
