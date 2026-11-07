@@ -105,6 +105,8 @@ class AgentInteractionEvaluationTest {
             compare(violations, index, "type", expected, actual);
             compare(violations, index, "status", expected, actual);
             compare(violations, index, "pendingType", expected, actual);
+            compare(violations, index, "runRelation", expected, actual);
+            compareNumber(violations, index, "userMessageCount", expected, actual);
             if ("confirm_latest_action".equals(text(expected, "type"))
                 || "cancel_latest_action".equals(text(expected, "type"))) {
                 compare(violations, index, "actionStatus", expected, actual);
@@ -134,10 +136,31 @@ class AgentInteractionEvaluationTest {
         }
     }
 
+    private void compareNumber(
+        List<String> violations,
+        int index,
+        String key,
+        Map<String, Object> expected,
+        Map<String, Object> actual
+    ) {
+        Object expectedValue = expected.get("expected" + Character.toUpperCase(key.charAt(0)) + key.substring(1));
+        if (!(expectedValue instanceof Number expectedNumber)) {
+            return;
+        }
+        Object actualValue = actual.get(key);
+        int actualNumber = actualValue instanceof Number number ? number.intValue() : -1;
+        if (actualNumber != expectedNumber.intValue()) {
+            String prefix = index < 0 ? "最终" : "第 " + (index + 1) + " 步";
+            violations.add(prefix + " " + key + " 不一致: " + actualNumber
+                + "，预期 " + expectedNumber.intValue());
+        }
+    }
+
     private String expectedKey(String actualKey) {
         return switch (actualKey) {
             case "status" -> "expectedStatus";
             case "pendingType" -> "expectedPendingType";
+            case "runRelation" -> "expectedRunRelation";
             case "actionStatus" -> "expectedActionStatus";
             case "finalStatus" -> "expectedFinalStatus";
             case "finalPendingType" -> "expectedFinalPendingType";

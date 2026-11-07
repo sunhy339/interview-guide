@@ -65,6 +65,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\agent-quality-collector.
   `WAITING_USER/APPROVAL`；
 - 确认动作后原会话恢复并最终进入 `COMPLETED`；
 - 取消动作后原会话恢复并最终进入 `COMPLETED`，且动作状态为 `CANCELLED`。
+- 缺信息续跑、确认和取消必须复用同一个 `runId`；普通新消息必须创建新的运行代次。
+- 确认/取消不能新增一条用户消息，避免把系统动作结果伪装成用户输入或造成上下文重复。
 
 先采集真实运行结果，再执行独立门禁：
 

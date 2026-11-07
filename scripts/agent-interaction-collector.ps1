@@ -136,6 +136,22 @@ function Get-ConversationAnswer($Conversation) {
     return [string]$assistant[0].content
 }
 
+function Get-UserMessageCount($Conversation) {
+    return @($Conversation.data.messages |
+        Where-Object { [string]$_.role -eq 'user' }).Count
+}
+
+function Get-TraceActions([string]$AgentSessionId, [string]$RunId) {
+    if ([string]::IsNullOrWhiteSpace($RunId)) { return @() }
+    try {
+        $trace = Invoke-JsonApi "/api/agent/sessions/$AgentSessionId/trace?runId=$([Uri]::EscapeDataString($RunId))&limit=100"
+        return @($trace.data | ForEach-Object { [string]$_.action } | Where-Object { $_ } | Select-Object -Unique)
+    } catch {
+        # Trace 是诊断补充，不应把正常任务结果变成失败；核心状态仍由会话接口校验。
+        return @()
+    }
+}
+
 function Get-CodeVersion {
     try {
         $version = (& git rev-parse --short HEAD 2>$null).Trim()
@@ -204,6 +220,10 @@ function Invoke-ScenarioMessage(
         status = [string]$conversation.data.runStatus
         pendingType = Get-PendingType $conversation
         actionStatus = ''
+        runId = [string]$conversation.data.runId
+        runRelation = ''
+        userMessageCount = Get-UserMessageCount $conversation
+        traceActions = @(Get-TraceActions $AgentSessionId ([string]$conversation.data.runId))
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
         durationMillis = if ($usage) { [long]$usage.durationMillis } else { 0 }
         answer = Get-ConversationAnswer $conversation
@@ -230,6 +250,10 @@ function Invoke-ScenarioConfirm(
         status = [string]$conversation.data.runStatus
         pendingType = Get-PendingType $conversation
         actionStatus = $actionStatus
+        runId = [string]$conversation.data.runId
+        runRelation = ''
+        userMessageCount = Get-UserMessageCount $conversation
+        traceActions = @(Get-TraceActions $AgentSessionId ([string]$conversation.data.runId))
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
         durationMillis = if ($usage) { [long]$usage.durationMillis } else { 0 }
         answer = Get-ConversationAnswer $conversation
@@ -256,6 +280,10 @@ function Invoke-ScenarioCancel(
         status = [string]$conversation.data.runStatus
         pendingType = Get-PendingType $conversation
         actionStatus = $actionStatus
+        runId = [string]$conversation.data.runId
+        runRelation = ''
+        userMessageCount = Get-UserMessageCount $conversation
+        traceActions = @(Get-TraceActions $AgentSessionId ([string]$conversation.data.runId))
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
         durationMillis = if ($usage) { [long]$usage.durationMillis } else { 0 }
         answer = Get-ConversationAnswer $conversation
@@ -316,6 +344,7 @@ try {
         $stepResults = [System.Collections.Generic.List[object]]::new()
         $lastConversation = $null
         $lastUsage = $null
+        $previousRunId = ''
         $script:stepIndex = 0
         foreach ($step in @($scenario.steps)) {
             $script:stepIndex++
@@ -329,6 +358,17 @@ try {
             } else {
                 throw "暂不支持的交互步骤：$($step.type)"
             }
+            $currentRunId = [string]$execution.conversation.data.runId
+            $relation = if ([string]::IsNullOrWhiteSpace($previousRunId)) {
+                'NEW'
+            } elseif ($currentRunId -eq $previousRunId) {
+                'SAME'
+            } else {
+                'NEW'
+            }
+            $execution.result['runRelation'] = $relation
+            $execution.result['runId'] = $currentRunId
+            $previousRunId = $currentRunId
             $stepResults.Add($execution.result)
             $lastConversation = $execution.conversation
             $lastUsage = $execution.usage
