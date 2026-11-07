@@ -114,6 +114,16 @@ class AgentInteractionEvaluationTest {
             if ("confirm_latest_action".equals(text(expected, "type"))
                 || "cancel_latest_action".equals(text(expected, "type"))) {
                 compare(violations, index, "actionStatus", expected, actual);
+                compare(violations, index, "actionResultContractVersion", expected, actual);
+                compare(violations, index, "actionResultCode", expected, actual);
+                compare(violations, index, "actionResultEffect", expected, actual);
+                compare(violations, index, "actionResultResourceType", expected, actual);
+                if (expected.containsKey("expectedActionResultResourceId")) {
+                    String resourceId = text(actual, "actionResultResourceId");
+                    if (resourceId.isBlank()) {
+                        violations.add("第 " + (index + 1) + " 结果资源 ID 为空");
+                    }
+                }
             }
             if ("message".equals(text(expected, "type"))
                 && number(actual.get("modelCalls")) <= 0) {
@@ -245,6 +255,10 @@ class AgentInteractionEvaluationTest {
             case "pendingType" -> "expectedPendingType";
             case "runRelation" -> "expectedRunRelation";
             case "actionStatus" -> "expectedActionStatus";
+            case "actionResultContractVersion" -> "expectedActionResultContractVersion";
+            case "actionResultCode" -> "expectedActionResultCode";
+            case "actionResultEffect" -> "expectedActionResultEffect";
+            case "actionResultResourceType" -> "expectedActionResultResourceType";
             case "finalStatus" -> "expectedFinalStatus";
             case "finalPendingType" -> "expectedFinalPendingType";
             default -> actualKey;

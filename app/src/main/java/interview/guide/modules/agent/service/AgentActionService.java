@@ -1049,6 +1049,9 @@ public class AgentActionService {
             AgentResumeImportService.ResumeImportResult result = resumeImportService.importApprovedAsset(
                 entity.getContextAssetId(), entity.getOwnerKey()
             );
+            if (result == null || result.resumeId() == null) {
+                throw new IllegalStateException("简历导入服务未返回简历资源 ID");
+            }
             entity.setResultSummary(result.message());
             setStructuredResult(entity,
                 result.duplicate() ? "RESUME_IMPORT_REUSED" : "RESUME_IMPORTED",
@@ -1146,8 +1149,10 @@ public class AgentActionService {
         entity.setResultCode(code);
         entity.setResultEffect(effect);
         entity.setResultResourceType(resourceType);
-        entity.setResultResourceId(resourceId == null || resourceId.isBlank()
-            ? entity.getActionId() : resourceId);
+        if (resourceId == null || resourceId.isBlank()) {
+            throw new IllegalArgumentException("Agent 动作结果缺少资源 ID");
+        }
+        entity.setResultResourceId(resourceId);
     }
 
     /**

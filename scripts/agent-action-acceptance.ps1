@@ -128,11 +128,18 @@ try {
 
     $confirmed = Invoke-Api $primaryJar $xsrf "/api/agent/actions/$actionId/confirm" 'POST'
     Assert-Pass ($confirmed.code -eq 200 -and $confirmed.data.status -eq 'SUCCEEDED') '确认动作并创建训练任务'
+    Assert-Pass ($confirmed.data.resultContractVersion -eq 'agent-action.result.v1' `
+        -and $confirmed.data.resultCode -eq 'TRAINING_TASK_CREATED' `
+        -and $confirmed.data.resultEffect -eq 'RESOURCE_CREATED' `
+        -and $confirmed.data.resultResourceType -eq 'TRAINING_TASK' `
+        -and -not [string]::IsNullOrWhiteSpace([string]$confirmed.data.resultResourceId)) `
+        '动作返回版本化训练任务结果契约和资源 ID'
 
     $tasks = Invoke-Api $primaryJar $xsrf '/api/agent/training-tasks'
     $task = @($tasks.data | Where-Object sourceActionId -eq $actionId | Select-Object -First 1)
     Assert-Pass ($tasks.code -eq 200 -and $task.Count -eq 1 -and $task[0].status -eq 'TODO') '确认后生成待开始训练任务'
     $taskId = [string]$task[0].taskId
+    Assert-Pass ($taskId -eq [string]$confirmed.data.resultResourceId) '动作结果资源 ID 与实际训练任务一致'
 
     $started = Invoke-Api $primaryJar $xsrf "/api/agent/training-tasks/$taskId" 'PATCH' @{ status = 'IN_PROGRESS' }
     Assert-Pass ($started.code -eq 200 -and $started.data.status -eq 'IN_PROGRESS') '训练任务可以推进到进行中'
