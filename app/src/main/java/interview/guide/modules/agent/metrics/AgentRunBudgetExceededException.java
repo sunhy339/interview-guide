@@ -13,7 +13,8 @@ public class AgentRunBudgetExceededException extends RuntimeException {
     }
 
     public AgentRunBudgetExceededException(String resource, int limit) {
-        super("Agent 单次运行已达到" + resource + "预算（" + limit + " 次）");
+        super("Agent 单次运行已达到" + resource + "预算（" + limit
+            + ("总 Token".equals(resource) ? "" : " 次") + "）");
     }
 
     public AgentRunBudgetExceededException(String resource, BigDecimal limit) {
