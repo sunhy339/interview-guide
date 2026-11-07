@@ -1073,9 +1073,8 @@ public class AgentContextToolCallbackFactory {
         @Override
         public String call(String toolInput, ToolContext toolContext) {
             AgentMetrics.RunTracker tracker = tracker(toolContext);
-            if (runStateService != null) {
-                runStateService.recordToolCall(tracker, definition.name(), toolInput);
-            }
+            String toolCallId = runStateService == null
+                ? null : runStateService.recordToolCall(tracker, definition.name(), toolInput);
             String result;
             try {
                 if (toolInput != null
@@ -1095,7 +1094,7 @@ public class AgentContextToolCallbackFactory {
             }
             if (runStateService != null) {
                 runStateService.recordToolResult(
-                    tracker, definition.name(), result,
+                    tracker, definition.name(), toolCallId, result,
                     result != null && (result.contains("ACTION_PROPOSED")
                         || result.contains("USER_CONFIRMATION_REQUIRED"))
                 );

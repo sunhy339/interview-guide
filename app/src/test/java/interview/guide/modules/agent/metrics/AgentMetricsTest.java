@@ -192,6 +192,18 @@ class AgentMetricsTest {
     }
 
     @Test
+    @DisplayName("为同一运行的工具调用生成独立且递增的关联标识")
+    void assignsStableToolCallIdsPerRun() {
+        AgentMetrics metrics = metrics(false);
+        AgentMetrics.RunTracker firstRun = metrics.startRun();
+        AgentMetrics.RunTracker secondRun = metrics.startRun();
+
+        assertThat(firstRun.nextToolCallId()).isEqualTo("tool-1");
+        assertThat(firstRun.nextToolCallId()).isEqualTo("tool-2");
+        assertThat(secondRun.nextToolCallId()).isEqualTo("tool-1");
+    }
+
+    @Test
     @DisplayName("显式配置单价时按输入输出 Token 累计费用")
     void recordsConfiguredModelCost() {
         AgentCostProperties costProperties = new AgentCostProperties();

@@ -133,6 +133,30 @@ class AgentRunStateServiceTest {
     }
 
     @Test
+    void correlatesToolResultWithTheRunLocalToolCallId() {
+        AgentRunStateEntity state = AgentRunStateEntity.builder()
+            .runId("run-1")
+            .agentSessionId("agent-1")
+            .status(AgentRunStatus.RUNNING)
+            .build();
+        when(repository.findByRunId("run-1")).thenReturn(Optional.of(state));
+        when(repository.save(any(AgentRunStateEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+
+        AgentRunStateService service = new AgentRunStateService(repository);
+        AgentMetrics.RunTracker tracker = tracker("run-1");
+
+        String toolCallId = service.recordToolCall(tracker, "schedule_list", "{}");
+        service.recordToolResult(tracker, "schedule_list", toolCallId, "success", false);
+
+        assertThat(toolCallId).isEqualTo("tool-1");
+        assertThat(state.getToolCallId()).isEqualTo("tool-1");
+        assertThat(state.getToolName()).isEqualTo("schedule_list");
+        assertThat(state.getToolResultReference()).startsWith("sha256:");
+        assertThat(state.getPendingApproval()).isFalse();
+    }
+
+    @Test
     void heartbeatExtendsLeaseAndLiveLeaseProtectsActiveRun() {
         AgentRunStateEntity state = AgentRunStateEntity.builder()
             .runId("run-1")

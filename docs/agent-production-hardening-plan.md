@@ -117,7 +117,7 @@ Skill 和现有业务工具现在都经过统一观测包装；只读工具执�
   活动页面展示短 Run 标识，避免同一会话中的多次运行只能看到模糊动作名称。仍需补齐
   Redis、数据库、外部检索等基础设施 span，以及真实 Provider 的完整模型轮次 usage 聚合。
   ToolCallingAdvisor 会在内部递归并只向外层暴露聚合流，当前已记录每个外层模型流的首个
-  非空输出 Trace，以及带 `modelTurnId` 的模型轮次开始/首 Token/完成事件、工具开始和逻辑调用完成/失败事件；回答完成时还记录低敏 grounding 状态，但仍不能证明 ToolCallingAdvisor 内部每个 tool-call 轮次和批次都被准确计量；因此仍需在 Provider/Advisor
+  非空输出 Trace，以及带 `modelTurnId` 的模型轮次开始/首 Token/完成事件、带 Run 内 `toolCallId` 的工具开始和逻辑调用完成/失败事件；回答完成时还记录低敏 grounding 状态，但仍不能证明 ToolCallingAdvisor 内部每个 provider tool-call 轮次和批次都被准确计量；因此仍需在 Provider/Advisor
   可观测边界增加真实契约测试。业务工具、Loop 观察工具和兼容日程路径现在都记录统一的开始/完成/失败事件；多轮交互评测还校验补充/确认/取消是否复用原 Run、是否重复插入用户消息。完整内部轮次、工具批次和更广的固定 Agent 评测集仍待后续实现。
 
 - 为一次 Agent Run 建立统一 Trace ID，串联分类、规划、模型、工具、数据库、Redis 和恢复任务。
