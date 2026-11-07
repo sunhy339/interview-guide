@@ -88,11 +88,73 @@ public final class AgentToolResultContractValidator {
                 return "工具确认请求缺少说明，未确认任何业务状态";
             }
         }
+        String scheduleError = validateScheduleResult(payload, contract, statusValue);
+        if (scheduleError != null) {
+            return scheduleError;
+        }
         String domainError = validateContextAssetAction(payload, contract, statusValue);
         if (domainError != null) {
             return domainError;
         }
         return null;
+    }
+
+    /**
+     * 日程工具的中间状态也必须是可继续处理的结构化结果。
+     *
+     * <p>尤其是取消/修改场景，多个候选不能只返回一句自然语言，否则模型可能把
+     * “需要选择”误说成已经取消或修改。这里不校验业务事实，只校验服务端返回的
+     * 状态、说明和候选标识是否完整；真正的 owner、状态和副作用校验仍在业务服务。</p>
+     */
+    private static String validateScheduleResult(
+        JsonNode payload, AgentToolDescriptor contract, String status
+    ) {
+        if (contract == null || !isScheduleActionTool(contract.name())) {
+            return null;
+        }
+        boolean create = SCHEDULE_CREATE_TOOL.equals(contract.name());
+        boolean cancel = SCHEDULE_CANCEL_TOOL.equals(contract.name());
+        boolean update = SCHEDULE_UPDATE_TOOL.equals(contract.name());
+        if (create && !"ACTION_PROPOSED".equals(status)) {
+            return "创建日程工具返回了不支持的状态，未确认任何业务状态";
+        }
+        if ((cancel || update) && !java.util.Set.of(
+            "ACTION_PROPOSED", "SELECTION_REQUIRED", "NOT_FOUND", "NO_CHANGE"
+        ).contains(status)) {
+            return "日程工具返回了不支持的状态，未确认任何业务状态";
+        }
+        if ("NOT_FOUND".equals(status) || "NO_CHANGE".equals(status)) {
+            return requireMessage(payload, "日程工具结果缺少说明，未确认任何业务状态");
+        }
+        if ("SELECTION_REQUIRED".equals(status)) {
+            String messageError = requireMessage(payload, "日程候选选择结果缺少说明，未确认任何业务状态");
+            if (messageError != null) {
+                return messageError;
+            }
+            JsonNode schedules = payload.get("schedules");
+            if (schedules == null || !schedules.isArray() || schedules.isEmpty()) {
+                return "日程候选选择结果缺少候选列表，未确认任何业务状态";
+            }
+            for (JsonNode schedule : schedules) {
+                JsonNode id = schedule == null ? null : schedule.get("id");
+                if (schedule == null || !schedule.isObject()
+                    || id == null || !id.isIntegralNumber() || id.asLong() <= 0) {
+                    return "日程候选缺少有效 ID，未确认任何业务状态";
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean isScheduleActionTool(String toolName) {
+        return SCHEDULE_CREATE_TOOL.equals(toolName)
+            || SCHEDULE_CANCEL_TOOL.equals(toolName)
+            || SCHEDULE_UPDATE_TOOL.equals(toolName);
+    }
+
+    private static String requireMessage(JsonNode payload, String error) {
+        JsonNode message = payload.get("message");
+        return message == null || !message.isTextual() || message.asText().isBlank() ? error : null;
     }
 
     /**
