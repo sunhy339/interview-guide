@@ -1,5 +1,7 @@
 package interview.guide.modules.agent.metrics;
 
+import java.math.BigDecimal;
+
 /**
  * Agent 单次运行达到模型调用预算时抛出的可识别异常。
  *
@@ -12,5 +14,9 @@ public class AgentRunBudgetExceededException extends RuntimeException {
 
     public AgentRunBudgetExceededException(String resource, int limit) {
         super("Agent 单次运行已达到" + resource + "预算（" + limit + " 次）");
+    }
+
+    public AgentRunBudgetExceededException(String resource, BigDecimal limit) {
+        super("Agent 单次运行已达到" + resource + "预算（" + limit.stripTrailingZeros().toPlainString() + "）");
     }
 }
