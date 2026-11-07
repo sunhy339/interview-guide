@@ -164,6 +164,18 @@ function Get-TraceResources([string]$AgentSessionId, [string]$RunId) {
     }
 }
 
+function Get-RunEventTypes([string]$AgentSessionId, [string]$RunId) {
+    if ([string]::IsNullOrWhiteSpace($RunId)) { return @() }
+    try {
+        $events = Invoke-JsonApi "/api/agent/sessions/$AgentSessionId/run-events?runId=$([Uri]::EscapeDataString($RunId))&limit=200"
+        return @($events.data | ForEach-Object { [string]$_.eventType } |
+            Where-Object { $_ } | Select-Object -Unique)
+    } catch {
+        # Run 事件是诊断补充；核心状态和 Trace 仍由会话接口校验。
+        return @()
+    }
+}
+
 function Get-CodeVersion {
     try {
         $version = (& git rev-parse --short HEAD 2>$null).Trim()
@@ -237,6 +249,7 @@ function Invoke-ScenarioMessage(
         userMessageCount = Get-UserMessageCount $conversation
         traceActions = @(Get-TraceActions $AgentSessionId ([string]$conversation.data.runId))
         traceResources = @(Get-TraceResources $AgentSessionId ([string]$conversation.data.runId))
+        runEventTypes = @(Get-RunEventTypes $AgentSessionId ([string]$conversation.data.runId))
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
         durationMillis = if ($usage) { [long]$usage.durationMillis } else { 0 }
         answer = Get-ConversationAnswer $conversation
@@ -268,6 +281,7 @@ function Invoke-ScenarioConfirm(
         userMessageCount = Get-UserMessageCount $conversation
         traceActions = @(Get-TraceActions $AgentSessionId ([string]$conversation.data.runId))
         traceResources = @(Get-TraceResources $AgentSessionId ([string]$conversation.data.runId))
+        runEventTypes = @(Get-RunEventTypes $AgentSessionId ([string]$conversation.data.runId))
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
         durationMillis = if ($usage) { [long]$usage.durationMillis } else { 0 }
         answer = Get-ConversationAnswer $conversation
@@ -299,6 +313,7 @@ function Invoke-ScenarioCancel(
         userMessageCount = Get-UserMessageCount $conversation
         traceActions = @(Get-TraceActions $AgentSessionId ([string]$conversation.data.runId))
         traceResources = @(Get-TraceResources $AgentSessionId ([string]$conversation.data.runId))
+        runEventTypes = @(Get-RunEventTypes $AgentSessionId ([string]$conversation.data.runId))
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
         durationMillis = if ($usage) { [long]$usage.durationMillis } else { 0 }
         answer = Get-ConversationAnswer $conversation

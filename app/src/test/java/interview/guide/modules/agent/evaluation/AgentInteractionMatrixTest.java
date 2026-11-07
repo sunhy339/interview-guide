@@ -31,7 +31,7 @@ class AgentInteractionMatrixTest {
     @DisplayName("覆盖普通多轮、缺信息续跑和确认恢复")
     void validatesInteractionMatrix() throws IOException {
         List<Map<String, Object>> scenarios = loadScenarios();
-        assertThat(scenarios).hasSize(4);
+        assertThat(scenarios).hasSize(6);
         Set<String> ids = new HashSet<>();
         Set<String> stepTypes = new HashSet<>();
         for (Map<String, Object> scenario : scenarios) {
@@ -64,6 +64,14 @@ class AgentInteractionMatrixTest {
                 if (step.containsKey("expectedTraceResources")) {
                     assertThat(step.get("expectedTraceResources")).isInstanceOf(List.class);
                     assertThat(traceResources(step)).allMatch(value -> value != null && !value.isBlank());
+                }
+                if (step.containsKey("expectedRunEventTypes")) {
+                    assertThat(step.get("expectedRunEventTypes")).isInstanceOf(List.class);
+                    assertThat(runEventTypes(step)).allMatch(value -> value != null && !value.isBlank());
+                }
+                if (step.containsKey("forbiddenRunEventTypes")) {
+                    assertThat(step.get("forbiddenRunEventTypes")).isInstanceOf(List.class);
+                    assertThat(runEventTypes(step)).allMatch(value -> value != null && !value.isBlank());
                 }
                 if ("message".equals(type)) {
                     assertThat(text(step, "message")).isNotBlank();
@@ -121,6 +129,16 @@ class AgentInteractionMatrixTest {
     @SuppressWarnings("unchecked")
     private List<String> traceResources(Map<String, Object> step) {
         return ((List<Object>) step.getOrDefault("expectedTraceResources", List.of())).stream()
+            .filter(String.class::isInstance)
+            .map(String.class::cast)
+            .toList();
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> runEventTypes(Map<String, Object> step) {
+        List<Object> values = (List<Object>) step.getOrDefault("expectedRunEventTypes",
+            step.getOrDefault("forbiddenRunEventTypes", List.of()));
+        return values.stream()
             .filter(String.class::isInstance)
             .map(String.class::cast)
             .toList();

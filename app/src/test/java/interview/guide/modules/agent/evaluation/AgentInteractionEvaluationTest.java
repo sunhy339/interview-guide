@@ -109,6 +109,8 @@ class AgentInteractionEvaluationTest {
             compareNumber(violations, index, "userMessageCount", expected, actual);
             compareRequiredTraceActions(violations, index, expected, actual);
             compareRequiredTraceResources(violations, index, expected, actual);
+            compareRequiredRunEventTypes(violations, index, expected, actual);
+            compareForbiddenRunEventTypes(violations, index, expected, actual);
             if ("confirm_latest_action".equals(text(expected, "type"))
                 || "cancel_latest_action".equals(text(expected, "type"))) {
                 compare(violations, index, "actionStatus", expected, actual);
@@ -159,6 +161,45 @@ class AgentInteractionEvaluationTest {
             if (!actualResources.contains(resource)) {
                 violations.add(prefix + " Trace 缺少资源: " + resource
                     + "，实际资源: " + String.join(",", actualResources));
+            }
+        }
+    }
+
+    private void compareRequiredRunEventTypes(
+        List<String> violations,
+        int index,
+        Map<String, Object> expected,
+        Map<String, Object> actual
+    ) {
+        List<String> required = strings(expected.get("expectedRunEventTypes"));
+        if (required.isEmpty()) {
+            return;
+        }
+        List<String> actualEvents = strings(actual.get("runEventTypes"));
+        String prefix = "第 " + (index + 1) + " 步";
+        for (String eventType : required) {
+            if (!actualEvents.contains(eventType)) {
+                violations.add(prefix + " Run 事件缺少: " + eventType
+                    + "，实际事件: " + String.join(",", actualEvents));
+            }
+        }
+    }
+
+    private void compareForbiddenRunEventTypes(
+        List<String> violations,
+        int index,
+        Map<String, Object> expected,
+        Map<String, Object> actual
+    ) {
+        List<String> forbidden = strings(expected.get("forbiddenRunEventTypes"));
+        if (forbidden.isEmpty()) {
+            return;
+        }
+        List<String> actualEvents = strings(actual.get("runEventTypes"));
+        String prefix = "第 " + (index + 1) + " 步";
+        for (String eventType : forbidden) {
+            if (actualEvents.contains(eventType)) {
+                violations.add(prefix + " Run 事件不应出现: " + eventType);
             }
         }
     }
