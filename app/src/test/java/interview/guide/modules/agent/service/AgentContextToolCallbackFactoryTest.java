@@ -396,7 +396,14 @@ class AgentContextToolCallbackFactoryTest {
             context("请根据本场面试生成一个训练任务")
         );
 
-        assertThat(result).contains("ACTION_PROPOSED").contains("action-1");
+        assertThat(result)
+            .contains("agent-action.v2")
+            .contains("ACTION_PROPOSED")
+            .contains("action-1")
+            .contains("requiresConfirmation")
+            .contains("PENDING_CONFIRMATION")
+            .contains("DRAFT_ONLY")
+            .contains("interview-1");
         verify(actionService).proposeTrainingTaskDraft(
             "interview-1", "agent-1", "owner-1", "练习 Agent Loop", null
         );

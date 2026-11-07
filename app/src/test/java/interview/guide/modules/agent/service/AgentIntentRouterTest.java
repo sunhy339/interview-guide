@@ -192,6 +192,25 @@ class AgentIntentRouterTest {
     }
 
     @Test
+    @DisplayName("模型误把动作说明识别为 ACTION 时，后置校验仍不暴露动作工具")
+    void doesNotExposeActionToolForHowToQuestionFromModel() {
+        AgentIntentRouter modelRouter = new AgentIntentRouter(
+            null, null, new ObjectMapper(), null
+        );
+
+        AgentIntentRouter.Decision decision = modelRouter.parseModelDecision(
+            "{\"mode\":\"GENERAL\",\"capabilities\":[\"ACTION\"],"
+                + "\"confidence\":0.98,\"reason\":\"用户询问如何操作\"}",
+            "如何生成一个训练任务？"
+        );
+
+        assertThat(decision).isNotNull();
+        assertThat(decision.route()).isEqualTo(AgentIntentRouter.Route.GENERAL);
+        assertThat(decision.capabilities()).isEmpty();
+        assertThat(modelRouter.toolPolicy(decision).allowedToolNames()).isEmpty();
+    }
+
+    @Test
     @DisplayName("模型把面试复盘概念问题拦截为普通问答")
     void doesNotLoadInterviewReportForReviewConceptQuestion() {
         interview.guide.common.ai.LlmProviderRegistry registry = mock(
