@@ -22,6 +22,8 @@ public final class AgentToolResultContractValidator {
     private static final String SCHEDULE_CREATE_TOOL = "schedule_create_draft";
     private static final String SCHEDULE_CANCEL_TOOL = "schedule_cancel_draft";
     private static final String SCHEDULE_UPDATE_TOOL = "schedule_update_draft";
+    private static final String SCHEDULE_LIST_TOOL = "schedule_list";
+    private static final String SCHEDULE_CONFLICT_TOOL = "schedule_check_conflict";
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final Pattern RESULT_BOUNDARY = Pattern.compile(
         "(?s)^\\s*<data-boundary-([0-9a-f]{8})-agent-tool-result>\\s*(.*?)\\s*"
@@ -37,8 +39,8 @@ public final class AgentToolResultContractValidator {
 
     /** 返回安全的拒绝原因；null 表示通过。 */
     public static String validateOutput(String rawResult, AgentToolDescriptor contract) {
-        if (contract == null || contract.resultContract()
-            != AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION) {
+        if (contract == null || (!isActionContract(contract)
+            && !isStructuredReadOnlyTool(contract.name()))) {
             return null;
         }
         if (rawResult == null || rawResult.isBlank()) {
@@ -99,6 +101,14 @@ public final class AgentToolResultContractValidator {
         return null;
     }
 
+    private static boolean isActionContract(AgentToolDescriptor contract) {
+        return contract.resultContract() == AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION;
+    }
+
+    private static boolean isStructuredReadOnlyTool(String toolName) {
+        return SCHEDULE_LIST_TOOL.equals(toolName) || SCHEDULE_CONFLICT_TOOL.equals(toolName);
+    }
+
     /**
      * 日程工具的中间状态也必须是可继续处理的结构化结果。
      *
@@ -109,7 +119,16 @@ public final class AgentToolResultContractValidator {
     private static String validateScheduleResult(
         JsonNode payload, AgentToolDescriptor contract, String status
     ) {
-        if (contract == null || !isScheduleActionTool(contract.name())) {
+        if (contract == null) {
+            return null;
+        }
+        if (SCHEDULE_LIST_TOOL.equals(contract.name())) {
+            return validateScheduleList(payload, status);
+        }
+        if (SCHEDULE_CONFLICT_TOOL.equals(contract.name())) {
+            return validateScheduleConflict(payload, status);
+        }
+        if (!isScheduleActionTool(contract.name())) {
             return null;
         }
         boolean create = SCHEDULE_CREATE_TOOL.equals(contract.name());
@@ -141,6 +160,50 @@ public final class AgentToolResultContractValidator {
                     || id == null || !id.isIntegralNumber() || id.asLong() <= 0) {
                     return "日程候选缺少有效 ID，未确认任何业务状态";
                 }
+            }
+        }
+        return null;
+    }
+
+    private static String validateScheduleList(JsonNode payload, String status) {
+        if (!"READ_ONLY".equals(status)) {
+            return "日程查询工具返回了不支持的状态，未确认任何查询结果";
+        }
+        JsonNode schedules = payload.get("schedules");
+        if (schedules == null || !schedules.isArray()) {
+            return "日程查询结果缺少 schedules 列表，未确认任何查询结果";
+        }
+        return validateScheduleSummaries(schedules, "日程查询结果");
+    }
+
+    private static String validateScheduleConflict(JsonNode payload, String status) {
+        if (!"READ_ONLY".equals(status)) {
+            return "日程冲突检查返回了不支持的状态，未确认任何查询结果";
+        }
+        JsonNode hasConflict = payload.get("hasConflict");
+        if (hasConflict == null || !hasConflict.isBoolean()) {
+            return "日程冲突检查结果缺少 hasConflict，未确认任何查询结果";
+        }
+        JsonNode conflicts = payload.get("conflicts");
+        if (conflicts == null || !conflicts.isArray()) {
+            return "日程冲突检查结果缺少 conflicts 列表，未确认任何查询结果";
+        }
+        String summaryError = validateScheduleSummaries(conflicts, "日程冲突检查结果");
+        if (summaryError != null) {
+            return summaryError;
+        }
+        if (hasConflict.booleanValue() != !conflicts.isEmpty()) {
+            return "日程冲突检查结果与 conflicts 列表不一致，未确认任何查询结果";
+        }
+        return null;
+    }
+
+    private static String validateScheduleSummaries(JsonNode schedules, String prefix) {
+        for (JsonNode schedule : schedules) {
+            JsonNode id = schedule == null ? null : schedule.get("id");
+            if (schedule == null || !schedule.isObject()
+                || id == null || !id.isIntegralNumber() || id.asLong() <= 0) {
+                return prefix + "缺少有效日程 ID，未确认任何查询结果";
             }
         }
         return null;

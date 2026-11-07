@@ -95,6 +95,32 @@ class AgentToolResultContractValidatorTest {
     }
 
     @Test
+    void validatesStructuredReadOnlyScheduleResults() {
+        String list = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"status\":\"READ_ONLY\",\"schedules\":[{\"id\":7}]}"
+        );
+        String conflict = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"status\":\"READ_ONLY\",\"hasConflict\":false,\"conflicts\":[]}"
+        );
+        String inconsistent = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"status\":\"READ_ONLY\",\"hasConflict\":true,\"conflicts\":[]}"
+        );
+
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            list, scheduleContract("schedule_list", AgentToolDescriptor.ResultContract.DATA_BOUNDARY)
+        )).isNull();
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            conflict, scheduleContract("schedule_check_conflict", AgentToolDescriptor.ResultContract.DATA_BOUNDARY)
+        )).isNull();
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            inconsistent, scheduleContract("schedule_check_conflict", AgentToolDescriptor.ResultContract.DATA_BOUNDARY)
+        )).isEqualTo("日程冲突检查结果与 conflicts 列表不一致，未确认任何查询结果");
+    }
+
+    @Test
     void validatesResumeImportActionIdentityAtTheResourceBoundary() {
         String result = sanitizer.wrapWithDelimiters(
             "agent-tool-result",
@@ -127,12 +153,18 @@ class AgentToolResultContractValidatorTest {
     }
 
     private AgentToolDescriptor scheduleContract(String name) {
+        return scheduleContract(name, AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION);
+    }
+
+    private AgentToolDescriptor scheduleContract(
+        String name, AgentToolDescriptor.ResultContract resultContract
+    ) {
         return new AgentToolDescriptor(
             name, "v1", AgentIntentRouter.Capability.SCHEDULE,
             AgentToolDescriptor.RiskLevel.DRAFT_WRITE, true, true,
             "agent:schedule:draft", 5_000L, 1, AgentToolDescriptor.RetryPolicy.NONE,
             AgentToolDescriptor.Idempotency.IDEMPOTENCY_KEYED,
-            AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION,
+            resultContract,
             "{\"type\":\"object\"}", mock(ToolCallback.class)
         );
     }
