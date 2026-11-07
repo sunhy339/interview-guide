@@ -216,12 +216,22 @@ public class AgentContextAssetService {
     public AgentContextAssetResponse confirmKnowledgeBaseImport(
         String assetId, String ownerId, String name, String category
     ) {
+        return confirmKnowledgeBaseImportWithOutcome(assetId, ownerId, name, category).asset();
+    }
+
+    /**
+     * 知识库导入的结果需要区分“复用已有资源”和“新任务已投递”。
+     * 兼容旧 Controller 的同时，为 Agent 工具提供不会夸大异步状态的事实边界。
+     */
+    public KnowledgeBaseImportResult confirmKnowledgeBaseImportWithOutcome(
+        String assetId, String ownerId, String name, String category
+    ) {
         AgentContextAssetPersistenceService.KnowledgeBaseImportPreparation preparation =
             persistenceService.prepareKnowledgeBaseImport(assetId, ownerId, name, category);
         if (!preparation.vectorizationRequired()) {
             audit(ownerId, null, assetId, "CONTEXT_ASSET_KB_IMPORT_REUSED",
                 preparation.asset().reviewStatus().name());
-            return preparation.asset();
+            return new KnowledgeBaseImportResult(preparation.asset(), false);
         }
         boolean queued;
         try {
@@ -237,11 +247,11 @@ public class AgentContextAssetService {
             );
             audit(ownerId, null, assetId, "CONTEXT_ASSET_KB_IMPORT_FAILED",
                 failed.reviewStatus().name());
-            return failed;
+            return new KnowledgeBaseImportResult(failed, false);
         }
         audit(ownerId, null, assetId, "CONTEXT_ASSET_KB_IMPORT_COMPLETED",
             preparation.asset().reviewStatus().name());
-        return preparation.asset();
+        return new KnowledgeBaseImportResult(preparation.asset(), true);
     }
 
     public void reject(String assetId, String ownerId) {
@@ -286,5 +296,11 @@ public class AgentContextAssetService {
                 action, "context-asset", resourceId, result
             );
         }
+    }
+
+    public record KnowledgeBaseImportResult(
+        AgentContextAssetResponse asset,
+        boolean vectorizationQueued
+    ) {
     }
 }

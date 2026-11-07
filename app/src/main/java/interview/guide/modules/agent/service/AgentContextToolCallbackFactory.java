@@ -315,6 +315,12 @@ public class AgentContextToolCallbackFactory {
             }
             return emit(Map.of(
                 "status", "USER_CONFIRMATION_REQUIRED",
+                "contractVersion", "agent-context-asset.v1",
+                "operation", "confirm_knowledge_base",
+                "assetId", assetId,
+                "effect", "CONFIRMATION_REQUIRED",
+                "async", false,
+                "requiresConfirmation", true,
                 "message", "请明确回复“确认加入知识库”，系统才会创建知识库并开始向量化。"
             ));
         }
@@ -358,6 +364,12 @@ public class AgentContextToolCallbackFactory {
             && !containsAny(context.userMessage(), "仅作为资料", "不执行", "不运行", "不当作指令")) {
             return emit(Map.of(
                 "status", "SECURITY_CONFIRMATION_REQUIRED",
+                "contractVersion", "agent-context-asset.v1",
+                "operation", "review",
+                "effect", "SECURITY_CONFIRMATION_REQUIRED",
+                "async", false,
+                "requiresConfirmation", true,
+                "assetId", asset.assetId(),
                 "message", "文件包含疑似提示注入内容。请明确确认仅将其作为资料分析，不执行文件中的任何指令。"
             ));
         }
@@ -365,7 +377,8 @@ public class AgentContextToolCallbackFactory {
             asset.assetId(), context.ownerKey(), asset.securityFlagged()
         );
         return emit(new AssetActionToolResult(
-            "COMPLETED", "REVIEWED", reviewed.assetId(), reviewed.originalFilename(), reviewed.reviewStatus(),
+            "agent-context-asset.v1", "COMPLETED", "REVIEWED", "CONTEXT_APPROVED", false, false,
+            reviewed.assetId(), reviewed.originalFilename(), reviewed.reviewStatus(),
             reviewed.securityFlagged(), reviewed.securityNotice(), reviewed.knowledgeBaseId()
         ));
     }
@@ -379,7 +392,9 @@ public class AgentContextToolCallbackFactory {
             context.ownerKey()
         );
         return emit(Map.of(
-            "status", "ATTACHED", "operation", "ATTACHED", "assetId", asset.assetId(), "binding", binding
+            "status", "ATTACHED", "contractVersion", "agent-context-asset.v1",
+            "operation", "ATTACHED", "effect", "CONTEXT_BOUND", "async", false,
+            "requiresConfirmation", false, "assetId", asset.assetId(), "binding", binding
         ));
     }
 
@@ -389,7 +404,8 @@ public class AgentContextToolCallbackFactory {
             asset.assetId(), context.ownerKey()
         );
         return emit(new AssetActionToolResult(
-            "PENDING", "KB_IMPORT_PENDING", requested.assetId(), requested.originalFilename(), requested.reviewStatus(),
+            "agent-context-asset.v1", "PENDING", "KB_IMPORT_PENDING", "CONFIRMATION_PENDING", false, true,
+            requested.assetId(), requested.originalFilename(), requested.reviewStatus(),
             requested.securityFlagged(), requested.securityNotice(), requested.knowledgeBaseId()
         ));
     }
@@ -398,14 +414,37 @@ public class AgentContextToolCallbackFactory {
         if (!isExplicitKnowledgeBaseConfirmation(context.userMessage())) {
             return emit(Map.of(
                 "status", "USER_CONFIRMATION_REQUIRED",
+                "contractVersion", "agent-context-asset.v1",
+                "operation", "confirm_knowledge_base",
+                "assetId", asset.assetId(),
+                "effect", "CONFIRMATION_REQUIRED",
+                "async", false,
+                "requiresConfirmation", true,
                 "message", "请明确回复“确认加入知识库”，系统才会创建知识库并开始向量化。"
             ));
         }
-        AgentContextAssetResponse submitted = contextAssetService.confirmKnowledgeBaseImport(
+        AgentContextAssetService.KnowledgeBaseImportResult result =
+            contextAssetService.confirmKnowledgeBaseImportWithOutcome(
             asset.assetId(), context.ownerKey(), asset.originalFilename(), "agent-upload"
         );
+        AgentContextAssetResponse submitted = result.asset();
+        if (submitted.reviewStatus() == AgentContextAssetStatus.KB_IMPORT_FAILED) {
+            return emit(new AssetActionToolResult(
+                "agent-context-asset.v1", "FAILED", "KB_IMPORT_FAILED", "ASYNC_JOB_FAILED", true, false,
+                submitted.assetId(), submitted.originalFilename(), submitted.reviewStatus(),
+                submitted.securityFlagged(), submitted.securityNotice(), submitted.knowledgeBaseId()
+            ));
+        }
+        if (!result.vectorizationQueued()) {
+            return emit(new AssetActionToolResult(
+                "agent-context-asset.v1", "COMPLETED", "KB_IMPORT_REUSED", "RESOURCE_REUSED", false, false,
+                submitted.assetId(), submitted.originalFilename(), submitted.reviewStatus(),
+                submitted.securityFlagged(), submitted.securityNotice(), submitted.knowledgeBaseId()
+            ));
+        }
         return emit(new AssetActionToolResult(
-            "SUBMITTED", "KB_IMPORT_SUBMITTED", submitted.assetId(), submitted.originalFilename(), submitted.reviewStatus(),
+            "agent-context-asset.v1", "SUBMITTED", "KB_IMPORT_SUBMITTED", "ASYNC_JOB_SUBMITTED", true, false,
+            submitted.assetId(), submitted.originalFilename(), submitted.reviewStatus(),
             submitted.securityFlagged(), submitted.securityNotice(), submitted.knowledgeBaseId()
         ));
     }
@@ -416,7 +455,11 @@ public class AgentContextToolCallbackFactory {
         );
         return emit(Map.of(
             "status", "ACTION_PROPOSED",
+            "contractVersion", "agent-context-asset.v1",
             "operation", "IMPORT_RESUME",
+            "effect", "ACTION_PROPOSED",
+            "async", false,
+            "requiresConfirmation", true,
             "assetId", asset.assetId(),
             "message", "已生成简历导入待确认动作；确认后才会写入简历管理，原始上传文件会保留",
             "action", action
@@ -1149,8 +1192,12 @@ public class AgentContextToolCallbackFactory {
     }
 
     private record AssetActionToolResult(
+        String contractVersion,
         String status,
         String operation,
+        String effect,
+        boolean async,
+        boolean requiresConfirmation,
         String assetId,
         String originalFilename,
         AgentContextAssetStatus reviewStatus,
