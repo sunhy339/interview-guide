@@ -6,6 +6,7 @@ import java.time.LocalDateTime;
 public record AgentAuditEventResponse(
     String interviewSessionId,
     String agentSessionId,
+    String runId,
     String action,
     String resourceType,
     String resourceId,
@@ -24,13 +25,14 @@ public record AgentAuditEventResponse(
         String result,
         LocalDateTime createdAt
     ) {
-        this(interviewSessionId, agentSessionId, action, resourceType, resourceId, result, createdAt, null, null);
+        this(interviewSessionId, agentSessionId, null, action, resourceType, resourceId, result, createdAt, null, null);
     }
 
     public static AgentAuditEventResponse from(AgentAuditEventEntity event) {
         return new AgentAuditEventResponse(
             event.getInterviewSessionId(),
             event.getAgentSessionId(),
+            event.getRunId(),
             event.getAction(),
             event.getResourceType(),
             event.getResourceId(),
@@ -43,7 +45,7 @@ public record AgentAuditEventResponse(
 
     public AgentAuditEventResponse withSourceNames(String interviewTitle, String agentSessionTitle) {
         return new AgentAuditEventResponse(
-            interviewSessionId, agentSessionId, action, resourceType, resourceId, result,
+            interviewSessionId, agentSessionId, runId, action, resourceType, resourceId, result,
             createdAt, interviewTitle, agentSessionTitle
         );
     }

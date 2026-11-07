@@ -82,4 +82,27 @@ class AgentQualityEvaluatorTest {
         assertThat(result.passed()).isTrue();
         assertThat(result.scores()).containsEntry("grounding", 1.0);
     }
+
+    @Test
+    @DisplayName("运行状态异常时即使回答文本完整也不能通过")
+    void rejectsIncompleteRunOutcome() {
+        AgentQualityEvaluator.Sample sample = new AgentQualityEvaluator.Sample(
+            "execution", "学习", "请解释", "dev",
+            List.of("结论"), List.of(), List.of("结论"), false, 1, List.of()
+        );
+
+        AgentQualityEvaluator.Evaluation result = evaluator.evaluate(
+            sample,
+            "## 结论\n可以继续学习。",
+            List.of(),
+            List.of(),
+            new AgentQualityEvaluator.RunObservation(
+                "WAITING_USER", "", "dateTime", 1, 1000
+            )
+        );
+
+        assertThat(result.passed()).isFalse();
+        assertThat(result.violations()).anyMatch(item -> item.contains("运行状态不符合预期"));
+        assertThat(result.scores()).containsKey("execution");
+    }
 }

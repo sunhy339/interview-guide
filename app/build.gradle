@@ -188,6 +188,29 @@ tasks.register('agentEvaluation', Test) {
     outputs.upToDateWhen { false }
 }
 
+// Agent 多轮交互质量评测：校验真实 Provider 的状态、pending、动作确认和同一 Run 恢复。
+// 不提供输入文件时自动跳过，不影响普通测试和现有 agentEvaluation。
+tasks.register('agentInteractionEvaluation', Test) {
+    description = '运行 Agent 真实多轮交互评测（消息续跑与动作确认）'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform {
+        includeTags 'agent-interaction-eval'
+    }
+    systemProperty 'agentInteractionEval.reportDir', layout.buildDirectory.dir('reports/agent-eval').get().asFile.absolutePath
+    if (project.findProperty('agentInteractionEvalInput') != null) {
+        systemProperty 'agentInteractionEval.input', rootProject.file(project.findProperty('agentInteractionEvalInput')).absolutePath
+    }
+    if (project.findProperty('agentInteractionEvalReportDir') != null) {
+        systemProperty 'agentInteractionEval.reportDir', rootProject.file(project.findProperty('agentInteractionEvalReportDir')).absolutePath
+    }
+    if (project.findProperty('agentInteractionEvalRunId') != null) {
+        systemProperty 'agentInteractionEval.runId', project.findProperty('agentInteractionEvalRunId')
+    }
+    outputs.upToDateWhen { false }
+}
+
 // 将仓库根目录 .env 注入 bootRun，便于本地加载 AI_BAILIAN_API_KEY 等变量（Gradle 进程默认不读 .env）
 // 同时确保 JVM 使用 UTF-8 编码
 tasks.named('bootRun') {

@@ -51,6 +51,9 @@ class AgentActionServiceTest {
     @Mock
     private InterviewScheduleService interviewScheduleService;
 
+    @Mock
+    private AgentConversationService conversationService;
+
     @Test
     @DisplayName("生成训练计划草稿时默认只提出动作，不改原始资料")
     void proposesDraftWithStableContract() {
@@ -583,6 +586,26 @@ class AgentActionServiceTest {
             "user-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend"
         );
         verify(interviewPersistenceService, never()).renameSessionForOwner(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("确认带运行代次的动作后收束原 Agent 等待状态")
+    void resolvesWaitingAgentRunAfterActionSucceeds() {
+        AgentActionService service = new AgentActionService(repository, auditService);
+        service.setConversationService(conversationService);
+        AgentActionRequestEntity action = draft("action-1", "user-1");
+        action.setRunId("run-1");
+        action.setAgentSessionId("agent-1");
+        when(repository.findByActionIdForUpdate("action-1")).thenReturn(Optional.of(action));
+        when(repository.save(any(AgentActionRequestEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+
+        var response = service.confirm("action-1", "user-1");
+
+        assertThat(response.status()).isEqualTo(AgentActionStatus.SUCCEEDED);
+        verify(conversationService).resolveWaitingApproval(
+            "agent-1", "run-1", "用户已确认并完成 Agent 动作"
+        );
     }
 
     @Test

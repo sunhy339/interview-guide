@@ -159,6 +159,22 @@ public class AgentContextService {
         AgentMessageRequest request,
         List<AgentHistoryMessage> effectiveHistory
     ) {
+        return buildForDecision(sessionId, request, effectiveHistory, null);
+    }
+
+    /**
+     * 按本轮意图选择主报告、Skill 和 RAG 上下文。
+     *
+     * <p>旧的三参数入口保留迁移期行为；Agent 主流程会传入分类结果，避免普通问答
+     * 因旧会话目标或面试会话 ID 触发完整复盘上下文。显式绑定的会话资料仍然按用户
+     * 选择读取，不会因为本轮是 GENERAL 就被静默丢弃。</p>
+     */
+    public AgentContext buildForDecision(
+        String sessionId,
+        AgentMessageRequest request,
+        List<AgentHistoryMessage> effectiveHistory,
+        AgentIntentRouter.Decision intentDecision
+    ) {
         // 面试会话 ID 只代表数据归属，不代表本轮自动授权读取报告。
         // 普通问题由 InterviewAgentService 归一化为 general；这里再次防守，
         // 避免旧调用方直接传入 sessionId 时重新引入“自动复盘”。
@@ -172,6 +188,10 @@ public class AgentContextService {
             return buildGeneralContext(request, effectiveHistory);
         }
         if (sessionId == null || sessionId.isBlank()) {
+            return buildGeneralContext(request, effectiveHistory);
+        }
+        ContextSelection selection = ContextSelection.from(intentDecision, request);
+        if (!selection.includeInterviewReport()) {
             return buildGeneralContext(request, effectiveHistory);
         }
         InterviewDetailDTO detail = loadInterviewDetailForOwner(sessionId, trustedOwner);
@@ -192,14 +212,18 @@ public class AgentContextService {
         }
 
         String safeSkillId = sanitizeSkillId(detail.skillId());
-        String skillReference = loadSkillReference(safeSkillId, sources, trustedOwner,
-            request == null ? null : request.agentSessionId(), sessionId);
+        String skillReference = selection.includeSkill()
+            ? loadSkillReference(safeSkillId, sources, trustedOwner,
+                request == null ? null : request.agentSessionId(), sessionId)
+            : "暂无匹配的 Skill references";
         String retrievalQuery = buildRetrievalQuery(detail, request);
-        String ragContext = loadRagContext(
-            detail, retrievalQuery, sources, buildRetrievalHistory(effectiveHistory),
-            trustedOwner, request == null ? null : request.agentSessionId(), sessionId
-        );
-        AgentMemorySnapshot memory = loadAndUpdateMemory(detail, request);
+        String ragContext = selection.includeRag()
+            ? loadRagContext(
+                detail, retrievalQuery, sources, buildRetrievalHistory(effectiveHistory),
+                trustedOwner, request == null ? null : request.agentSessionId(), sessionId
+            )
+            : "暂无知识库检索上下文";
+        AgentMemorySnapshot memory = loadMemory(request);
 
         return new AgentContext(
             report,
@@ -220,7 +244,7 @@ public class AgentContextService {
     private AgentContext buildGeneralContext(
         AgentMessageRequest request, List<AgentHistoryMessage> effectiveHistory
     ) {
-        AgentMemorySnapshot memory = loadAndUpdateMemory(null, request);
+        AgentMemorySnapshot memory = loadMemory(request);
         String retrievalQuery = buildGeneralRetrievalQuery(request, effectiveHistory);
         List<AgentSource> sources = new ArrayList<>();
         String report = loadAttachedContext(request, retrievalQuery, effectiveHistory, sources, null);
@@ -329,7 +353,10 @@ public class AgentContextService {
                 "\n[面试报告：" + safeSessionLabel + "]\n"
                     + promptSanitizer.sanitizeForContext(rawReport) + '\n');
             if (appended) {
-                sources.add(new AgentSource("interview", "面试报告 " + safeSessionLabel, null, "INTERVIEW"));
+                sources.add(new AgentSource(
+                    "interview", "面试报告 " + safeSessionLabel, null, "INTERVIEW",
+                    sessionId, "interview-report-v1", "user-selected", "explicit-context"
+                ));
             }
         } catch (RuntimeException error) {
             log.warn("通用 Agent 读取面试报告失败: sessionId={}", sessionId, error);
@@ -357,7 +384,8 @@ public class AgentContextService {
                 if (appended) {
                     sources.add(new AgentSource(
                         "resume", safeFilename == null ? "未命名简历" : safeFilename,
-                        null, "RESUME-" + resourceId
+                        null, "RESUME-" + resourceId, resourceId, "resume-record-v1",
+                        "user-owned", "explicit-context"
                     ));
                 }
             });
@@ -388,7 +416,8 @@ public class AgentContextService {
                 if (appended) {
                     sources.add(new AgentSource(
                         "file", safeFilename == null ? "未命名文件" : safeFilename,
-                        null, "FILE-" + resourceId
+                        null, "FILE-" + resourceId, resourceId, "context-asset-v1",
+                        "user-reviewed", "explicit-context"
                     ));
                 }
             });
@@ -443,7 +472,11 @@ public class AgentContextService {
             if (budget <= 0) break;
             report.append("\n[").append(reference).append(" 来源：").append(title).append("]\n")
                 .append(text, 0, Math.min(text.length(), budget)).append('\n');
-            sources.add(new AgentSource("rag", title, document.score(), reference));
+            sources.add(new AgentSource(
+                "rag", title, document.score(), reference,
+                knowledgeBaseId + ":" + reference, "rag-retrieval-v1",
+                "knowledge-base", "retrieval"
+            ));
         }
     }
 
@@ -470,6 +503,29 @@ public class AgentContextService {
         return AuthUserContext.currentUserId().orElse(null);
     }
 
+    private record ContextSelection(
+        boolean includeInterviewReport,
+        boolean includeSkill,
+        boolean includeRag
+    ) {
+        private static ContextSelection from(
+            AgentIntentRouter.Decision decision, AgentMessageRequest request
+        ) {
+            if (decision == null) {
+                boolean legacyReview = request != null
+                    && !"general".equalsIgnoreCase(request.goal());
+                return new ContextSelection(legacyReview, legacyReview, legacyReview);
+            }
+            java.util.Set<AgentIntentRouter.Capability> capabilities = decision.capabilities();
+            return new ContextSelection(
+                decision.route() == AgentIntentRouter.Route.INTERVIEW_REVIEW
+                    || capabilities.contains(AgentIntentRouter.Capability.INTERVIEW_REPORT),
+                capabilities.contains(AgentIntentRouter.Capability.SKILL),
+                capabilities.contains(AgentIntentRouter.Capability.RAG)
+            );
+        }
+    }
+
     /**
      * Agent 上下文读取必须显式携带服务端 owner。简化构造器只供迁移期单元测试和旧内部
      * 调用方使用，生产 Bean 始终注入 persistence service 并走严格归属查询。
@@ -493,18 +549,16 @@ public class AgentContextService {
         );
     }
 
-    private AgentMemorySnapshot loadAndUpdateMemory(InterviewDetailDTO detail, AgentMessageRequest request) {
+    /**
+     * 上下文编排只负责读取长期记忆，不能因为用户发起一次普通对话或查看一份报告
+     * 就隐式修改跨会话数据。记忆写入统一通过明确的 Agent 动作草稿和用户确认完成。
+     */
+    private AgentMemorySnapshot loadMemory(AgentMessageRequest request) {
         String trustedOwner = ownerKey(request);
         if (agentMemoryService == null || trustedOwner == null || trustedOwner.isBlank()) {
             return AgentMemorySnapshot.empty(null);
         }
-        String safeSkillId = detail == null ? null : sanitizeSkillId(detail.skillId());
-        return agentMemoryService.remember(
-            trustedOwner,
-            safeSkillId,
-            detail == null ? List.of() : extractWeaknesses(detail),
-            request.goal()
-        );
+        return agentMemoryService.load(trustedOwner);
     }
 
     private String buildGeneralRetrievalQuery(
@@ -552,7 +606,10 @@ public class AgentContextService {
                     ownerId, interviewSessionId, agentSessionId,
                     "skill-reference", skillId, reference
                 );
-                sources.add(new AgentSource("skill", "Skill: " + skillId, null, "skill-reference"));
+                sources.add(new AgentSource(
+                    "skill", "Skill: " + skillId, null, "skill-reference", skillId,
+                    "skill-reference-v1", "skill-maintainer", "skill-selected"
+                ));
                 return truncate(promptSanitizer.sanitizeForContext(reference), 8_000);
             }
         } catch (Exception error) {
@@ -637,7 +694,11 @@ public class AgentContextService {
                 if (includedText.isBlank()) {
                     break;
                 }
-                sources.add(new AgentSource("rag", title, document.score(), reference));
+                sources.add(new AgentSource(
+                    "rag", title, document.score(), reference,
+                    detail.knowledgeBaseId() + ":" + reference, "rag-retrieval-v1",
+                    "knowledge-base", "retrieval"
+                ));
                 context.append(prefix).append(includedText).append("\n\n");
                 if (includedText.length() < text.length()) {
                     context.append(RAG_TRUNCATION_NOTICE).append('\n');

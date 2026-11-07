@@ -76,7 +76,7 @@ import AgentManagementOverview from '../components/AgentManagementOverview';
 import AgentContextPicker from '../components/AgentContextPicker';
 import { ROUTES } from '../constants/routes';
 import { createRequestId } from '../utils/requestId';
-type RunStatus = 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
+type RunStatus = 'idle' | 'running' | 'waiting' | 'completed' | 'error' | 'cancelled';
 type StepStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
 
 const AUDIT_RETRY_DELAYS_MS = [500, 1000, 2000];
@@ -202,6 +202,7 @@ function promptPrefixLabel(version?: string | null, fingerprint?: string | null)
 
 function formatRunStatus(status?: string | null) {
   const labels: Record<string, string> = {
+    WAITING_USER: '等待确认',
     COMPLETED: '已完成',
     FAILED: '失败',
     CANCELLED: '已取消',
@@ -209,9 +210,16 @@ function formatRunStatus(status?: string | null) {
   return labels[status || ''] || status || '未知状态';
 }
 
+function waitingRunNotice(runStep?: string | null, notice?: string | null) {
+  if (notice) return notice;
+  if (runStep === 'waiting_input') return 'Agent 需要补充信息，请直接在输入框继续回复；补充后会接着当前任务处理。';
+  return 'Agent 已生成待确认动作，请在动作卡片中确认或取消。';
+}
+
 function runStatusClass(status?: string | null) {
   if (status === 'FAILED') return 'text-rose-600 dark:text-rose-300';
   if (status === 'CANCELLED') return 'text-slate-500 dark:text-slate-400';
+  if (status === 'WAITING_USER') return 'text-amber-600 dark:text-amber-300';
   return 'text-emerald-600 dark:text-emerald-300';
 }
 
@@ -240,6 +248,8 @@ function formatAuditAction(action: string) {
     ACTION_DRAFT_UPDATED: '修改动作草稿',
     ACTION_CANCELLED: '取消动作',
     ACTION_FAILED: '动作失败',
+    TOOL_STARTED: '工具开始',
+    TOOL_CALLED: '工具完成',
     PROMPT_INJECTION_DETECTED: '请求已净化',
     CONTEXT_INJECTION_DETECTED: '资料已净化',
     TOOL_SECURITY_REJECTED: '工具安全拒绝',
@@ -605,7 +615,11 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
           clearReconciliationTimer();
           rememberRetryableRequest(conversation);
           restoreConversationMessages(conversation, fallbackAssistant);
-          if (conversation.runStatus === 'COMPLETED') {
+          if (conversation.runStatus === 'WAITING_USER') {
+            setRunError('');
+            setRunNotice(waitingRunNotice(conversation.runStep, conversation.runNotice));
+            setRunStatus('waiting');
+          } else if (conversation.runStatus === 'COMPLETED') {
             setRunError('');
             setRunNotice('Agent 已在后台完成，回答内容已恢复。');
             setRunStatus('completed');
@@ -818,6 +832,10 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
           setRunNotice(conversation.runNotice || '服务端仍有一个 Agent 任务正在执行，可等待完成或取消任务。');
           reconcileConversation(sessionId, undefined, resolvedAgentSessionId);
         }
+        if (conversation.runStatus === 'WAITING_USER') {
+          setRunStatus('waiting');
+          setRunNotice(waitingRunNotice(conversation.runStep, conversation.runNotice));
+        }
         if (conversation.runStatus === 'FAILED') {
           setRunStatus('error');
           if (conversation.runError) setRunError(conversation.runError);
@@ -857,6 +875,9 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
           setRunStatus('running');
           setRunNotice(conversation.runNotice || '服务端仍有一个 Agent 任务正在执行，可等待完成或取消任务。');
           reconcileConversation('', undefined, agentSessionId);
+        } else if (conversation.runStatus === 'WAITING_USER') {
+          setRunStatus('waiting');
+          setRunNotice(waitingRunNotice(conversation.runStep, conversation.runNotice));
         } else if (conversation.runStatus === 'FAILED') {
           setRunStatus('error');
           setRunError(conversation.runError || 'Agent 执行失败，请稍后重试');
@@ -1560,6 +1581,10 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         if (isAgentResumeImportAction(updated) && updated.status === 'SUCCEEDED') {
           setActionNotice('文件已导入简历管理，分析任务已提交后台处理');
         }
+        if (runStatus === 'waiting' && updated.status === 'SUCCEEDED') {
+          setRunStatus('completed');
+          setRunNotice('待确认动作已完成，当前 Agent 运行已结束。');
+        }
         if (isAgentReportExportAction(updated) && updated.status === 'SUCCEEDED' && sessionId) {
           setActionNotice('报告导出已确认，正在下载 PDF...');
           void agentApi.downloadConfirmedInterviewReport(updated.actionId)
@@ -1627,6 +1652,10 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       .then((updated) => {
         setActions((current) => current.map((item) => item.actionId === updated.actionId ? updated : item));
         setActionNotice('动作已取消，原始面试资料未被修改');
+        if (runStatus === 'waiting') {
+          setRunStatus('completed');
+          setRunNotice('待确认动作已取消，当前 Agent 运行已结束。');
+        }
         void loadAuditEvents();
       })
       .catch((error: unknown) => setActionNotice(getErrorMessage(error) || '动作取消失败，请稍后重试'))
@@ -2353,6 +2382,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                       <span className="h-1.5 w-1.5 rounded-full bg-primary-400 shrink-0" />
                       <span className="font-medium dark-text">{formatAuditAction(event.action)}</span>
                       <span className="dark-text-muted">{event.resourceType}</span>
+                      {event.runId ? <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 dark:bg-slate-700 dark:text-slate-300">Run {event.runId.slice(0, 8)}</span> : null}
                       {event.result ? <span className={event.result === 'success' || event.result === 'sanitized' ? 'text-emerald-600 dark:text-emerald-300' : 'text-rose-600 dark:text-rose-300'}>{formatAuditResult(event.result)}</span> : null}
                     </div>
                     <p className="mt-1 truncate dark-text-muted">
@@ -2580,7 +2610,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                   取消执行
                 </button>
               )}
-              {(runStatus === 'completed' || runStatus === 'error') && (
+              {(runStatus === 'completed' || runStatus === 'error' || runStatus === 'waiting') && (
               <button onClick={() => { setRunStatus('idle'); setRunError(''); setRunNotice(''); setSources([]); setRunUsage(null); setSteps(createInitialSteps(isGeneralWorkspace)); }} className="btn-secondary inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm">
                   <RotateCcw className="w-4 h-4" />
                   清空流程

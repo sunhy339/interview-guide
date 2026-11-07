@@ -88,6 +88,7 @@ public class AgentActionService {
     private final InterviewScheduleService interviewScheduleService;
     private final PromptSanitizer promptSanitizer;
     private final AgentResumeImportService resumeImportService;
+    private AgentConversationService conversationService;
 
     /** 保留轻量构造方式，便于只测试草稿状态机的调用方。 */
     public AgentActionService(
@@ -184,6 +185,12 @@ public class AgentActionService {
         this.resumeImportService = resumeImportService;
     }
 
+    /** 动作服务可选接入会话续接，旧构造方式和非运行级动作保持兼容。 */
+    @Autowired(required = false)
+    void setConversationService(AgentConversationService conversationService) {
+        this.conversationService = conversationService;
+    }
+
     /** 生成待确认的简历编辑版草稿；确认后写入现有简历编辑器，不覆盖原始上传文件。 */
     @Transactional
     public AgentActionResponse proposeResumeEditDraft(
@@ -223,6 +230,33 @@ public class AgentActionService {
         String notes,
         String requestedIdempotencyKey
     ) {
+        return proposeInterviewScheduleDraft(
+            interviewSessionId, agentSessionId, ownerKey, companyName, position, interviewTime,
+            interviewType, meetingLink, roundNumber, interviewer, notes, requestedIdempotencyKey,
+            null
+        );
+    }
+
+    /**
+     * 生成带运行代次的面试日程草稿。运行代次只用于审计和恢复关联，不参与幂等键，
+     * 这样同一条用户意图在恢复时不会重复生成动作。
+     */
+    @Transactional
+    public AgentActionResponse proposeInterviewScheduleDraft(
+        String interviewSessionId,
+        String agentSessionId,
+        String ownerKey,
+        String companyName,
+        String position,
+        java.time.LocalDateTime interviewTime,
+        String interviewType,
+        String meetingLink,
+        Integer roundNumber,
+        String interviewer,
+        String notes,
+        String requestedIdempotencyKey,
+        String runId
+    ) {
         String owner = requireOwner(ownerKey);
         String interviewId = normalizeOptional(interviewSessionId, 64);
         String agentId = requireText(agentSessionId, "Agent 会话不能为空", 64);
@@ -258,6 +292,7 @@ public class AgentActionService {
             .ownerKey(owner)
             .interviewSessionId(interviewId)
             .agentSessionId(agentId)
+            .runId(normalizeOptional(runId, 64))
             .toolId(INTERVIEW_SCHEDULE_CREATE_TOOL)
             .riskLevel("BUSINESS_WRITE")
             .status(AgentActionStatus.PROPOSED)
@@ -286,6 +321,21 @@ public class AgentActionService {
         String ownerKey,
         InterviewScheduleDTO schedule,
         String requestedIdempotencyKey
+    ) {
+        return proposeInterviewScheduleCancelDraft(
+            interviewSessionId, agentSessionId, ownerKey, schedule, requestedIdempotencyKey, null
+        );
+    }
+
+    /** 生成带运行代次的取消日程草稿；运行代次不参与幂等键。 */
+    @Transactional
+    public AgentActionResponse proposeInterviewScheduleCancelDraft(
+        String interviewSessionId,
+        String agentSessionId,
+        String ownerKey,
+        InterviewScheduleDTO schedule,
+        String requestedIdempotencyKey,
+        String runId
     ) {
         String owner = requireOwner(ownerKey);
         String interviewId = normalizeOptional(interviewSessionId, 64);
@@ -324,6 +374,7 @@ public class AgentActionService {
             .ownerKey(owner)
             .interviewSessionId(interviewId)
             .agentSessionId(agentId)
+            .runId(normalizeOptional(runId, 64))
             .toolId(INTERVIEW_SCHEDULE_CANCEL_TOOL)
             .riskLevel("BUSINESS_WRITE")
             .status(AgentActionStatus.PROPOSED)
@@ -347,6 +398,21 @@ public class AgentActionService {
         String ownerKey,
         InterviewScheduleDTO schedule,
         String requestedIdempotencyKey
+    ) {
+        return proposeInterviewScheduleUpdateDraft(
+            interviewSessionId, agentSessionId, ownerKey, schedule, requestedIdempotencyKey, null
+        );
+    }
+
+    /** 生成带运行代次的修改日程草稿；运行代次不参与幂等键。 */
+    @Transactional
+    public AgentActionResponse proposeInterviewScheduleUpdateDraft(
+        String interviewSessionId,
+        String agentSessionId,
+        String ownerKey,
+        InterviewScheduleDTO schedule,
+        String requestedIdempotencyKey,
+        String runId
     ) {
         String owner = requireOwner(ownerKey);
         String interviewId = normalizeOptional(interviewSessionId, 64);
@@ -395,6 +461,7 @@ public class AgentActionService {
             .ownerKey(owner)
             .interviewSessionId(interviewId)
             .agentSessionId(agentId)
+            .runId(normalizeOptional(runId, 64))
             .toolId(INTERVIEW_SCHEDULE_UPDATE_TOOL)
             .riskLevel("BUSINESS_WRITE")
             .status(AgentActionStatus.PROPOSED)
@@ -568,6 +635,20 @@ public class AgentActionService {
         String contextAssetId,
         String requestedIdempotencyKey
     ) {
+        return proposeResumeImportDraft(
+            agentSessionId, ownerKey, contextAssetId, requestedIdempotencyKey, null
+        );
+    }
+
+    /** 生成带运行代次的简历导入草稿；运行代次不参与幂等键。 */
+    @Transactional
+    public AgentActionResponse proposeResumeImportDraft(
+        String agentSessionId,
+        String ownerKey,
+        String contextAssetId,
+        String requestedIdempotencyKey,
+        String runId
+    ) {
         String owner = requireOwner(ownerKey);
         String agentId = requireText(agentSessionId, "Agent 会话不能为空", 64);
         String assetId = requireText(contextAssetId, "Agent 文件素材不能为空", 64);
@@ -590,6 +671,7 @@ public class AgentActionService {
             .actionId(UUID.randomUUID().toString())
             .ownerKey(owner)
             .agentSessionId(agentId)
+            .runId(normalizeOptional(runId, 64))
             .toolId(RESUME_IMPORT_TOOL)
             .riskLevel("BUSINESS_WRITE")
             .status(AgentActionStatus.PROPOSED)
@@ -649,7 +731,7 @@ public class AgentActionService {
     private AgentActionResponse saveProposed(AgentActionRequestEntity entity) {
         AgentActionRequestEntity saved = repository.save(entity);
         auditService.recordQuietly(
-            saved.getOwnerKey(), saved.getInterviewSessionId(), saved.getAgentSessionId(), null,
+            saved.getOwnerKey(), saved.getInterviewSessionId(), saved.getAgentSessionId(), saved.getRunId(),
             "ACTION_PROPOSED", "agent-action",
             saved.getActionId(), AgentActionStatus.PROPOSED.name()
         );
@@ -689,7 +771,9 @@ public class AgentActionService {
         AgentActionRequestEntity entity = findOwnedForUpdate(actionId, ownerKey);
         boolean sanitized = sanitizeStoredAction(entity);
         if (entity.getStatus() == AgentActionStatus.SUCCEEDED) {
-            return safeResponse(entity);
+            AgentActionResponse response = safeResponse(entity);
+            resolveWaitingRun(entity, response, "用户已确认并完成 Agent 动作");
+            return response;
         }
         if (sanitized && (entity.getStatus() == AgentActionStatus.PROPOSED
             || entity.getStatus() == AgentActionStatus.FAILED)) {
@@ -711,7 +795,9 @@ public class AgentActionService {
             entity.setConfirmedAt(LocalDateTime.now());
             audit(entity, "ACTION_CONFIRMED", AgentActionStatus.CONFIRMED.name());
         }
-        return executeConfirmed(entity, false);
+        AgentActionResponse response = executeConfirmed(entity, false);
+        resolveWaitingRun(entity, response, "用户已确认并完成 Agent 动作");
+        return response;
     }
 
     /** 重试一次已经失败的动作，最多允许三次实际执行。 */
@@ -720,7 +806,9 @@ public class AgentActionService {
         AgentActionRequestEntity entity = findOwnedForUpdate(actionId, ownerKey);
         boolean sanitized = sanitizeStoredAction(entity);
         if (entity.getStatus() == AgentActionStatus.SUCCEEDED) {
-            return safeResponse(entity);
+            AgentActionResponse response = safeResponse(entity);
+            resolveWaitingRun(entity, response, "重试动作已完成，Agent 运行已恢复");
+            return response;
         }
         if (entity.getStatus() != AgentActionStatus.FAILED) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "只有执行失败的 Agent 动作可以重试");
@@ -735,7 +823,9 @@ public class AgentActionService {
                 "该 Agent 草稿包含不安全内容，已净化保存，请重新检查后重试"
             );
         }
-        return executeConfirmed(entity, true);
+        AgentActionResponse response = executeConfirmed(entity, true);
+        resolveWaitingRun(entity, response, "重试动作已完成，Agent 运行已恢复");
+        return response;
     }
 
     /**
@@ -807,6 +897,26 @@ public class AgentActionService {
             throw new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND, "面试报告不存在或无权访问");
         }
         return entity.getInterviewSessionId();
+    }
+
+    /**
+     * 重启恢复审批续跑时读取已经提交的动作结果；只允许同一 owner 读取成功或取消结果。
+     * 不重新执行动作，也不接受模型传入的动作参数。
+     */
+    @Transactional
+    public AgentActionResponse loadApprovalResumeAction(String actionId, String ownerKey) {
+        String owner = requireOwner(ownerKey);
+        String safeActionId = requireText(actionId, "Agent 审批动作不能为空", 64);
+        AgentActionRequestEntity entity = repository.findByActionId(safeActionId).orElse(null);
+        if (entity == null || !owner.equals(entity.getOwnerKey())) {
+            return null;
+        }
+        if (entity.getStatus() != AgentActionStatus.SUCCEEDED
+            && entity.getStatus() != AgentActionStatus.CANCELLED) {
+            return null;
+        }
+        sanitizeStoredAction(entity);
+        return safeResponse(entity);
     }
 
     private AgentActionResponse executeConfirmed(AgentActionRequestEntity entity, boolean retry) {
@@ -988,13 +1098,38 @@ public class AgentActionService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "已保存的 Agent 草稿不能取消");
         }
         if (entity.getStatus() == AgentActionStatus.CANCELLED) {
+            if (conversationService != null && entity.getRunId() != null) {
+                resolveWaitingRun(entity, safeResponse(entity), "用户已取消待确认动作，Agent 正在继续处理");
+            }
             return safeResponse(entity);
         }
         entity.setStatus(AgentActionStatus.CANCELLED);
         entity.setResultSummary("用户取消了该动作，原始面试资料未被修改。");
         repository.save(entity);
         audit(entity, "ACTION_CANCELLED", AgentActionStatus.CANCELLED.name());
+        if (conversationService != null && entity.getRunId() != null) {
+            resolveWaitingRun(entity, safeResponse(entity), "用户已取消待确认动作，Agent 正在继续处理");
+        }
         return safeResponse(entity);
+    }
+
+    private void resolveWaitingRun(
+        AgentActionRequestEntity entity, AgentActionResponse response, String notice
+    ) {
+        if (conversationService == null || entity == null || response == null
+            || (response.status() != AgentActionStatus.SUCCEEDED
+                && response.status() != AgentActionStatus.CANCELLED)
+            || entity.getRunId() == null || entity.getRunId().isBlank()) {
+            return;
+        }
+        AgentConversationService.ApprovalResumeRequest resumed = conversationService.prepareApprovalResume(
+            entity.getAgentSessionId(), entity.getRunId(), entity.getOwnerKey(),
+            response.actionId(), response.title(), response.status().name(), response.resultSummary(), notice
+        );
+        if (resumed == null) {
+            // 兼容尚未接入事件监听器的旧调用方和单元测试替身。
+            conversationService.resolveWaitingApproval(entity.getAgentSessionId(), entity.getRunId(), notice);
+        }
     }
 
     private AgentActionRequestEntity findOwnedForUpdate(String actionId, String ownerKey) {
@@ -1065,7 +1200,7 @@ public class AgentActionService {
     private void audit(AgentActionRequestEntity entity, String action, String result) {
         auditService.recordQuietly(
             entity.getOwnerKey(), entity.getInterviewSessionId(), entity.getAgentSessionId(),
-            null, action, "agent-action", entity.getActionId(), result
+            entity.getRunId(), action, "agent-action", entity.getActionId(), result
         );
     }
 

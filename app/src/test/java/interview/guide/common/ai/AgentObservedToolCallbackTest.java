@@ -3,6 +3,9 @@ package interview.guide.common.ai;
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.metrics.AgentRunBudgetExceededException;
 import interview.guide.modules.agent.service.AgentAuditService;
+import interview.guide.modules.agent.service.AgentIntentRouter;
+import interview.guide.modules.agent.service.AgentRunStateService;
+import interview.guide.modules.agent.service.AgentToolDescriptor;
 import interview.guide.common.config.LlmProviderProperties;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
@@ -120,6 +123,10 @@ class AgentObservedToolCallbackTest {
             "user-1", "interview-1", "agent-1", "run-1",
             "TOOL_CALLED", "agent-tool", "load_skill", "success"
         );
+        verify(auditService).recordQuietly(
+            "user-1", "interview-1", "agent-1", "run-1",
+            "TOOL_STARTED", "agent-tool", "load_skill", "started"
+        );
     }
 
     @Test
@@ -155,6 +162,10 @@ class AgentObservedToolCallbackTest {
         verify(auditService).recordQuietly(
             "user-1", "interview-1", "agent-1", "run-1",
             "TOOL_CALLED", "agent-tool", "schedule.create_draft", "rejected"
+        );
+        verify(auditService).recordQuietly(
+            "user-1", "interview-1", "agent-1", "run-1",
+            "TOOL_STARTED", "agent-tool", "schedule.create_draft", "started"
         );
         verify(auditService).recordToolSecurityRejected(
             "user-1", "interview-1", "agent-1", "run-1", "schedule.create_draft"
@@ -219,8 +230,216 @@ class AgentObservedToolCallbackTest {
         assertThat(registry.get(AgentMetrics.TOOL_CALLS)
             .tag("tool", "load_skill").tag("result", "rejected").counter().count())
             .isEqualTo(1.0);
+        verify(auditService, never()).recordQuietly(
+            "user-1", "interview-1", "agent-1", "run-1",
+            "TOOL_STARTED", "agent-tool", "load_skill", "started"
+        );
         verify(auditService).recordToolSecurityRejected(
             "user-1", "interview-1", "agent-1", "run-1", "load_skill"
+        );
+    }
+
+    @Test
+    @DisplayName("工具契约不满足时在统一观测层拒绝且不调用业务回调")
+    void rejectsContractViolationBeforeDelegate() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AgentMetrics metrics = metrics(registry);
+        ToolCallback delegate = mockTool("schedule.create_draft", "不应被执行");
+        AgentToolDescriptor contract = new AgentToolDescriptor(
+            "schedule.create_draft", "v1", AgentIntentRouter.Capability.SCHEDULE,
+            AgentToolDescriptor.RiskLevel.DRAFT_WRITE, true, true,
+            "agent:schedule:draft", 5_000L, 1, AgentToolDescriptor.RetryPolicy.NONE,
+            AgentToolDescriptor.Idempotency.IDEMPOTENCY_KEYED,
+            AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION,
+            "{\"type\":\"object\",\"properties\":{\"companyName\":{\"type\":\"string\"}},\"required\":[\"companyName\"],\"additionalProperties\":false}",
+            delegate
+        );
+        AgentObservedToolCallback observed = new AgentObservedToolCallback(
+            delegate, metrics, null, new PromptSanitizer(new LlmProviderProperties()), contract
+        );
+
+        String result = observed.call("{}");
+
+        assertThat(result).contains("工具缺少必填字段 companyName").contains("agent-observed-tool-result");
+        verify(delegate, never()).call("{}");
+        assertThat(registry.get(AgentMetrics.TOOL_CALLS)
+            .tag("tool", "schedule.create_draft").tag("result", "rejected").counter().count())
+            .isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("动作工具返回结构化草稿且带 actionId 时才记为成功")
+    void acceptsStructuredActionResultWithActionId() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AgentMetrics metrics = metrics(registry);
+        ToolCallback delegate = mock(ToolCallback.class);
+        ToolDefinition definition = ToolDefinition.builder()
+            .name("schedule.create_draft")
+            .description("test")
+            .inputSchema("{\"type\":\"object\",\"additionalProperties\":true}")
+            .build();
+        when(delegate.getToolDefinition()).thenReturn(definition);
+        when(delegate.call("{}")).thenReturn(
+            "<data-boundary-ab12cd34-agent-tool-result>"
+                + "{\"status\":\"ACTION_PROPOSED\","
+                + "\"action\":{\"actionId\":\"action-1\"}}"
+                + "</data-boundary-ab12cd34-agent-tool-result>"
+        );
+        AgentObservedToolCallback observed = new AgentObservedToolCallback(
+            delegate, metrics, null, new PromptSanitizer(new LlmProviderProperties()),
+            contract("schedule.create_draft", 500, 1, AgentToolDescriptor.RetryPolicy.NONE)
+        );
+
+        assertThat(observed.call("{}")).contains("agent-observed-tool-result");
+        assertThat(registry.get(AgentMetrics.TOOL_CALLS)
+            .tag("tool", "schedule.create_draft").tag("result", "success").counter().count())
+            .isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("动作工具返回未绑定结果或缺少 actionId 时拒绝，避免模型误报已完成")
+    void rejectsUntrustedActionResult() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AgentMetrics metrics = metrics(registry);
+        ToolCallback delegate = mock(ToolCallback.class);
+        ToolDefinition definition = ToolDefinition.builder()
+            .name("schedule.create_draft")
+            .description("test")
+            .inputSchema("{\"type\":\"object\",\"additionalProperties\":true}")
+            .build();
+        when(delegate.getToolDefinition()).thenReturn(definition);
+        when(delegate.call("{}")).thenReturn("{\"status\":\"ACTION_PROPOSED\"}");
+        AgentObservedToolCallback observed = new AgentObservedToolCallback(
+            delegate, metrics, null, new PromptSanitizer(new LlmProviderProperties()),
+            contract("schedule.create_draft", 500, 1, AgentToolDescriptor.RetryPolicy.NONE)
+        );
+
+        String result = observed.call("{}");
+
+        assertThat(result)
+            .contains("工具结果缺少可信数据边界")
+            .contains("agent-observed-tool-result");
+        assertThat(registry.get(AgentMetrics.TOOL_CALLS)
+            .tag("tool", "schedule.create_draft").tag("result", "rejected").counter().count())
+            .isEqualTo(1.0);
+        assertThat(registry.find(AgentMetrics.TOOL_CALLS)
+            .tag("tool", "schedule.create_draft").tag("result", "success").counter()).isNull();
+    }
+
+    @Test
+    @DisplayName("工具超过契约超时后停止等待并记录 timeout")
+    void enforcesToolTimeout() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AgentMetrics metrics = metrics(registry);
+        ToolCallback delegate = mockTool("slow_tool", null);
+        when(delegate.call("{}")).thenAnswer(invocation -> {
+            Thread.sleep(200);
+            return "late";
+        });
+        AgentObservedToolCallback observed = new AgentObservedToolCallback(
+            delegate, metrics, null, new PromptSanitizer(new LlmProviderProperties()),
+            contract("slow_tool", 30, 1, AgentToolDescriptor.RetryPolicy.NONE)
+        );
+
+        assertThatThrownBy(() -> observed.call("{}"))
+            .isInstanceOf(ToolExecutionTimeoutException.class)
+            .hasMessageContaining("执行超时");
+        assertThat(registry.get(AgentMetrics.TOOL_CALLS)
+            .tag("tool", "slow_tool").tag("result", "timeout").counter().count())
+            .isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("只读工具瞬时失败时按契约有限重试，写入工具不自动重试")
+    void retriesOnlyAccordingToToolContract() {
+        ToolCallback readOnlyDelegate = mockTool("read_only_tool", null);
+        when(readOnlyDelegate.call("{}"))
+            .thenThrow(new IllegalStateException("temporary"))
+            .thenReturn("ok");
+        AgentObservedToolCallback readOnly = new AgentObservedToolCallback(
+            readOnlyDelegate, null, null, null,
+            contract("read_only_tool", 500, 2, AgentToolDescriptor.RetryPolicy.SAFE_READ_ONLY)
+        );
+
+        assertThat(readOnly.call("{}")).isEqualTo("ok");
+        verify(readOnlyDelegate, org.mockito.Mockito.times(2)).call("{}");
+
+        ToolCallback writeDelegate = mockTool("write_tool", null);
+        when(writeDelegate.call("{}")).thenThrow(new IllegalStateException("temporary"));
+        AgentObservedToolCallback write = new AgentObservedToolCallback(
+            writeDelegate, null, null, null,
+            contract("write_tool", 500, 2, AgentToolDescriptor.RetryPolicy.NONE)
+        );
+
+        assertThatThrownBy(() -> write.call("{}"))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessage("temporary");
+        verify(writeDelegate).call("{}");
+    }
+
+    @Test
+    @DisplayName("Skill 工具调用补充 RunState 的开始和结果摘要轨迹")
+    void recordsSkillToolTraceWithoutPersistingContent() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AgentMetrics metrics = metrics(registry);
+        AgentMetrics.RunTracker run = metrics.startRun(4, 2);
+        metrics.setAuditContext(run, "user-1", "interview-1", "agent-1", "run-1");
+        AgentRunStateService runStateService = mock(AgentRunStateService.class);
+        ToolCallback delegate = mockTool("load_skill", "Redis 技能参考");
+        AgentToolDescriptor skillContract = new AgentToolDescriptor(
+            "load_skill", "v1", AgentIntentRouter.Capability.SKILL,
+            AgentToolDescriptor.RiskLevel.READ_ONLY, false, true,
+            "agent:skill:read", 500, 1, AgentToolDescriptor.RetryPolicy.NONE,
+            AgentToolDescriptor.Idempotency.IDEMPOTENT,
+            AgentToolDescriptor.ResultContract.DATA_BOUNDARY,
+            "{\"type\":\"object\",\"additionalProperties\":true}", delegate
+        );
+        AgentObservedToolCallback observed = new AgentObservedToolCallback(
+            delegate, metrics, null, new PromptSanitizer(new LlmProviderProperties()),
+            skillContract, runStateService
+        );
+        org.springframework.ai.chat.model.ToolContext context =
+            new org.springframework.ai.chat.model.ToolContext(Map.of(
+                AgentMetrics.RUN_TRACKER_TOOL_CONTEXT_KEY, run
+            ));
+        when(delegate.call(eq("{\"skill\":\"java\"}"), eq(context)))
+            .thenReturn("Redis 技能参考");
+        when(runStateService.recordToolCall(run, "load_skill", "{\"skill\":\"java\"}"))
+            .thenReturn("tool-1");
+
+        observed.call("{\"skill\":\"java\"}", context);
+
+        verify(runStateService).recordToolCall(
+            run, "load_skill", "{\"skill\":\"java\"}"
+        );
+        verify(runStateService).recordToolResult(
+            eq(run), eq("load_skill"),
+            eq("tool-1"),
+            org.mockito.ArgumentMatchers.<String>argThat(
+                value -> value.startsWith("<data-boundary-")
+            ),
+            eq(false)
+        );
+    }
+
+    private AgentToolDescriptor contract(
+        String name, long timeoutMillis, int maxAttempts, AgentToolDescriptor.RetryPolicy retryPolicy
+    ) {
+        return new AgentToolDescriptor(
+            name, "v1", AgentIntentRouter.Capability.CONTEXT,
+            retryPolicy == AgentToolDescriptor.RetryPolicy.NONE
+                ? AgentToolDescriptor.RiskLevel.DRAFT_WRITE
+                : AgentToolDescriptor.RiskLevel.READ_ONLY,
+            retryPolicy == AgentToolDescriptor.RetryPolicy.NONE, true,
+            "agent:context:read", timeoutMillis, maxAttempts, retryPolicy,
+            retryPolicy == AgentToolDescriptor.RetryPolicy.NONE
+                ? AgentToolDescriptor.Idempotency.IDEMPOTENCY_KEYED
+                : AgentToolDescriptor.Idempotency.IDEMPOTENT,
+            retryPolicy == AgentToolDescriptor.RetryPolicy.NONE
+                ? AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION
+                : AgentToolDescriptor.ResultContract.DATA_BOUNDARY,
+            "{\"type\":\"object\",\"additionalProperties\":true}",
+            mock(ToolCallback.class)
         );
     }
 

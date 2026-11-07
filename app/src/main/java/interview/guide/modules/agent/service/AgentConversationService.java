@@ -2,10 +2,12 @@ package interview.guide.modules.agent.service;
 
 import interview.guide.modules.agent.model.AgentChatMessageEntity;
 import interview.guide.modules.agent.model.AgentChatSessionEntity;
+import interview.guide.modules.agent.model.AgentActionResponse;
 import interview.guide.modules.agent.model.AgentConversationResponse;
 import interview.guide.modules.agent.model.AgentConversationSummary;
 import interview.guide.modules.agent.model.AgentHistoryMessage;
 import interview.guide.modules.agent.model.AgentLoopTraceItem;
+import interview.guide.modules.agent.model.AgentPendingInteraction;
 import interview.guide.modules.agent.model.AgentRunUsage;
 import interview.guide.modules.agent.model.AgentSource;
 import interview.guide.modules.agent.model.AgentRunStatus;
@@ -30,6 +32,7 @@ import java.util.Optional;
 import java.time.LocalDateTime;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -52,6 +55,7 @@ public class AgentConversationService {
     private static final int MAX_LOOP_TRACE_JSON_CHARS = 24_000;
     private static final int MAX_LOOP_TRACE_ITEMS = 128;
     private static final int MAX_OWNER_KEY_LENGTH = 64;
+    private static final String PENDING_SCHEMA_VERSION = "agent-pending-v1";
 
     private final AgentChatSessionRepository sessionRepository;
     private final AgentChatMessageRepository messageRepository;
@@ -63,6 +67,8 @@ public class AgentConversationService {
     private final AgentSessionContextRepository contextRepository;
     private final AgentContextSummaryService contextSummaryService;
     private final PromptSanitizer promptSanitizer;
+    private AgentRunStateService runStateService;
+    private ApplicationEventPublisher eventPublisher;
 
     /** 兼容无 Spring 容器的旧测试和内部调用方。 */
     public AgentConversationService(
@@ -112,6 +118,18 @@ public class AgentConversationService {
         this.contextRepository = contextRepository;
         this.contextSummaryService = contextSummaryService;
         this.promptSanitizer = promptSanitizer;
+    }
+
+    /** 运行检查点在迁移期可选接入；未配置时保留原有会话行为。 */
+    @Autowired(required = false)
+    void setRunStateService(AgentRunStateService runStateService) {
+        this.runStateService = runStateService;
+    }
+
+    /** 审批事务提交后再启动续跑，避免回滚时出现幽灵后台任务。 */
+    @Autowired(required = false)
+    void setEventPublisher(ApplicationEventPublisher eventPublisher) {
+        this.eventPublisher = eventPublisher;
     }
 
     /** 保留旧测试和内部调用方的七参数构造方式。 */
@@ -177,7 +195,10 @@ public class AgentConversationService {
             throw new AgentTaskBusyException();
         }
 
-        String runId = UUID.randomUUID().toString();
+        boolean resumeWaitingInput = session.getRunStatus() == AgentRunStatus.WAITING_USER
+            && "waiting_input".equals(session.getRunStep())
+            && session.getRunId() != null && !session.getRunId().isBlank();
+        String runId = resumeWaitingInput ? session.getRunId() : UUID.randomUUID().toString();
         session.setGoal(goal);
         if (memoryKey != null && !memoryKey.isBlank()) {
             session.setMemoryKey(memoryKey.trim());
@@ -197,6 +218,7 @@ public class AgentConversationService {
         session.setRunStep(null);
         session.setRunStepStatus(null);
         session.setRunNotice(null);
+        clearPendingInteraction(session);
         session.setRunSourcesJson(null);
         session.setLoopPlan(null);
         session.setLoopNextStep(0);
@@ -227,8 +249,67 @@ public class AgentConversationService {
         assistantMessage = messageRepository.save(assistantMessage);
         session.setActiveMessageId(assistantMessage.getId());
         sessionRepository.save(session);
-        audit(session, "RUN_STARTED", "agent-run", runId, "success");
+        if (runStateService != null) {
+            runStateService.start(session);
+        }
+        audit(session, resumeWaitingInput ? "RUN_INPUT_RESUMED" : "RUN_STARTED",
+            "agent-run", runId, resumeWaitingInput ? "waiting-input" : "success");
         return new PreparedMessage(assistantMessage.getId(), session.getId(), runId, session.getAgentSessionId());
+    }
+
+    /** 当前运行在明确缺少信息时进入等待态；回答已落库，但原 Run 仍可由下一条补充消息继续。 */
+    @Transactional
+    public void waitForUser(
+        Long messageId, String content, String notice, String expectedRunId
+    ) {
+        waitForUser(messageId, content, notice, expectedRunId, List.of());
+    }
+
+    /** 当前运行明确缺少字段时进入结构化等待态；字段名不包含用户资料正文。 */
+    @Transactional
+    public void waitForUser(
+        Long messageId,
+        String content,
+        String notice,
+        String expectedRunId,
+        List<String> requiredFields
+    ) {
+        AgentChatMessageEntity message = lockActiveMessage(messageId, expectedRunId);
+        if (message == null) {
+            log.info("忽略已失效 Agent 等待输入事件: messageId={}", messageId);
+            return;
+        }
+        updateTerminalMessage(message, content, true, null);
+        AgentChatSessionEntity session = message.getSession();
+        session.setRunStatus(AgentRunStatus.WAITING_USER);
+        session.setRunFinishedAt(LocalDateTime.now());
+        session.setActiveMessageId(null);
+        session.setRunError(null);
+        session.setRunStep("waiting_input");
+        session.setRunStepStatus("waiting");
+        session.setRunNotice(safeStoredText(notice, 500));
+        session.setPendingType("INPUT");
+        session.setPendingSchemaVersion(PENDING_SCHEMA_VERSION);
+        session.setPendingRequiredFieldsJson(serializePendingFields(requiredFields));
+        session.setPendingActionId(null);
+        sessionRepository.save(session);
+        if (runStateService != null) {
+            runStateService.finish(session);
+        }
+        audit(session, "RUN_WAITING_USER", "agent-run", expectedRunId, "missing-input");
+    }
+
+    /** 判断指定 Agent 会话是否在等待用户补充信息，而不是等待审批动作。 */
+    @Transactional
+    public boolean isWaitingForInput(
+        String interviewSessionId, String agentSessionId, String ownerKey
+    ) {
+        String normalizedOwnerKey = normalizeOwnerKey(ownerKey, false);
+        return findSession(interviewSessionId, agentSessionId)
+            .filter(session -> normalizedOwnerKey == null || isOwnedBy(session, normalizedOwnerKey))
+            .map(session -> session.getRunStatus() == AgentRunStatus.WAITING_USER
+                && "waiting_input".equals(session.getRunStep()))
+            .orElse(false);
     }
 
     /** 返回指定面试报告下的稳定 Agent 对话标识；旧调用方不传 ID 时复用默认线程。 */
@@ -611,6 +692,239 @@ public class AgentConversationService {
         return true;
     }
 
+    /** 动作确认/拒绝后关闭同一 Agent 运行的等待态；不存在等待态时保持兼容无操作。 */
+    @Transactional
+    public boolean resolveWaitingApproval(String agentSessionId, String runId, String notice) {
+        if (agentSessionId == null || agentSessionId.isBlank() || runId == null || runId.isBlank()) {
+            return false;
+        }
+        AgentChatSessionEntity session = sessionRepository.findByAgentSessionIdForUpdate(agentSessionId)
+            .orElse(null);
+        if (session == null
+            || session.getRunStatus() != AgentRunStatus.WAITING_USER
+            || !runId.equals(session.getRunId())) {
+            return false;
+        }
+        session.setRunStatus(AgentRunStatus.COMPLETED);
+        session.setRunFinishedAt(LocalDateTime.now());
+        session.setActiveMessageId(null);
+        session.setRunStepStatus("completed");
+        session.setRunNotice(safeStoredText(notice, 500));
+        clearPendingInteraction(session);
+        sessionRepository.save(session);
+        if (runStateService != null) {
+            runStateService.finish(session);
+        }
+        if (usageService != null) {
+            try {
+                usageService.record(session, readRunUsage(session));
+            } catch (RuntimeException error) {
+                log.warn("Agent 等待确认运行累计用量持久化失败: agentSessionId={}",
+                    session.getAgentSessionId(), error);
+            }
+        }
+        audit(session, "RUN_RESUMED", "agent-run", runId, "approval-resolved");
+        return true;
+    }
+
+    /**
+     * 把已完成审批的同一 Agent Run 重新置为可执行状态，并创建一条新的助手消息作为续答载体。
+     *
+     * <p>原来的助手消息保留动作草稿和审批结果，不能被覆盖；续答只新增助手消息，不新增伪造的
+     * 用户消息。真正的模型续跑由事务提交后的事件监听器触发，因此动作确认事务回滚时不会
+     * 启动一条看不到已提交动作结果的后台任务。</p>
+     */
+    @Transactional
+    public ApprovalResumeRequest prepareApprovalResume(
+        String agentSessionId, String runId, String ownerKey, String notice
+    ) {
+        return prepareApprovalResume(
+            agentSessionId, runId, ownerKey, null, null, null, null, notice
+        );
+    }
+
+    /**
+     * 审批动作提交后准备同一运行代次的续跑。
+     *
+     * <p>没有事件发布器时返回 {@code null}，让迁移期调用方回退到旧的“结束运行”行为；
+     * 这样不会把没有事件监听器的单元测试或旧内部调用方置于 RUNNING 假状态。</p>
+     */
+    @Transactional
+    public ApprovalResumeRequest prepareApprovalResume(
+        String agentSessionId,
+        String runId,
+        String ownerKey,
+        String actionId,
+        String actionTitle,
+        String actionStatus,
+        String actionResultSummary,
+        String notice
+    ) {
+        if (agentSessionId == null || agentSessionId.isBlank()
+            || runId == null || runId.isBlank() || eventPublisher == null) {
+            return null;
+        }
+        String normalizedOwner = normalizeOwnerKey(ownerKey, true);
+        AgentChatSessionEntity session = sessionRepository.findByAgentSessionIdForUpdate(agentSessionId)
+            .orElse(null);
+        if (session == null
+            || session.getRunStatus() != AgentRunStatus.WAITING_USER
+            || !runId.equals(session.getRunId())
+            || !isOwnedBy(session, normalizedOwner)) {
+            return null;
+        }
+        List<AgentChatMessageEntity> messages = messageRepository
+            .findBySessionIdAndCompletedTrueOrderBySequenceNumAsc(session.getId());
+        AgentChatMessageEntity originalUser = messages.stream()
+            .filter(message -> message.getRole() == AgentChatMessageEntity.MessageRole.USER)
+            .reduce((first, second) -> second)
+            .orElse(null);
+        if (originalUser == null || originalUser.getContent() == null
+            || originalUser.getContent().isBlank()) {
+            return null;
+        }
+
+        int nextSequence = messageRepository.findTopBySessionIdOrderBySequenceNumDesc(session.getId())
+            .map(message -> message.getSequenceNum() + 1)
+            .orElse(0);
+        AgentChatMessageEntity assistant = AgentChatMessageEntity.builder()
+            .session(session)
+            .role(AgentChatMessageEntity.MessageRole.ASSISTANT)
+            .content("")
+            .sequenceNum(nextSequence)
+            .completed(false)
+            .build();
+        assistant = messageRepository.save(assistant);
+
+        session.setRunStatus(AgentRunStatus.RUNNING);
+        session.setRunStartedAt(LocalDateTime.now());
+        session.setRunFinishedAt(null);
+        session.setRunError(null);
+        session.setRunStep("resume_pending");
+        session.setRunStepStatus("waiting");
+        session.setRunNotice(safeStoredText(notice, 500));
+        clearPendingInteraction(session);
+        session.setActiveMessageId(assistant.getId());
+        sessionRepository.save(session);
+        if (runStateService != null) {
+            runStateService.resume(session, actionId, notice);
+        }
+        audit(session, "RUN_RESUMED", "agent-run", runId, "approval-resume");
+        ApprovalResumeRequest request = new ApprovalResumeRequest(
+            session.getInterviewSessionId(), session.getAgentSessionId(), session.getGoal(),
+            session.getProviderId(), session.getOwnerKey(), session.getMemoryKey(),
+            originalUser.getContent(), assistant.getId(), runId, notice,
+            actionId, actionTitle, actionStatus, actionResultSummary
+        );
+        eventPublisher.publishEvent(request);
+        return request;
+    }
+
+    /**
+     * 应用在审批事务提交后、事件监听器启动前崩溃时，接管已经落库的续跑请求。
+     * 会话锁负责多实例互斥；这里只恢复模型回答，不重新执行原业务动作。
+     */
+    @Transactional
+    public ApprovalResumeRequest claimApprovalResume(
+        String agentSessionId, String interviewSessionId, LocalDateTime staleBefore
+    ) {
+        return claimApprovalResume(agentSessionId, interviewSessionId, staleBefore, null);
+    }
+
+    /** 只在候选 runId 仍未变化时接管，避免扫描期间误接管新运行。 */
+    @Transactional
+    public ApprovalResumeRequest claimApprovalResume(
+        String agentSessionId,
+        String interviewSessionId,
+        LocalDateTime staleBefore,
+        String expectedRunId
+    ) {
+        if (runStateService == null) {
+            return null;
+        }
+        AgentChatSessionEntity session = findSessionForUpdate(interviewSessionId, agentSessionId)
+            .orElse(null);
+        if (session == null
+            || session.getRunStatus() != AgentRunStatus.RUNNING
+            || session.getRunStartedAt() == null
+            || session.getRunStartedAt().isAfter(staleBefore)
+            || session.getActiveMessageId() == null
+            || (expectedRunId != null && !expectedRunId.equals(session.getRunId()))
+            || (!"resume_pending".equals(session.getRunStep())
+                && !"resume".equals(session.getRunStep()))) {
+            return null;
+        }
+        AgentRunStateService.ApprovalResumeMarker marker = runStateService
+            .findPendingApprovalResume(session.getRunId())
+            .orElse(null);
+        if (marker == null) {
+            return null;
+        }
+        AgentChatMessageEntity assistant = messageRepository.findById(session.getActiveMessageId())
+            .orElse(null);
+        if (assistant == null || assistant.getCompleted()) {
+            return null;
+        }
+        AgentChatMessageEntity user = messageRepository
+            .findBySessionIdAndCompletedTrueOrderBySequenceNumAsc(session.getId())
+            .stream()
+            .filter(item -> item.getRole() == AgentChatMessageEntity.MessageRole.USER)
+            .filter(item -> item.getSequenceNum() < assistant.getSequenceNum())
+            .reduce((first, second) -> second)
+            .orElse(null);
+        if (user == null || user.getContent() == null || user.getContent().isBlank()) {
+            return null;
+        }
+
+        assistant.setContent("");
+        assistant.setCompleted(false);
+        assistant.setErrorMessage(null);
+        messageRepository.save(assistant);
+        session.setRunStartedAt(LocalDateTime.now());
+        session.setRunFinishedAt(null);
+        session.setRunError(null);
+        session.setRunStep("resume");
+        session.setRunStepStatus("running");
+        session.setRunNotice(safeStoredText(
+            marker.notice() == null ? "应用重启后恢复审批结果" : marker.notice(), 500
+        ));
+        clearPendingInteraction(session);
+        sessionRepository.save(session);
+        runStateService.markResumeStarted(session.getRunId());
+        audit(session, "RUN_RESUMED", "agent-run", session.getRunId(), "approval-recovery");
+        return new ApprovalResumeRequest(
+            session.getInterviewSessionId(), session.getAgentSessionId(), session.getGoal(),
+            session.getProviderId(), session.getOwnerKey(), session.getMemoryKey(),
+            user.getContent(), assistant.getId(), session.getRunId(), marker.notice(),
+            marker.actionId(), null, null, null
+        );
+    }
+
+    /** 恢复扫描先读取候选元数据，确认动作结果后再调用带锁接管接口。 */
+    @Transactional
+    public ApprovalResumeCandidate findApprovalResumeCandidate(
+        String agentSessionId, String interviewSessionId, LocalDateTime staleBefore
+    ) {
+        if (runStateService == null) {
+            return null;
+        }
+        AgentChatSessionEntity session = findSession(interviewSessionId, agentSessionId).orElse(null);
+        if (session == null
+            || session.getRunStatus() != AgentRunStatus.RUNNING
+            || session.getRunStartedAt() == null
+            || session.getRunStartedAt().isAfter(staleBefore)
+            || session.getActiveMessageId() == null
+            || (!"resume_pending".equals(session.getRunStep())
+                && !"resume".equals(session.getRunStep()))) {
+            return null;
+        }
+        return runStateService.findPendingApprovalResume(session.getRunId())
+            .map(marker -> new ApprovalResumeCandidate(
+                session.getRunId(), marker.actionId(), session.getOwnerKey()
+            ))
+            .orElse(null);
+    }
+
     /** 持久化当前 Agent 编排阶段，供断线和页面刷新后恢复展示。 */
     @Transactional
     public void updateRunProgress(Long messageId, String step, String status, String notice) {
@@ -631,6 +945,9 @@ public class AgentConversationService {
         session.setRunStepStatus(safeStoredText(status, 16));
         session.setRunNotice(safeStoredText(notice, 500));
         sessionRepository.save(session);
+        if (runStateService != null) {
+            runStateService.checkpoint(session);
+        }
     }
 
     /** 持久化本次 Agent 实际使用的来源摘要，不保存原始 RAG 文本。 */
@@ -692,6 +1009,9 @@ public class AgentConversationService {
         session.setLoopNextStep(Math.max(0, nextStepIndex));
         session.setLoopCompletedSteps(serializeLoopCompletedSteps(completedStepIndices));
         sessionRepository.save(session);
+        if (runStateService != null) {
+            runStateService.checkpoint(session);
+        }
     }
 
     /** 持久化结构化 Loop 轨迹，供刷新、断线和应用重启后恢复展示。 */
@@ -706,6 +1026,9 @@ public class AgentConversationService {
         }
         session.setLoopTraceJson(serializeLoopTrace(trace));
         sessionRepository.save(session);
+        if (runStateService != null) {
+            runStateService.checkpoint(session);
+        }
     }
 
     /** 持久化最近一次模型运行的聚合用量，供刷新页面和验收查看。 */
@@ -787,7 +1110,8 @@ public class AgentConversationService {
             || session.getRunStatus() != AgentRunStatus.RUNNING
             || session.getRunStartedAt() == null
             || session.getRunStartedAt().isAfter(staleBefore)
-            || session.getActiveMessageId() == null) {
+            || session.getActiveMessageId() == null
+            || runStateService != null && runStateService.hasLiveLease(session.getRunId())) {
             return null;
         }
 
@@ -806,6 +1130,10 @@ public class AgentConversationService {
             return null;
         }
 
+        String previousRunId = session.getRunId();
+        if (runStateService != null) {
+            runStateService.markInterrupted(previousRunId);
+        }
         String runId = UUID.randomUUID().toString();
         session.setRunId(runId);
         session.setRunStartedAt(LocalDateTime.now());
@@ -814,6 +1142,7 @@ public class AgentConversationService {
         session.setRunStep("context");
         session.setRunStepStatus("running");
         session.setRunNotice("应用重启后自动恢复中");
+        clearPendingInteraction(session);
         session.setRunSourcesJson(null);
         clearRunUsage(session);
         assistant.setContent("");
@@ -821,6 +1150,9 @@ public class AgentConversationService {
         assistant.setErrorMessage(null);
         messageRepository.save(assistant);
         sessionRepository.save(session);
+        if (runStateService != null) {
+            runStateService.start(session);
+        }
         return new RecoveredRun(
             session.getInterviewSessionId(),
             session.getAgentSessionId(),
@@ -911,7 +1243,8 @@ public class AgentConversationService {
             safeStoredText(session.getLoopPlan(), 1200),
             session.getLoopNextStep(),
             parseLoopCompletedSteps(session.getLoopCompletedSteps()),
-            parseLoopTrace(session.getLoopTraceJson())
+            parseLoopTrace(session.getLoopTraceJson()),
+            pendingInteraction(session)
         );
     }
 
@@ -964,6 +1297,61 @@ public class AgentConversationService {
         return truncate(safe == null ? value : safe, maxLength);
     }
 
+    private void clearPendingInteraction(AgentChatSessionEntity session) {
+        if (session == null) {
+            return;
+        }
+        session.setPendingType(null);
+        session.setPendingSchemaVersion(null);
+        session.setPendingRequiredFieldsJson(null);
+        session.setPendingActionId(null);
+    }
+
+    private String serializePendingFields(List<String> requiredFields) {
+        if (requiredFields == null || requiredFields.isEmpty()) {
+            return "[]";
+        }
+        List<String> safeFields = requiredFields.stream()
+            .filter(field -> field != null && field.matches("[A-Za-z][A-Za-z0-9_-]{0,63}"))
+            .distinct()
+            .limit(16)
+            .toList();
+        try {
+            return objectMapper.writeValueAsString(safeFields);
+        } catch (RuntimeException error) {
+            log.warn("Agent 等待字段持久化失败", error);
+            return "[]";
+        }
+    }
+
+    private AgentPendingInteraction pendingInteraction(AgentChatSessionEntity session) {
+        if (session == null || session.getPendingType() == null
+            || session.getPendingType().isBlank()) {
+            return null;
+        }
+        List<String> fields = List.of();
+        if (session.getPendingRequiredFieldsJson() != null
+            && !session.getPendingRequiredFieldsJson().isBlank()) {
+            try {
+                List<String> parsed = objectMapper.readValue(
+                    session.getPendingRequiredFieldsJson(), new TypeReference<List<String>>() {}
+                );
+                fields = parsed == null ? List.of() : parsed.stream()
+                    .filter(field -> field != null && field.matches("[A-Za-z][A-Za-z0-9_-]{0,63}"))
+                    .distinct().limit(16).toList();
+            } catch (RuntimeException error) {
+                log.warn("Agent 等待交互恢复失败: agentSessionId={}", session.getAgentSessionId(), error);
+            }
+        }
+        return new AgentPendingInteraction(
+            safeStoredText(session.getPendingType(), 32),
+            safeStoredText(session.getPendingSchemaVersion(), 32),
+            fields,
+            safeStoredText(session.getPendingActionId(), 64),
+            safeStoredText(session.getRunNotice(), 500)
+        );
+    }
+
     private String serializeSources(List<AgentSource> sources) {
         try {
             List<AgentSource> safeSources = sources == null ? List.of() : sources.stream()
@@ -1010,7 +1398,11 @@ public class AgentConversationService {
             promptSanitizer.sanitizeForContext(source.kind()),
             promptSanitizer.sanitizeForContext(source.title()),
             source.score(),
-            promptSanitizer.sanitizeForContext(source.reference())
+            promptSanitizer.sanitizeForContext(source.reference()),
+            promptSanitizer.sanitizeForContext(source.sourceId()),
+            promptSanitizer.sanitizeForContext(source.version()),
+            promptSanitizer.sanitizeForContext(source.authority()),
+            promptSanitizer.sanitizeForContext(source.selectedReason())
         );
     }
 
@@ -1291,17 +1683,34 @@ public class AgentConversationService {
     }
 
     private void markRunFinished(AgentChatSessionEntity session, AgentRunStatus status, String error) {
-        session.setRunStatus(status);
+        AgentRunStatus effectiveStatus = status;
+        boolean approvalPending = status == AgentRunStatus.COMPLETED && runStateService != null
+            && runStateService.hasPendingApproval(session.getRunId());
+        if (approvalPending) {
+            effectiveStatus = AgentRunStatus.WAITING_USER;
+        }
+        session.setRunStatus(effectiveStatus);
         session.setRunFinishedAt(LocalDateTime.now());
         session.setActiveMessageId(null);
         session.setRunError(safeStoredText(error, 500));
-        session.setRunStepStatus(status == AgentRunStatus.COMPLETED ? "completed"
-            : status == AgentRunStatus.CANCELLED ? "cancelled" : "failed");
+        session.setRunStepStatus(effectiveStatus == AgentRunStatus.COMPLETED ? "completed"
+            : effectiveStatus == AgentRunStatus.WAITING_USER ? "waiting"
+            : effectiveStatus == AgentRunStatus.CANCELLED ? "cancelled" : "failed");
         session.setRunNotice(null);
+        if (effectiveStatus == AgentRunStatus.WAITING_USER && approvalPending) {
+            session.setPendingType("APPROVAL");
+            session.setPendingSchemaVersion(PENDING_SCHEMA_VERSION);
+            session.setPendingRequiredFieldsJson(serializePendingFields(List.of()));
+        } else if (effectiveStatus != AgentRunStatus.WAITING_USER) {
+            clearPendingInteraction(session);
+        }
         // 保留本次 Loop 的计划、检查点和轨迹，供历史查看与失败后的恢复诊断；
         // 下一次 prepareMessage 会在新运行开始前清理这些运行态字段。
         sessionRepository.save(session);
-        audit(session, "RUN_" + status.name(), "agent-run", session.getRunId(), status.name());
+        if (runStateService != null) {
+            runStateService.finish(session);
+        }
+        audit(session, "RUN_" + effectiveStatus.name(), "agent-run", session.getRunId(), effectiveStatus.name());
     }
 
     private void audit(
@@ -1482,13 +1891,47 @@ public class AgentConversationService {
         return session != null
             && session.getRunStatus() == AgentRunStatus.RUNNING
             && session.getRunStartedAt() != null
-            && !session.getRunStartedAt().isAfter(LocalDateTime.now().minusMinutes(STALE_RUN_MINUTES));
+            && !session.getRunStartedAt().isAfter(LocalDateTime.now().minusMinutes(STALE_RUN_MINUTES))
+            && (runStateService == null || !runStateService.hasLiveLease(session.getRunId()));
     }
 
     public record PreparedMessage(Long assistantMessageId, Long sessionId, String runId, String agentSessionId) {
         public PreparedMessage(Long assistantMessageId, Long sessionId, String runId) {
             this(assistantMessageId, sessionId, runId, null);
         }
+    }
+
+    /** 审批结果提交后，继续原 Run 所需的最小安全输入。 */
+    public record ApprovalResumeRequest(
+        String interviewSessionId,
+        String agentSessionId,
+        String goal,
+        String providerId,
+        String ownerKey,
+        String memoryKey,
+        String userContent,
+        Long assistantMessageId,
+        String runId,
+        String approvalNotice,
+        String actionId,
+        String actionTitle,
+        String actionStatus,
+        String actionResultSummary
+    ) {
+        public ApprovalResumeRequest withAction(AgentActionResponse action) {
+            if (action == null) {
+                return this;
+            }
+            return new ApprovalResumeRequest(
+                interviewSessionId, agentSessionId, goal, providerId, ownerKey, memoryKey,
+                userContent, assistantMessageId, runId, approvalNotice,
+                action.actionId(), action.title(),
+                action.status() == null ? null : action.status().name(), action.resultSummary()
+            );
+        }
+    }
+
+    public record ApprovalResumeCandidate(String runId, String actionId, String ownerKey) {
     }
 
     public record RecoveredRun(

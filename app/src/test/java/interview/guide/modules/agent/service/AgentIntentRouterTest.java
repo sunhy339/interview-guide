@@ -252,13 +252,66 @@ class AgentIntentRouterTest {
         assertThat(decision.capabilities())
             .contains(
                 AgentIntentRouter.Capability.SKILL,
-                AgentIntentRouter.Capability.RAG,
-                AgentIntentRouter.Capability.CONTEXT
+                AgentIntentRouter.Capability.RAG
             );
         assertThat(decision.capabilities()).contains(
             AgentIntentRouter.Capability.SKILL,
-            AgentIntentRouter.Capability.RAG,
-            AgentIntentRouter.Capability.CONTEXT
+            AgentIntentRouter.Capability.RAG
+        );
+        assertThat(decision.capabilities())
+            .doesNotContain(AgentIntentRouter.Capability.CONTEXT);
+    }
+
+    @Test
+    @DisplayName("普通问题不挂载业务工具或 Skill")
+    void generalQuestionGetsNoRuntimeCapabilities() {
+        AgentIntentRouter.ToolPolicy policy = router.toolPolicy(
+            router.route(request("review", "现在想学习一下 Agent 开发相关知识"))
+        );
+
+        assertThat(policy.allowedToolNames()).isEmpty();
+        assertThat(policy.includeSkills()).isFalse();
+    }
+
+    @Test
+    @DisplayName("组合能力只挂载对应工具，不暴露无关日程工具")
+    void capabilityPolicyLoadsOnlyRequestedToolFamilies() {
+        AgentIntentRouter.Decision decision = new AgentIntentRouter(
+            null, null, new ObjectMapper(), null
+        ).parseModelDecision(
+            "{\"mode\":\"GENERAL\",\"capabilities\":[\"SKILL\",\"RAG\",\"CONTEXT\"],"
+                + "\"confidence\":0.93,\"reason\":\"需要联合资料回答\"}",
+            "请结合 Skill 和知识库资料回答这个问题"
+        );
+
+        AgentIntentRouter.ToolPolicy policy = router.toolPolicy(decision);
+
+        assertThat(policy.includeSkills()).isTrue();
+        assertThat(policy.allowedToolNames()).containsExactlyInAnyOrder(
+            AgentContextToolCallbackFactory.INTERVIEW_SEARCH,
+            AgentContextToolCallbackFactory.INTERVIEW_ATTACH,
+            AgentContextToolCallbackFactory.INTERVIEW_CLEAR,
+            AgentContextToolCallbackFactory.CONTEXT_LIST,
+            AgentContextToolCallbackFactory.CONTEXT_ASSET_ACTION
+        );
+        assertThat(policy.allowedToolNames())
+            .doesNotContain(AgentContextToolCallbackFactory.SCHEDULE_DRAFT);
+    }
+
+    @Test
+    @DisplayName("日程能力只挂载日程工具")
+    void scheduleCapabilityGetsOnlyScheduleTools() {
+        AgentIntentRouter.ToolPolicy policy = router.toolPolicy(
+            router.route(request("general", "帮我安排明天12点的面试会议"))
+        );
+
+        assertThat(policy.includeSkills()).isFalse();
+        assertThat(policy.allowedToolNames()).containsExactlyInAnyOrder(
+            AgentContextToolCallbackFactory.SCHEDULE_LIST,
+            AgentContextToolCallbackFactory.SCHEDULE_CONFLICT,
+            AgentContextToolCallbackFactory.SCHEDULE_DRAFT,
+            AgentContextToolCallbackFactory.SCHEDULE_CANCEL_DRAFT,
+            AgentContextToolCallbackFactory.SCHEDULE_UPDATE_DRAFT
         );
     }
 

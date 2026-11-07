@@ -413,7 +413,13 @@ export default function AgentSessionList({
                       </span>
                     </div>
                     <p className="text-[10px] dark-text-muted mt-1 pl-5">
-                      {conversation.runStatus === 'COMPLETED' ? '已完成' : running ? '执行中' : conversation.runStatus === 'FAILED' ? '执行失败' : '待执行'}
+                      {conversation.runStatus === 'COMPLETED'
+                        ? '已完成'
+                        : conversation.runStatus === 'WAITING_USER'
+                          ? '等待确认'
+                          : running
+                            ? '执行中'
+                            : conversation.runStatus === 'FAILED' ? '执行失败' : '待执行'}
                     </p>
                   </button>
                 );

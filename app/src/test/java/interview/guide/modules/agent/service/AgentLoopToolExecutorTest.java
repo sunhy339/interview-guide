@@ -87,6 +87,10 @@ class AgentLoopToolExecutorTest {
             "owner-1", "interview-1", "agent-1", "run-1",
             "TOOL_CALLED", "agent-loop-tool", AgentLoopToolExecutor.READ_INTERVIEW_REPORT, "success"
         );
+        verify(auditService).recordQuietly(
+            "owner-1", "interview-1", "agent-1", "run-1",
+            "TOOL_STARTED", "agent-loop-tool", AgentLoopToolExecutor.READ_INTERVIEW_REPORT, "started"
+        );
     }
 
     @Test

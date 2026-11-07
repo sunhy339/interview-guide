@@ -1,7 +1,9 @@
 package interview.guide.modules.agent.service;
 
 import interview.guide.modules.agent.model.AgentAuditEventEntity;
+import interview.guide.modules.agent.model.AgentAuditEventResponse;
 import interview.guide.modules.agent.model.AgentChatSessionEntity;
+import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.repository.AgentAuditEventRepository;
 import interview.guide.modules.agent.repository.AgentChatSessionRepository;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
@@ -200,5 +202,49 @@ class AgentAuditServiceTest {
             assertThat(item.interviewTitle()).isEqualTo("Java 后端高并发面试");
             assertThat(item.agentSessionTitle()).isEqualTo("第一轮复盘");
         });
+    }
+
+    @Test
+    void recordsRunTraceFromTrackerWithoutPersistingPromptData() {
+        AgentAuditEventRepository repository = mock(AgentAuditEventRepository.class);
+        when(repository.save(any(AgentAuditEventEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        AgentAuditService service = new AgentAuditService(repository);
+        AgentMetrics metrics = new AgentMetrics(null, false);
+        AgentMetrics.RunTracker tracker = metrics.startRun(3, 3);
+        metrics.setAuditContext(tracker, "user-1", "interview-1", "agent-1", "run-1");
+
+        service.recordRunTrace(tracker, "MODEL_COMPLETED", "agent-model", "provider-a", "success");
+
+        var captor = org.mockito.ArgumentCaptor.forClass(AgentAuditEventEntity.class);
+        verify(repository).save(captor.capture());
+        assertThat(captor.getValue().getRunId()).isEqualTo("run-1");
+        assertThat(captor.getValue().getAction()).isEqualTo("MODEL_COMPLETED");
+        assertThat(captor.getValue().getResourceId()).isEqualTo("provider-a");
+    }
+
+    @Test
+    void listsTraceScopedToOwnerSessionAndRunInExecutionOrder() {
+        AgentAuditEventRepository repository = mock(AgentAuditEventRepository.class);
+        LocalDateTime first = LocalDateTime.now().minusSeconds(2);
+        LocalDateTime second = LocalDateTime.now().minusSeconds(1);
+        when(repository.findTop100ByOwnerKeyAndAgentSessionIdAndRunIdOrderByCreatedAtAsc(
+            "user-1", "agent-1", "run-1"
+        )).thenReturn(List.of(
+            AgentAuditEventEntity.builder().agentSessionId("agent-1").runId("run-1")
+                .action("ROUTE_SELECTED").resourceType("agent-route").result("selected")
+                .createdAt(first).build(),
+            AgentAuditEventEntity.builder().agentSessionId("agent-1").runId("run-1")
+                .action("MODEL_COMPLETED").resourceType("agent-model").result("success")
+                .createdAt(second).build()
+        ));
+
+        var events = new AgentAuditService(repository).listTrace("user-1", "agent-1", "run-1", 100);
+
+        assertThat(events).extracting(AgentAuditEventResponse::action)
+            .containsExactly("ROUTE_SELECTED", "MODEL_COMPLETED");
+        verify(repository).findTop100ByOwnerKeyAndAgentSessionIdAndRunIdOrderByCreatedAtAsc(
+            "user-1", "agent-1", "run-1"
+        );
     }
 }

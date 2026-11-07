@@ -9,5 +9,13 @@ import org.springframework.stereotype.Repository;
 public interface AgentAuditEventRepository extends JpaRepository<AgentAuditEventEntity, Long> {
     List<AgentAuditEventEntity> findTop100ByOwnerKeyOrderByCreatedAtDesc(String ownerKey);
 
+    List<AgentAuditEventEntity> findTop100ByOwnerKeyAndAgentSessionIdOrderByCreatedAtDesc(
+        String ownerKey, String agentSessionId
+    );
+
+    List<AgentAuditEventEntity> findTop100ByOwnerKeyAndAgentSessionIdAndRunIdOrderByCreatedAtAsc(
+        String ownerKey, String agentSessionId, String runId
+    );
+
     List<AgentAuditEventEntity> findTop200ByOrderByCreatedAtDesc();
 }

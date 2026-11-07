@@ -16,8 +16,23 @@ public record AgentMemoryItem(
     String jobScope,
     Double confidence,
     LocalDateTime updatedAt,
-    LocalDateTime expiresAt
+    LocalDateTime expiresAt,
+    LocalDateTime revokedAt
 ) {
+    /** 兼容尚未携带撤销时间的结构化记忆调用方。 */
+    public AgentMemoryItem(
+        String id,
+        String category,
+        String content,
+        String source,
+        String jobScope,
+        Double confidence,
+        LocalDateTime updatedAt,
+        LocalDateTime expiresAt
+    ) {
+        this(id, category, content, source, jobScope, confidence, updatedAt, expiresAt, null);
+    }
+
     /** 兼容新增过期时间前的结构化记忆调用方。 */
     public AgentMemoryItem(
         String id,

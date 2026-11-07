@@ -22,6 +22,8 @@ import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxSink;
@@ -89,6 +91,7 @@ public class InterviewAgentService {
     private final AgentIntentRouter agentIntentRouter;
     private final AgentContextToolCallbackFactory agentContextToolCallbackFactory;
     private final tools.jackson.databind.ObjectMapper objectMapper;
+    private AgentRunStateService runStateService;
     private final Set<String> activeSessions = ConcurrentHashMap.newKeySet();
     private final Map<String, Sinks.One<Void>> cancellationSignals = new ConcurrentHashMap<>();
     private final Map<String, AgentTaskHandle> activeTasks = new ConcurrentHashMap<>();
@@ -167,6 +170,12 @@ public class InterviewAgentService {
             .getContentAsString(StandardCharsets.UTF_8));
     }
 
+    /** 模型轮次检查点在迁移期可选接入；不可用时不影响既有流式回答。 */
+    @Autowired(required = false)
+    void setRunStateService(AgentRunStateService runStateService) {
+        this.runStateService = runStateService;
+    }
+
     /**
      * 执行一次面试教练任务并以 SSE 事件流返回结果。
      */
@@ -210,7 +219,8 @@ public class InterviewAgentService {
             cancellationSignals.put(activeKey, cancellationSignal);
             Long preparedAssistantMessageId = null;
             AgentMetrics.RunTracker runTracker = agentMetrics.startRun(
-                retryProperties.getMaxModelCallsPerRun(), retryProperties.getMaxToolCallsPerRun()
+                retryProperties.getMaxModelCallsPerRun(), retryProperties.getMaxToolCallsPerRun(),
+                retryProperties.getMaxTotalTokensPerRun(), retryProperties.getMaxCostPerRun()
             );
             AtomicReference<AgentTaskHandle> taskHandleRef = new AtomicReference<>();
             AtomicReference<String> activeAgentSessionKeyRef = new AtomicReference<>(activeKey);
@@ -232,8 +242,14 @@ public class InterviewAgentService {
                 List<AgentHistoryMessage> historyMessages = AgentHistoryPolicy.normalize(
                     persistedHistory.isEmpty() ? runRequest.history() : persistedHistory
                 );
+                boolean waitingForInput = agentConversationService.isWaitingForInput(
+                    sessionId, runRequest.agentSessionId(), dataOwnerKey
+                );
+                String toolIntentMessage = waitingForInput
+                    ? mergePendingUserIntent(historyMessages, userIntentMessage)
+                    : userIntentMessage;
                 AgentIntentRouter.Decision intentDecision = agentIntentRouter.route(
-                    runRequest, userIntentMessage, historyMessages,
+                    runRequest, toolIntentMessage, historyMessages,
                     runRequest.providerId(), runTracker
                 );
                 runRequest = agentIntentRouter.applyMode(runRequest, intentDecision);
@@ -242,7 +258,7 @@ public class InterviewAgentService {
                 try {
                     // 通用 Agent 永远从 null 报告上下文开始；绑定面试报告只能通过
                     // 当前会话的显式上下文绑定进入，不能根据线程历史自动恢复旧报告。
-                    context = agentContextService.build(sessionId, runRequest, historyMessages);
+                    context = buildContext(sessionId, runRequest, historyMessages, intentDecision);
                 } finally {
                     AuthUserContext.clear();
                 }
@@ -267,6 +283,15 @@ public class InterviewAgentService {
                     runRequest.goal(), dataOwnerKey, sessionId,
                     resolvedAgentSessionId, preparedMessage.runId()
                 );
+                recordRunTrace(
+                    runTracker, "ROUTE_SELECTED", "agent-route",
+                    intentDecision.route().name(), "selected"
+                );
+                recordRunTrace(
+                    runTracker, "CONTEXT_BUILT", "agent-context",
+                    intentDecision.route().name(),
+                    context.sources().isEmpty() ? "no-sources" : "sources-loaded"
+                );
                 activeTasks.put(resolvedAgentSessionId, taskHandle);
                 persistRunProgress(
                     preparedMessage.assistantMessageId(), "context", "running", null,
@@ -275,6 +300,7 @@ public class InterviewAgentService {
 
                 Flux<AgentStreamEvent> workflow = buildWorkflow(
                     sessionId, resolvedAgentSessionId, runRequest, message, userIntentMessage,
+                    toolIntentMessage,
                     historyMessages, context, preparedMessage, cancellationSignal, taskHandle, runTracker,
                     intentDecision, null
                 );
@@ -333,7 +359,8 @@ public class InterviewAgentService {
             Sinks.One<Void> cancellationSignal = Sinks.one();
             cancellationSignals.put(activeKey, cancellationSignal);
             AgentMetrics.RunTracker runTracker = agentMetrics.startRun(
-                retryProperties.getMaxModelCallsPerRun(), retryProperties.getMaxToolCallsPerRun()
+                retryProperties.getMaxModelCallsPerRun(), retryProperties.getMaxToolCallsPerRun(),
+                retryProperties.getMaxTotalTokensPerRun(), retryProperties.getMaxCostPerRun()
             );
             agentMetrics.setAuditContext(
                 runTracker,
@@ -375,12 +402,19 @@ public class InterviewAgentService {
                 AgentContextService.AgentContext context;
                 AuthUserContext.set(recoveredRun.ownerKey());
                 try {
-                    context = agentContextService.build(
-                        recoveredRun.interviewSessionId(), request, historyMessages
+                    context = buildContext(
+                        recoveredRun.interviewSessionId(), request, historyMessages, intentDecision
                     );
                 } finally {
                     AuthUserContext.clear();
                 }
+                recordRunTrace(
+                    runTracker, "RUN_RECOVERY_STARTED", "agent-run", "restart", "started"
+                );
+                recordRunTrace(
+                    runTracker, "CONTEXT_BUILT", "agent-context", intentDecision.route().name(),
+                    context.sources().isEmpty() ? "no-sources" : "sources-loaded"
+                );
                 AgentConversationService.PreparedMessage prepared = new AgentConversationService.PreparedMessage(
                     recoveredRun.assistantMessageId(), null, recoveredRun.runId(), recoveredRun.agentSessionId()
                 );
@@ -390,6 +424,7 @@ public class InterviewAgentService {
                 );
                 Flux<AgentStreamEvent> workflow = buildWorkflow(
                     recoveredRun.interviewSessionId(), activeKey, request, message, userIntentMessage,
+                    userIntentMessage,
                     historyMessages, context, prepared, cancellationSignal, taskHandle, runTracker,
                     intentDecision, new LoopResumeState(
                         recoveredRun.loopPlan(),
@@ -415,12 +450,145 @@ public class InterviewAgentService {
         }).subscribeOn(Schedulers.boundedElastic()).subscribe();
     }
 
+    /**
+     * 审批动作已提交后继续同一 Agent Run。
+     *
+     * <p>这里不创建新的用户消息，也不重新要求用户输入原始指令；动作结果作为受信任的
+     * 系统事件交给原上下文，让模型生成下一步答复。通过 AFTER_COMMIT 监听，保证动作事务
+     * 已经成功提交后才启动后台模型调用。</p>
+     */
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    public void handleApprovalResume(AgentConversationService.ApprovalResumeRequest resume) {
+        resumeApprovedRun(resume);
+    }
+
+    public void resumeApprovedRun(AgentConversationService.ApprovalResumeRequest resume) {
+        String activeKey = resume == null || resume.agentSessionId() == null
+            ? resume == null ? null : resume.interviewSessionId()
+            : resume.agentSessionId();
+        if (resume == null || activeKey == null || activeKey.isBlank() || !activeSessions.add(activeKey)) {
+            return;
+        }
+        Mono.fromRunnable(() -> {
+            Sinks.One<Void> cancellationSignal = Sinks.one();
+            cancellationSignals.put(activeKey, cancellationSignal);
+            AgentMetrics.RunTracker runTracker = agentMetrics.startRun(
+                retryProperties.getMaxModelCallsPerRun(), retryProperties.getMaxToolCallsPerRun(),
+                retryProperties.getMaxTotalTokensPerRun(), retryProperties.getMaxCostPerRun()
+            );
+            AgentTaskHandle taskHandle = new AgentTaskHandle(
+                resume.assistantMessageId(), resume.runId(), cancellationSignal
+            );
+            activeTasks.put(activeKey, taskHandle);
+            try {
+                String originalUserContent = resume.userContent() == null ? "" : resume.userContent();
+                String approvalMessage = buildApprovalResumeMessage(resume);
+                agentMetrics.setAuditContext(
+                    runTracker, resume.ownerKey(), resume.interviewSessionId(),
+                    resume.agentSessionId(), resume.runId()
+                );
+                auditPromptSecurity(
+                    runTracker, originalUserContent, resume.goal(), resume.ownerKey(),
+                    resume.interviewSessionId(), resume.agentSessionId(), resume.runId()
+                );
+                List<AgentHistoryMessage> historyMessages = AgentHistoryPolicy.normalize(
+                    agentConversationService.loadHistory(
+                        resume.interviewSessionId(), resume.agentSessionId(), resume.ownerKey()
+                    )
+                );
+                AgentMessageRequest originalRequest = new AgentMessageRequest(
+                    resume.goal() == null || resume.goal().isBlank() ? "general" : resume.goal(),
+                    originalUserContent, historyMessages, resume.providerId(), resume.memoryKey(),
+                    resume.agentSessionId()
+                );
+                originalRequest = resolveProviderForRun(originalRequest);
+                AgentIntentRouter.Decision originalDecision = agentIntentRouter.route(
+                    originalRequest, originalUserContent, historyMessages,
+                    originalRequest.providerId(), runTracker
+                );
+                originalRequest = agentIntentRouter.applyMode(originalRequest, originalDecision);
+                AgentContextService.AgentContext context;
+                AuthUserContext.set(resume.ownerKey());
+                try {
+                    context = buildContext(
+                        resume.interviewSessionId(), originalRequest, historyMessages, originalDecision
+                    );
+                } finally {
+                    AuthUserContext.clear();
+                }
+                agentMetrics.setAuditContext(
+                    runTracker, resume.ownerKey(), resume.interviewSessionId(),
+                    resume.agentSessionId(), resume.runId()
+                );
+                recordRunTrace(
+                    runTracker, "RUN_RESUME_STARTED", "agent-run", "approval", "started"
+                );
+                recordRunTrace(
+                    runTracker, "CONTEXT_BUILT", "agent-context", originalDecision.route().name(),
+                    context.sources().isEmpty() ? "no-sources" : "sources-loaded"
+                );
+
+                // 续跑阶段只消费动作结果，不能再次把原始“安排/取消”意图识别成同一个工具调用。
+                AgentIntentRouter.Decision resumeDecision = new AgentIntentRouter.Decision(
+                    AgentIntentRouter.Route.GENERAL, Set.of(), 1.0d, "审批结果续跑"
+                );
+                AgentMessageRequest modelRequest = originalRequest.withGoal("general");
+                AgentConversationService.PreparedMessage prepared =
+                    new AgentConversationService.PreparedMessage(
+                        resume.assistantMessageId(), null, resume.runId(), resume.agentSessionId()
+                    );
+                persistRunProgress(
+                    resume.assistantMessageId(), "resume", "running", resume.approvalNotice(), resume.runId()
+                );
+                Flux<AgentStreamEvent> workflow = buildWorkflow(
+                    resume.interviewSessionId(), activeKey, modelRequest, approvalMessage, approvalMessage,
+                    approvalMessage,
+                    historyMessages, context, prepared, cancellationSignal, taskHandle, runTracker,
+                    resumeDecision, null
+                );
+                taskHandle.subscription = workflow.subscribe(
+                    ignored -> { },
+                    error -> log.error("Agent 审批续跑失败: agentSessionId={}", resume.agentSessionId(), error),
+                    () -> log.info("Agent 审批续跑完成: agentSessionId={}", resume.agentSessionId())
+                );
+            } catch (Throwable error) {
+                failPreparedMessage(resume.assistantMessageId(), error, resume.runId());
+                agentProgressWriter.finish(resume.assistantMessageId());
+                agentMetrics.finishRun(runTracker, "failure");
+                activeSessions.remove(activeKey);
+                cancellationSignals.remove(activeKey, cancellationSignal);
+                activeTasks.remove(activeKey, taskHandle);
+                log.warn("Agent 审批续跑准备失败: agentSessionId={}", resume.agentSessionId(), error);
+            }
+        }).subscribeOn(Schedulers.boundedElastic()).subscribe();
+    }
+
+    private String buildApprovalResumeMessage(AgentConversationService.ApprovalResumeRequest resume) {
+        return promptSanitizer.sanitize(
+            "系统审批事件（这是已执行结果，不是用户新指令）：\n"
+                + "动作：" + safeResumeText(resume.actionTitle()) + "\n"
+                + "状态：" + safeResumeText(resume.actionStatus()) + "\n"
+                + "结果：" + safeResumeText(resume.actionResultSummary()) + "\n"
+                + "说明：" + safeResumeText(resume.approvalNotice()) + "\n"
+                + "请继续原任务，向用户说明当前结果；不要再次执行同一个动作。"
+        );
+    }
+
+    private String safeResumeText(String value) {
+        if (value == null || value.isBlank()) {
+            return "未提供";
+        }
+        String safe = promptSanitizer.sanitizeForContext(value);
+        return safe.length() > 2_000 ? safe.substring(0, 2_000) : safe;
+    }
+
     private Flux<AgentStreamEvent> buildWorkflow(
         String sessionId,
         String agentSessionId,
         AgentMessageRequest request,
         String message,
         String userIntentMessage,
+        String toolIntentMessage,
         List<AgentHistoryMessage> historyMessages,
         AgentContextService.AgentContext context,
         AgentConversationService.PreparedMessage preparedMessage,
@@ -445,6 +613,7 @@ public class InterviewAgentService {
                 AgentStreamEvent.step("planning", "running")
             ),
             planFlux.flatMap(plan -> {
+                    recordRunTrace(runTracker, "PLAN_READY", "agent-loop", "plan", "success");
                     AgentLoopEngine loopEngine = new AgentLoopEngine();
                     boolean hasInterviewReport = context.interviewReport() != null
                         && !context.interviewReport().isBlank();
@@ -532,13 +701,15 @@ public class InterviewAgentService {
                     );
                     String loopTrace = loopResult.trace()
                         + "\nLoop 终态：" + loopResult.termination();
-                    List<Message> history = buildModelHistory(historyMessages);
-                    List<Message> compactHistory = buildModelHistory(AgentHistoryPolicy.normalize(
+                    List<AgentHistoryMessage> compactHistory = AgentHistoryPolicy.normalize(
                         historyMessages, CONTEXT_RETRY_HISTORY_CHARS, CONTEXT_RETRY_MESSAGE_CHARS
-                    ));
-                    String requiredTool = agentIntentRouter.requiredToolName(userIntentMessage);
+                    );
+                    String requiredTool = intentDecision != null
+                        && intentDecision.capabilities() != null
+                        && intentDecision.capabilities().contains(AgentIntentRouter.Capability.SCHEDULE)
+                        ? agentIntentRouter.requiredToolName(toolIntentMessage) : null;
                     PromptVariant normalPrompt = buildPromptVariant(
-                        context, request, message, history, safePlan, loopTrace, false,
+                        context, request, message, historyMessages, safePlan, loopTrace, false,
                         intentDecision
                     );
                     PromptVariant compactPrompt = buildPromptVariant(
@@ -551,14 +722,33 @@ public class InterviewAgentService {
                             PromptVariant prompt = compacted ? compactPrompt : normalPrompt;
                             return () -> {
                                 AgentMetrics.ModelCallTracker modelCall = agentMetrics.startModelCall(providerId, runTracker);
+                                String modelTurnId = agentMetrics.modelTurnId(modelCall);
+                                recordRunTrace(
+                                    runTracker, "MODEL_STARTED", "agent-model", providerId,
+                                    compacted ? "compacted" : "normal"
+                                );
+                                recordRunTrace(
+                                    runTracker, "MODEL_TURN_STARTED", "agent-model-turn", modelTurnId,
+                                    compacted ? "compacted" : "normal"
+                                );
+                                if (runStateService != null) {
+                                    runStateService.modelTurnStarted(
+                                        runTracker, providerId, compacted, modelTurnId
+                                    );
+                                }
                                 try {
-                                    // 普通问题仍拿到完整的受控 Tool Catalog，由主模型自主决定零次、
-                                    // 一次或多次组合调用；明确的日程变更则只挂载对应的单个草稿工具，
-                                    // 避免把完整目录和强制 tool_choice 一起发送给部分兼容层。
+                                    // 运行时只向模型暴露本轮能力策略允许的工具；普通问题默认
+                                    // 不挂载业务工具，明确资料、Skill 或日程请求才加载对应能力。
                                     // 每个工具仍会在 AgentObservedToolCallback/业务回调内做 owner、
-                                    // 意图和确认校验。
+                                    // 意图和确认校验，工具目录裁剪不是安全边界的替代品。
+                                    AgentIntentRouter.ToolPolicy toolPolicy =
+                                        agentIntentRouter.toolPolicy(intentDecision);
                                     ChatClient chatClient = requiredTool == null
-                                        ? llmProviderRegistry.getAgentChatClient(providerId)
+                                        ? llmProviderRegistry.getAgentChatClient(
+                                            providerId,
+                                            toolPolicy.allowedToolNames(),
+                                            toolPolicy.includeSkills()
+                                        )
                                         : llmProviderRegistry.getAgentChatClient(
                                             providerId, Set.of(requiredTool), false
                                         );
@@ -617,6 +807,9 @@ public class InterviewAgentService {
                                     return new ModelStream(content, modelCall);
                                 } catch (Throwable error) {
                                     agentMetrics.finishModelCall(modelCall, "failure");
+                                    if (runStateService != null) {
+                                        runStateService.modelTurnFinished(runTracker, providerId, "failure");
+                                    }
                                     throw error;
                                 }
                             };
@@ -624,7 +817,7 @@ public class InterviewAgentService {
                     Flux<AgentStreamEvent> response = requiredTool != null
                         && agentContextToolCallbackFactory != null && objectMapper != null
                         ? streamExplicitScheduleAction(
-                            requiredTool, userIntentMessage, sessionId, agentSessionId,
+                            requiredTool, toolIntentMessage, sessionId, agentSessionId,
                             preparedMessage.assistantMessageId(), preparedMessage.runId(),
                             runTracker, taskHandle
                         )
@@ -701,6 +894,29 @@ public class InterviewAgentService {
     }
 
     /**
+     * 等待补充信息的运行继续时，把上一条用户请求与当前补充合并给工具授权和参数解析。
+     * 模型的当前用户消息仍只保留本轮输入，避免把同一内容重复塞进稳定历史；两段都来自
+     * 用户消息，且后续仍会经过工具自身的意图、owner 和参数校验。
+     */
+    private String mergePendingUserIntent(
+        List<AgentHistoryMessage> history, String currentMessage
+    ) {
+        if (history == null || history.isEmpty()) {
+            return currentMessage == null ? "" : currentMessage;
+        }
+        for (int index = history.size() - 1; index >= 0; index--) {
+            AgentHistoryMessage item = history.get(index);
+            if (item != null && "user".equals(item.role())
+                && item.content() != null && !item.content().isBlank()) {
+                String current = currentMessage == null ? "" : currentMessage;
+                return "原始待完成请求：\n" + item.content()
+                    + "\n\n用户补充信息：\n" + current;
+            }
+        }
+        return currentMessage == null ? "" : currentMessage;
+    }
+
+    /**
      * 在创建持久化运行记录前把空的“使用默认模型”解析为当前首选 Provider。
      *
      * <p>如果不保存这个解析结果，应用重启后的恢复任务只能再次读取空 Provider，
@@ -713,6 +929,21 @@ public class InterviewAgentService {
         }
         List<String> candidates = llmProviderRegistry.resolveChatProviderCandidates(request.providerId());
         return candidates.isEmpty() ? request : request.withProviderId(candidates.getFirst());
+    }
+
+    /**
+     * 兼容迁移期的上下文测试替身和旧内部调用方；生产实现始终优先使用带意图策略的入口。
+     */
+    private AgentContextService.AgentContext buildContext(
+        String sessionId,
+        AgentMessageRequest request,
+        List<AgentHistoryMessage> history,
+        AgentIntentRouter.Decision intentDecision
+    ) {
+        AgentContextService.AgentContext context = agentContextService.buildForDecision(
+            sessionId, request, history, intentDecision
+        );
+        return context == null ? agentContextService.build(sessionId, request, history) : context;
     }
 
     private AgentMessageRequest normalizeRequestMode(String sessionId, AgentMessageRequest request) {
@@ -970,19 +1201,32 @@ public class InterviewAgentService {
         AgentTaskHandle taskHandle
     ) {
         AtomicReference<String> output = new AtomicReference<>(new String());
+        AtomicBoolean waitingForUser = new AtomicBoolean(false);
         return Mono.fromCallable(() -> {
             long startedNanos = System.nanoTime();
             String toolInput = buildScheduleToolInput(toolName, userMessage);
             if (toolInput == null) {
+                waitingForUser.set(true);
                 return "请补充具体日期和时间、公司名称、应聘职位后，我再生成待确认的面试会议草稿。";
             }
             ToolCallback callback = agentContextToolCallbackFactory.callbacks().stream()
                 .filter(candidate -> toolName.equals(candidate.getToolDefinition().name()))
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("未找到受控日程工具：" + toolName));
-            String rawResult = callback.call(
-                toolInput, new ToolContext(agentToolContext(runTracker, userMessage))
-            );
+            recordRunTrace(runTracker, "TOOL_STARTED", "agent-tool", toolName, "started");
+            String rawResult;
+            try {
+                rawResult = callback.call(
+                    toolInput, new ToolContext(agentToolContext(runTracker, userMessage))
+                );
+                recordRunTrace(
+                    runTracker, "TOOL_CALLED", "agent-tool", toolName,
+                    rawResult != null && rawResult.contains("ACTION_PROPOSED") ? "success" : "rejected"
+                );
+            } catch (RuntimeException error) {
+                recordRunTrace(runTracker, "TOOL_CALLED", "agent-tool", toolName, "failure");
+                throw error;
+            }
             agentMetrics.recordToolCall(
                 toolName,
                 rawResult != null && rawResult.contains("ACTION_PROPOSED") ? "success" : "rejected",
@@ -996,13 +1240,22 @@ public class InterviewAgentService {
                 return Flux.just(
                     AgentStreamEvent.delta(output.get()),
                     AgentStreamEvent.step("insight", "completed"),
-                    AgentStreamEvent.step("action", "completed"),
+                    AgentStreamEvent.step(
+                        "action", waitingForUser.get() ? "waiting" : "completed"
+                    ),
                     AgentStreamEvent.done()
                 );
             })
             .doOnComplete(() -> {
                 agentProgressWriter.flush(assistantMessageId);
-                agentConversationService.completeMessage(assistantMessageId, output.get(), runId);
+                if (waitingForUser.get()) {
+                    agentConversationService.waitForUser(
+                        assistantMessageId, output.get(), output.get(), runId,
+                        List.of("dateTime", "companyName", "position")
+                    );
+                } else {
+                    agentConversationService.completeMessage(assistantMessageId, output.get(), runId);
+                }
             })
             .doOnError(error -> {
                 agentProgressWriter.flush(assistantMessageId);
@@ -1019,7 +1272,7 @@ public class InterviewAgentService {
             .doFinally(signal -> {
                 persistRunUsage(assistantMessageId, runId, runTracker);
                 agentMetrics.finishRun(runTracker, switch (signal) {
-                    case ON_COMPLETE -> "success";
+                    case ON_COMPLETE -> waitingForUser.get() ? "waiting_user" : "success";
                     case CANCEL -> "cancelled";
                     default -> "failure";
                 });
@@ -1201,7 +1454,20 @@ public class InterviewAgentService {
         );
         return providerStream
             .concatWith(Flux.defer(() -> {
-                String notice = AgentAnswerGroundingPolicy.buildNotice(output.get().toString(), sources);
+                AgentAnswerGroundingPolicy.Assessment grounding = AgentAnswerGroundingPolicy.assess(
+                    output.get().toString(), sources
+                );
+                recordRunTrace(
+                    runTracker, "GROUNDING_CHECK", "agent-grounding", "answer",
+                    grounding.status().auditValue()
+                );
+                AgentSourceIntegrityPolicy.Assessment sourceIntegrity =
+                    AgentSourceIntegrityPolicy.assess(sources);
+                recordRunTrace(
+                    runTracker, "SOURCE_INTEGRITY_CHECK", "agent-grounding", "sources",
+                    sourceIntegrity.auditValue()
+                );
+                String notice = grounding.notice();
                 String emittedNotice = appendOutputChunk(notice, output);
                 if (emittedNotice.isBlank()) {
                     return Flux.empty();
@@ -1333,6 +1599,12 @@ public class InterviewAgentService {
      * 误判为断线。收到首个增量、完成或失败后立即停止心跳，不会增加模型调用次数。
      */
     Flux<AgentStreamEvent> withModelHeartbeat(Flux<AgentStreamEvent> response) {
+        return withModelHeartbeat(response, null);
+    }
+
+    Flux<AgentStreamEvent> withModelHeartbeat(
+        Flux<AgentStreamEvent> response, AgentMetrics.RunTracker runTracker
+    ) {
         Sinks.One<Void> stopSignal = Sinks.one();
         Duration interval = Duration.ofSeconds(retryProperties.getRetryHeartbeatIntervalSeconds());
         Flux<AgentStreamEvent> guardedResponse = response
@@ -1346,10 +1618,15 @@ public class InterviewAgentService {
             .doFinally(signal -> stopSignal.tryEmitEmpty());
         Flux<AgentStreamEvent> heartbeats = Flux.interval(interval)
             .takeUntilOther(stopSignal.asMono())
-            .map(index -> AgentStreamEvent.waiting(
-                "insight",
-                "模型仍在生成回答，已等待约 " + ((index + 1) * interval.toSeconds()) + " 秒"
-            ));
+            .map(index -> {
+                if (runStateService != null) {
+                    runStateService.heartbeat(runTracker);
+                }
+                return AgentStreamEvent.waiting(
+                    "insight",
+                    "模型仍在生成回答，已等待约 " + ((index + 1) * interval.toSeconds()) + " 秒"
+                );
+            });
         return Flux.merge(guardedResponse, heartbeats);
     }
 
@@ -1370,7 +1647,25 @@ public class InterviewAgentService {
             ModelStream currentCall = modelStream.get();
             Flux<AgentStreamEvent> attemptStream = currentCall.content()
                 .doOnNext(content -> {
-                    modelOutputStarted.set(true);
+                    if (content != null && !content.isBlank()) {
+                        modelOutputStarted.set(true);
+                        if (agentMetrics.markFirstToken(currentCall.tracker())) {
+                            recordRunTrace(
+                                runTracker,
+                                "MODEL_FIRST_TOKEN",
+                                "agent-model",
+                                providerId,
+                                agentMetrics.firstTokenMillis(currentCall.tracker()) + "ms"
+                            );
+                            recordRunTrace(
+                                runTracker,
+                                "MODEL_TURN_FIRST_TOKEN",
+                                "agent-model-turn",
+                                agentMetrics.modelTurnId(currentCall.tracker()),
+                                agentMetrics.firstTokenMillis(currentCall.tracker()) + "ms"
+                            );
+                        }
+                    }
                 })
                 .doOnComplete(() -> llmProviderRegistry.markChatProviderSuccess(providerId))
                 .map(content -> appendOutputChunk(content, output))
@@ -1378,16 +1673,19 @@ public class InterviewAgentService {
                 .takeUntil(ignored -> output.get().length() >= MAX_AGENT_OUTPUT_CHARS)
                 .filter(content -> !content.isEmpty())
                 .map(AgentStreamEvent::delta);
-            return withModelHeartbeat(attemptStream)
+            return withModelHeartbeat(attemptStream, runTracker)
             .doOnComplete(() -> finishModelCallAndPersist(
-                currentCall.tracker(), "success", assistantMessageId, runId, runTracker))
+                currentCall.tracker(), "success", providerId, assistantMessageId, runId, runTracker))
             .doOnError(error -> finishModelCallAndPersist(
-                currentCall.tracker(), "failure", assistantMessageId, runId, runTracker))
+                currentCall.tracker(), "failure", providerId, assistantMessageId, runId, runTracker))
             .doOnCancel(() -> finishModelCallAndPersist(
-                currentCall.tracker(), "cancelled", assistantMessageId, runId, runTracker))
+                currentCall.tracker(), "cancelled", providerId, assistantMessageId, runId, runTracker))
             .onErrorResume(error -> {
                 if (!modelOutputStarted.get() && isContextLimitError(error) && !compacted) {
                     agentMetrics.recordRetry("context_limit");
+                    recordRunTrace(
+                        runTracker, "MODEL_RETRY", "agent-model", providerId, "context-limit"
+                    );
                     return Flux.concat(
                         Flux.just(AgentStreamEvent.waiting(
                             "insight", "本次上下文较长，正在压缩较早对话后重试"
@@ -1415,6 +1713,9 @@ public class InterviewAgentService {
                     && isTransientModelError(error)
                     && attempt < retryProperties.getModelRetryAttempts()) {
                     agentMetrics.recordRetry("transient");
+                    recordRunTrace(
+                        runTracker, "MODEL_RETRY", "agent-model", providerId, "transient"
+                    );
                     Duration delay = retryDelay(attempt);
                     int retryNumber = attempt + 1;
                     log.warn(
@@ -1452,11 +1753,18 @@ public class InterviewAgentService {
     private void finishModelCallAndPersist(
         AgentMetrics.ModelCallTracker tracker,
         String result,
+        String providerId,
         Long assistantMessageId,
         String runId,
         AgentMetrics.RunTracker runTracker
     ) {
+        String modelTurnId = agentMetrics.modelTurnId(tracker);
         agentMetrics.finishModelCall(tracker, result);
+        if (runStateService != null) {
+            runStateService.modelTurnFinished(runTracker, providerId, result);
+        }
+        recordRunTrace(runTracker, "MODEL_COMPLETED", "agent-model", providerId, result);
+        recordRunTrace(runTracker, "MODEL_TURN_COMPLETED", "agent-model-turn", modelTurnId, result);
         // 必须在外层 completeMessage/failMessage 之前写入，避免活动消息栅栏关闭后被忽略。
         persistRunUsage(assistantMessageId, runId, runTracker);
     }
@@ -1563,7 +1871,7 @@ public class InterviewAgentService {
         AgentContextService.AgentContext context,
         AgentMessageRequest request,
         String message,
-        List<Message> history,
+        List<AgentHistoryMessage> history,
         String plan,
         String loopTrace,
         boolean compacted,
@@ -1584,6 +1892,18 @@ public class InterviewAgentService {
         String sessionSummary = compacted
             ? compactPromptText(context.sessionSummary(), 3_000)
             : context.sessionSummary();
+        AgentPromptBudgetPolicy.BudgetedPrompt budgeted = AgentPromptBudgetPolicy.fit(
+            report, skill, memory, rag, sessionSummary, plan, loopTrace, message,
+            history, retryProperties.getContextBudgetTokens()
+        );
+        report = budgeted.report();
+        skill = budgeted.skill();
+        memory = budgeted.memory();
+        rag = budgeted.rag();
+        sessionSummary = budgeted.sessionSummary();
+        plan = budgeted.plan();
+        loopTrace = budgeted.loopTrace();
+        message = budgeted.currentMessage();
         Map<String, Object> fixedContextVariables = Map.of(
             "context", promptSanitizer.wrapWithStableDelimiters(
                 "interview-report", report),
@@ -1611,7 +1931,7 @@ public class InterviewAgentService {
             + buildAnswerFormatInstruction(context, request, message, intentDecision)
             + "\n\n"
             + userPromptTemplate.render(variables);
-        return new PromptVariant(systemPrompt, userPrompt, history);
+        return new PromptVariant(systemPrompt, userPrompt, buildModelHistory(budgeted.history()));
     }
 
     private String buildAnswerFormatInstruction(
@@ -1830,6 +2150,18 @@ public class InterviewAgentService {
             agentAuditService.recordPromptInjectionDetected(
                 ownerKey, interviewSessionId, agentSessionId, runId, "goal"
             );
+        }
+    }
+
+    private void recordRunTrace(
+        AgentMetrics.RunTracker runTracker,
+        String action,
+        String resourceType,
+        String resourceId,
+        String result
+    ) {
+        if (agentAuditService != null) {
+            agentAuditService.recordRunTrace(runTracker, action, resourceType, resourceId, result);
         }
     }
 

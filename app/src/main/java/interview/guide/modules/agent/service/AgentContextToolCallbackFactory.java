@@ -92,6 +92,7 @@ public class AgentContextToolCallbackFactory {
     private final InterviewScheduleService interviewScheduleService;
     private final PromptSanitizer promptSanitizer;
     private final ObjectMapper objectMapper;
+    private AgentRunStateService runStateService;
 
     public AgentContextToolCallbackFactory(
         AgentInterviewContextService interviewContextService,
@@ -111,6 +112,12 @@ public class AgentContextToolCallbackFactory {
         this.interviewScheduleService = interviewScheduleService;
         this.promptSanitizer = promptSanitizer;
         this.objectMapper = objectMapper;
+    }
+
+    /** 运行检查点在迁移期可选接入，不影响无容器单元测试。 */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setRunStateService(AgentRunStateService runStateService) {
+        this.runStateService = runStateService;
     }
 
     public List<ToolCallback> callbacks() {
@@ -159,7 +166,7 @@ public class AgentContextToolCallbackFactory {
             .description(description)
             .inputSchema(schema)
             .build();
-        return new Callback(definition, objectMapper, promptSanitizer, handler);
+        return new Callback(definition, objectMapper, promptSanitizer, handler, runStateService);
     }
 
     private String searchInterviews(JsonNode input, ToolContext toolContext) {
@@ -351,7 +358,7 @@ public class AgentContextToolCallbackFactory {
             asset.assetId(), context.ownerKey(), asset.securityFlagged()
         );
         return emit(new AssetActionToolResult(
-            "REVIEWED", reviewed.assetId(), reviewed.originalFilename(), reviewed.reviewStatus(),
+            "COMPLETED", "REVIEWED", reviewed.assetId(), reviewed.originalFilename(), reviewed.reviewStatus(),
             reviewed.securityFlagged(), reviewed.securityNotice(), reviewed.knowledgeBaseId()
         ));
     }
@@ -364,7 +371,9 @@ public class AgentContextToolCallbackFactory {
             new AttachAgentResourceRequest("FILE", asset.assetId(), "SESSION", null),
             context.ownerKey()
         );
-        return emit(Map.of("status", "ATTACHED", "binding", binding));
+        return emit(Map.of(
+            "status", "ATTACHED", "operation", "ATTACHED", "assetId", asset.assetId(), "binding", binding
+        ));
     }
 
     private String requestKnowledgeBase(AgentContextAssetResponse asset, ToolContextData context) {
@@ -373,7 +382,7 @@ public class AgentContextToolCallbackFactory {
             asset.assetId(), context.ownerKey()
         );
         return emit(new AssetActionToolResult(
-            "KB_IMPORT_PENDING", requested.assetId(), requested.originalFilename(), requested.reviewStatus(),
+            "PENDING", "KB_IMPORT_PENDING", requested.assetId(), requested.originalFilename(), requested.reviewStatus(),
             requested.securityFlagged(), requested.securityNotice(), requested.knowledgeBaseId()
         ));
     }
@@ -389,17 +398,19 @@ public class AgentContextToolCallbackFactory {
             asset.assetId(), context.ownerKey(), asset.originalFilename(), "agent-upload"
         );
         return emit(new AssetActionToolResult(
-            "KB_IMPORT_SUBMITTED", submitted.assetId(), submitted.originalFilename(), submitted.reviewStatus(),
+            "SUBMITTED", "KB_IMPORT_SUBMITTED", submitted.assetId(), submitted.originalFilename(), submitted.reviewStatus(),
             submitted.securityFlagged(), submitted.securityNotice(), submitted.knowledgeBaseId()
         ));
     }
 
     private String importResume(AgentContextAssetResponse asset, ToolContextData context) {
         AgentActionResponse action = actionService.proposeResumeImportDraft(
-            context.agentSessionId(), context.ownerKey(), asset.assetId(), null
+            context.agentSessionId(), context.ownerKey(), asset.assetId(), null, context.runId()
         );
         return emit(Map.of(
             "status", "ACTION_PROPOSED",
+            "operation", "IMPORT_RESUME",
+            "assetId", asset.assetId(),
             "message", "已生成简历导入待确认动作；确认后才会写入简历管理，原始上传文件会保留",
             "action", action
         ));
@@ -460,7 +471,7 @@ public class AgentContextToolCallbackFactory {
             requiredSafeText(input, "position", "岗位不能为空", 255), interviewTime,
             optionalSafeText(input, "interviewType", 64), optionalSafeText(input, "meetingLink", 1000),
             integer(input, "roundNumber", 1, 1, 20), optionalSafeText(input, "interviewer", 255),
-            optionalSafeText(input, "notes", 2000), null
+            optionalSafeText(input, "notes", 2000), null, context.runId()
         );
         return emit(Map.of(
             "status", "ACTION_PROPOSED",
@@ -513,7 +524,8 @@ public class AgentContextToolCallbackFactory {
 
         InterviewScheduleDTO schedule = candidates.getFirst();
         AgentActionResponse action = actionService.proposeInterviewScheduleCancelDraft(
-            context.interviewSessionId(), context.agentSessionId(), context.ownerKey(), schedule, null
+            context.interviewSessionId(), context.agentSessionId(), context.ownerKey(), schedule, null,
+            context.runId()
         );
         return emit(Map.of(
             "status", "ACTION_PROPOSED",
@@ -590,7 +602,8 @@ public class AgentContextToolCallbackFactory {
         }
 
         AgentActionResponse action = actionService.proposeInterviewScheduleUpdateDraft(
-            context.interviewSessionId(), context.agentSessionId(), context.ownerKey(), updated, null
+            context.interviewSessionId(), context.agentSessionId(), context.ownerKey(), updated, null,
+            context.runId()
         );
         return emit(Map.of(
             "status", "ACTION_PROPOSED",
@@ -712,7 +725,7 @@ public class AgentContextToolCallbackFactory {
         Object message = toolContext.getContext().get(AgentMetrics.USER_MESSAGE_TOOL_CONTEXT_KEY);
         return new ToolContextData(
             tracker, audit.ownerKey(), audit.interviewSessionId(), audit.agentSessionId(),
-            message == null ? "" : message.toString()
+            message == null ? "" : message.toString(), audit.runId()
         );
     }
 
@@ -976,7 +989,8 @@ public class AgentContextToolCallbackFactory {
 
     private record ToolContextData(
         AgentMetrics.RunTracker tracker,
-        String ownerKey, String interviewSessionId, String agentSessionId, String userMessage
+        String ownerKey, String interviewSessionId, String agentSessionId, String userMessage,
+        String runId
     ) {
     }
 
@@ -998,6 +1012,7 @@ public class AgentContextToolCallbackFactory {
     }
 
     private record AssetActionToolResult(
+        String status,
         String operation,
         String assetId,
         String originalFilename,
@@ -1029,17 +1044,20 @@ public class AgentContextToolCallbackFactory {
         private final ObjectMapper objectMapper;
         private final PromptSanitizer promptSanitizer;
         private final BiFunction<JsonNode, ToolContext, String> handler;
+        private final AgentRunStateService runStateService;
 
         private Callback(
             ToolDefinition definition,
             ObjectMapper objectMapper,
             PromptSanitizer promptSanitizer,
-            BiFunction<JsonNode, ToolContext, String> handler
+            BiFunction<JsonNode, ToolContext, String> handler,
+            AgentRunStateService runStateService
         ) {
             this.definition = definition;
             this.objectMapper = objectMapper;
             this.promptSanitizer = promptSanitizer;
             this.handler = handler;
+            this.runStateService = runStateService;
         }
 
         @Override
@@ -1054,21 +1072,42 @@ public class AgentContextToolCallbackFactory {
 
         @Override
         public String call(String toolInput, ToolContext toolContext) {
+            AgentMetrics.RunTracker tracker = tracker(toolContext);
+            String toolCallId = runStateService == null
+                ? null : runStateService.recordToolCall(tracker, definition.name(), toolInput);
+            String result;
             try {
                 if (toolInput != null
                     && toolInput.length() > PromptSecurityConstants.MAX_AGENT_TOOL_INPUT_CHARS) {
-                    return safeError("工具参数过长，未执行任何操作");
+                    result = safeError("工具参数过长，未执行任何操作");
+                } else {
+                    JsonNode input = toolInput == null || toolInput.isBlank()
+                        ? objectMapper.createObjectNode() : objectMapper.readTree(toolInput);
+                    result = handler.apply(input, toolContext);
                 }
-                JsonNode input = toolInput == null || toolInput.isBlank()
-                    ? objectMapper.createObjectNode() : objectMapper.readTree(toolInput);
-                return handler.apply(input, toolContext);
             } catch (BusinessException error) {
-                return safeError(error.getMessage());
+                result = safeError(error.getMessage());
             } catch (JacksonException error) {
-                return safeError("工具参数不是合法 JSON");
+                result = safeError("工具参数不是合法 JSON");
             } catch (RuntimeException error) {
-                return safeError("工具执行失败，请稍后重试");
+                result = safeError("工具执行失败，请稍后重试");
             }
+            if (runStateService != null) {
+                runStateService.recordToolResult(
+                    tracker, definition.name(), toolCallId, result,
+                    result != null && (result.contains("ACTION_PROPOSED")
+                        || result.contains("USER_CONFIRMATION_REQUIRED"))
+                );
+            }
+            return result;
+        }
+
+        private AgentMetrics.RunTracker tracker(ToolContext toolContext) {
+            if (toolContext == null || toolContext.getContext() == null) {
+                return null;
+            }
+            Object value = toolContext.getContext().get(AgentMetrics.RUN_TRACKER_TOOL_CONTEXT_KEY);
+            return value instanceof AgentMetrics.RunTracker tracker ? tracker : null;
         }
 
         private String safeError(String message) {

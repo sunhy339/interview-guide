@@ -186,6 +186,67 @@ class AgentMemoryServiceTest {
     }
 
     @Test
+    void removesRevokedItemsEvenWhenExpirationIsDisabled() throws Exception {
+        AgentUserMemoryRepository repository = mock(AgentUserMemoryRepository.class);
+        ObjectMapper objectMapper = new ObjectMapper();
+        LocalDateTime now = LocalDateTime.now();
+        AgentUserMemoryEntity entity = AgentUserMemoryEntity.builder()
+            .memoryKey("browser-key")
+            .updatedAt(now)
+            .memoryJson(objectMapper.writeValueAsString(java.util.Map.of(
+                "lastSkillId", "java-backend",
+                "items", List.of(new AgentMemoryItem(
+                    "revoked-1", "weakness", "已撤销薄弱点", "report", "java-backend", 0.8d,
+                    now, now.plusDays(30), now.minusMinutes(1)
+                ))
+            )))
+            .build();
+        when(repository.findByMemoryKey("browser-key")).thenReturn(Optional.of(entity));
+        AgentMemoryProperties properties = new AgentMemoryProperties();
+        properties.setExpirationEnabled(false);
+
+        AgentMemoryService service = new AgentMemoryService(repository, objectMapper, properties);
+
+        assertThat(service.load("browser-key").items()).isEmpty();
+        assertThat(service.load("browser-key").toPrompt("java-backend"))
+            .isEqualTo("暂无长期记忆");
+    }
+
+    @Test
+    void deleteRevokesMemoryAndKeepsGovernanceMarkerInStoredPayload() throws Exception {
+        AgentUserMemoryRepository repository = mock(AgentUserMemoryRepository.class);
+        ObjectMapper objectMapper = new ObjectMapper();
+        AgentUserMemoryEntity entity = AgentUserMemoryEntity.builder()
+            .memoryKey("browser-key")
+            .memoryJson(objectMapper.writeValueAsString(java.util.Map.of(
+                "lastSkillId", "java-backend",
+                "items", List.of(new AgentMemoryItem(
+                    "w-1", "weakness", "Redis 缓存", "interview-report", "java-backend", 0.8d,
+                    LocalDateTime.now(), LocalDateTime.now().plusDays(30), null
+                ))
+            )))
+            .build();
+        when(repository.findByMemoryKey("browser-key")).thenReturn(Optional.of(entity));
+        when(repository.save(any(AgentUserMemoryEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        AgentAuditService auditService = mock(AgentAuditService.class);
+
+        AgentMemoryService service = new AgentMemoryService(
+            repository, objectMapper, new AgentMemoryProperties(), auditService
+        );
+
+        assertThat(service.deleteItem("browser-key", "w-1").items()).isEmpty();
+        var saved = org.mockito.ArgumentCaptor.forClass(AgentUserMemoryEntity.class);
+        verify(repository).save(saved.capture());
+        assertThat(saved.getValue().getMemoryJson()).contains("revokedAt");
+        assertThat(objectMapper.readTree(saved.getValue().getMemoryJson())
+            .path("items").get(0).path("revokedAt").isTextual()).isTrue();
+        verify(auditService).recordQuietly(
+            "browser-key", null, null, null, "MEMORY_REVOKED", "memory-item", "w-1", "success"
+        );
+    }
+
+    @Test
     void newItemsReceiveFreshExpirationTime() throws Exception {
         AgentUserMemoryRepository repository = mock(AgentUserMemoryRepository.class);
         ObjectMapper objectMapper = new ObjectMapper();

@@ -26,10 +26,12 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 import tools.jackson.databind.ObjectMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.never;
@@ -59,6 +61,12 @@ class AgentConversationServiceTest {
 
     @Mock
     private PromptSanitizer promptSanitizer;
+
+    @Mock
+    private AgentRunStateService runStateService;
+
+    @Mock
+    private ApplicationEventPublisher eventPublisher;
 
     @InjectMocks
     private AgentConversationService service;
@@ -589,6 +597,259 @@ class AgentConversationServiceTest {
         assertThat(session.getRunTotalTokens()).isEqualTo(200);
         verify(sessionRepository).save(session);
         verify(usageService).record(session, usage);
+    }
+
+    @Test
+    @DisplayName("待确认动作使运行进入等待态，确认后再收束为完成")
+    void entersWaitingUserUntilApprovalIsResolved() {
+        AgentChatSessionEntity session = AgentChatSessionEntity.builder()
+            .id(11L)
+            .agentSessionId("agent-1")
+            .runId("run-1")
+            .runStatus(AgentRunStatus.RUNNING)
+            .activeMessageId(22L)
+            .build();
+        AgentChatMessageEntity message = AgentChatMessageEntity.builder()
+            .id(22L)
+            .session(session)
+            .role(AgentChatMessageEntity.MessageRole.ASSISTANT)
+            .content("")
+            .sequenceNum(1)
+            .completed(false)
+            .build();
+        when(messageRepository.findById(22L)).thenReturn(Optional.of(message));
+        when(sessionRepository.findByAgentSessionIdForUpdate("agent-1"))
+            .thenReturn(Optional.of(session));
+        when(runStateService.hasPendingApproval("run-1")).thenReturn(true);
+        service.setRunStateService(runStateService);
+
+        service.completeMessage(22L, "已生成待确认动作");
+
+        assertThat(session.getRunStatus()).isEqualTo(AgentRunStatus.WAITING_USER);
+        assertThat(session.getRunStepStatus()).isEqualTo("waiting");
+        verify(runStateService).finish(session);
+
+        assertThat(service.resolveWaitingApproval(
+            "agent-1", "run-1", "动作已处理"
+        )).isTrue();
+        assertThat(session.getRunStatus()).isEqualTo(AgentRunStatus.COMPLETED);
+        verify(usageService).record(session, null);
+    }
+
+    @Test
+    @DisplayName("缺少日程信息时进入等待输入态，下一条补充消息复用原 Run")
+    void resumesWaitingInputWithSameRunId() {
+        AgentChatSessionEntity session = AgentChatSessionEntity.builder()
+            .id(11L)
+            .agentSessionId("agent-1")
+            .runId("run-1")
+            .runStatus(AgentRunStatus.RUNNING)
+            .runStep("context")
+            .activeMessageId(22L)
+            .ownerKey("user-1")
+            .build();
+        AgentChatMessageEntity assistant = AgentChatMessageEntity.builder()
+            .id(22L).session(session).role(AgentChatMessageEntity.MessageRole.ASSISTANT)
+            .content("").sequenceNum(1).completed(false).build();
+        when(messageRepository.findById(22L)).thenReturn(Optional.of(assistant));
+        when(sessionRepository.findByAgentSessionIdForUpdate("agent-1"))
+            .thenReturn(Optional.of(session));
+
+        when(objectMapper.writeValueAsString(any(List.class)))
+            .thenReturn("[\"dateTime\",\"companyName\",\"position\"]");
+        service.waitForUser(
+            22L,
+            "请补充公司和职位",
+            "请补充公司和职位",
+            "run-1",
+            List.of("dateTime", "companyName", "position")
+        );
+
+        assertThat(session.getRunStatus()).isEqualTo(AgentRunStatus.WAITING_USER);
+        assertThat(session.getRunStep()).isEqualTo("waiting_input");
+        assertThat(session.getRunStepStatus()).isEqualTo("waiting");
+        assertThat(session.getActiveMessageId()).isNull();
+        assertThat(session.getPendingType()).isEqualTo("INPUT");
+        assertThat(session.getPendingSchemaVersion()).isEqualTo("agent-pending-v1");
+        assertThat(session.getPendingRequiredFieldsJson())
+            .isEqualTo("[\"dateTime\",\"companyName\",\"position\"]");
+        when(sessionRepository.findByAgentSessionId("agent-1"))
+            .thenReturn(Optional.of(session));
+        assertThat(service.isWaitingForInput(null, "agent-1", "user-1")).isTrue();
+
+        AgentChatMessageEntity oldAssistant = AgentChatMessageEntity.builder()
+            .id(22L).session(session).role(AgentChatMessageEntity.MessageRole.ASSISTANT)
+            .content("请补充公司和职位").sequenceNum(1).completed(true).build();
+        when(messageRepository.findTopBySessionIdOrderBySequenceNumDesc(11L))
+            .thenReturn(Optional.of(oldAssistant));
+        when(messageRepository.save(any(AgentChatMessageEntity.class)))
+            .thenAnswer(invocation -> {
+                AgentChatMessageEntity message = invocation.getArgument(0);
+                if (message.getRole() == AgentChatMessageEntity.MessageRole.ASSISTANT) {
+                    message.setId(23L);
+                }
+                return message;
+            });
+        when(sessionRepository.save(any(AgentChatSessionEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+
+        AgentConversationService.PreparedMessage resumed = service.prepareMessage(
+            null, "agent-1", "general", "primary", "北京时间，浪速公司，Agent 开发工程师", "user-1"
+        );
+
+        assertThat(resumed.runId()).isEqualTo("run-1");
+        assertThat(resumed.assistantMessageId()).isEqualTo(23L);
+        assertThat(session.getRunStatus()).isEqualTo(AgentRunStatus.RUNNING);
+        assertThat(session.getRunStep()).isNull();
+        assertThat(session.getActiveMessageId()).isEqualTo(23L);
+        assertThat(session.getPendingType()).isNull();
+        assertThat(session.getPendingSchemaVersion()).isNull();
+        assertThat(session.getPendingRequiredFieldsJson()).isNull();
+    }
+
+    @Test
+    @DisplayName("审批成功后复用原 runId 创建续答助手消息并发布事件")
+    void preparesApprovalResumeWithoutDuplicatingUserMessage() {
+        AgentChatSessionEntity session = AgentChatSessionEntity.builder()
+            .id(11L)
+            .agentSessionId("agent-1")
+            .runId("run-1")
+            .runStatus(AgentRunStatus.WAITING_USER)
+            .activeMessageId(22L)
+            .ownerKey("user-1")
+            .build();
+        AgentChatMessageEntity user = AgentChatMessageEntity.builder()
+            .id(21L)
+            .session(session)
+            .role(AgentChatMessageEntity.MessageRole.USER)
+            .content("帮我安排明天12点的面试")
+            .sequenceNum(0)
+            .completed(true)
+            .build();
+        AgentChatMessageEntity oldAssistant = AgentChatMessageEntity.builder()
+            .id(22L)
+            .session(session)
+            .role(AgentChatMessageEntity.MessageRole.ASSISTANT)
+            .content("已生成待确认动作")
+            .sequenceNum(1)
+            .completed(true)
+            .build();
+        when(sessionRepository.findByAgentSessionIdForUpdate("agent-1"))
+            .thenReturn(Optional.of(session));
+        when(messageRepository.findBySessionIdAndCompletedTrueOrderBySequenceNumAsc(11L))
+            .thenReturn(List.of(user, oldAssistant));
+        when(messageRepository.findTopBySessionIdOrderBySequenceNumDesc(11L))
+            .thenReturn(Optional.of(oldAssistant));
+        when(messageRepository.save(any(AgentChatMessageEntity.class)))
+            .thenAnswer(invocation -> {
+                AgentChatMessageEntity message = invocation.getArgument(0);
+                if (message.getRole() == AgentChatMessageEntity.MessageRole.ASSISTANT) {
+                    message.setId(23L);
+                }
+                return message;
+            });
+        when(sessionRepository.save(any(AgentChatSessionEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        service.setRunStateService(runStateService);
+        service.setEventPublisher(eventPublisher);
+
+        AgentConversationService.ApprovalResumeRequest request = service.prepareApprovalResume(
+            "agent-1", "run-1", "user-1", "action-1", "安排面试日程", "SUCCEEDED",
+            "日程已创建", "用户已确认并完成 Agent 动作"
+        );
+
+        assertThat(request).isNotNull();
+        assertThat(request.runId()).isEqualTo("run-1");
+        assertThat(request.assistantMessageId()).isEqualTo(23L);
+        assertThat(request.actionId()).isEqualTo("action-1");
+        assertThat(session.getRunStatus()).isEqualTo(AgentRunStatus.RUNNING);
+        assertThat(session.getActiveMessageId()).isEqualTo(23L);
+        verify(runStateService).resume(
+            session, "action-1", "用户已确认并完成 Agent 动作"
+        );
+        verify(eventPublisher).publishEvent(request);
+        verify(messageRepository).save(argThat(message ->
+            message.getRole() == AgentChatMessageEntity.MessageRole.ASSISTANT
+                && !message.getCompleted()
+                && message.getSequenceNum() == 2
+        ));
+        verify(messageRepository, never()).save(argThat(message ->
+            message.getRole() == AgentChatMessageEntity.MessageRole.USER
+        ));
+    }
+
+    @Test
+    @DisplayName("审批续跑在应用重启后只恢复回答，不重新生成用户消息和动作")
+    void claimsPersistedApprovalResumeAfterRestart() {
+        AgentChatSessionEntity session = AgentChatSessionEntity.builder()
+            .id(11L)
+            .agentSessionId("agent-1")
+            .interviewSessionId("interview-1")
+            .runId("run-1")
+            .runStatus(AgentRunStatus.RUNNING)
+            .runStep("resume_pending")
+            .runStartedAt(LocalDateTime.now().minusMinutes(3))
+            .activeMessageId(23L)
+            .ownerKey("user-1")
+            .build();
+        AgentChatMessageEntity user = AgentChatMessageEntity.builder()
+            .id(21L).session(session).role(AgentChatMessageEntity.MessageRole.USER)
+            .content("帮我安排明天12点的面试").sequenceNum(0).completed(true).build();
+        AgentChatMessageEntity assistant = AgentChatMessageEntity.builder()
+            .id(23L).session(session).role(AgentChatMessageEntity.MessageRole.ASSISTANT)
+            .content("").sequenceNum(2).completed(false).build();
+        when(sessionRepository.findByAgentSessionIdForUpdate("agent-1"))
+            .thenReturn(Optional.of(session));
+        when(runStateService.findPendingApprovalResume("run-1"))
+            .thenReturn(Optional.of(new AgentRunStateService.ApprovalResumeMarker(
+                "action-1", "应用重启后恢复审批结果"
+            )));
+        when(messageRepository.findById(23L)).thenReturn(Optional.of(assistant));
+        when(messageRepository.findBySessionIdAndCompletedTrueOrderBySequenceNumAsc(11L))
+            .thenReturn(List.of(user));
+        when(messageRepository.save(any(AgentChatMessageEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        when(sessionRepository.save(any(AgentChatSessionEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        service.setRunStateService(runStateService);
+
+        AgentConversationService.ApprovalResumeRequest request = service.claimApprovalResume(
+            "agent-1", "interview-1", LocalDateTime.now().minusMinutes(1)
+        );
+
+        assertThat(request).isNotNull();
+        assertThat(request.runId()).isEqualTo("run-1");
+        assertThat(request.actionId()).isEqualTo("action-1");
+        assertThat(request.assistantMessageId()).isEqualTo(23L);
+        assertThat(session.getRunStep()).isEqualTo("resume");
+        verify(runStateService).markResumeStarted("run-1");
+        verify(messageRepository).save(assistant);
+    }
+
+    @Test
+    @DisplayName("有效运行租约存在时，恢复扫描不得接管仍在执行的会话")
+    void doesNotClaimRecoverableRunWhileLeaseIsLive() {
+        AgentChatSessionEntity session = AgentChatSessionEntity.builder()
+            .id(31L)
+            .agentSessionId("agent-live")
+            .interviewSessionId("interview-live")
+            .runId("run-live")
+            .runStatus(AgentRunStatus.RUNNING)
+            .runStartedAt(LocalDateTime.now().minusMinutes(20))
+            .activeMessageId(32L)
+            .build();
+        when(sessionRepository.findByAgentSessionIdForUpdate("agent-live"))
+            .thenReturn(Optional.of(session));
+        when(runStateService.hasLiveLease("run-live")).thenReturn(true);
+        service.setRunStateService(runStateService);
+
+        AgentConversationService.RecoveredRun recovered = service.claimRecoverableRun(
+            "agent-live", "interview-live", LocalDateTime.now().minusMinutes(15)
+        );
+
+        assertThat(recovered).isNull();
+        verify(messageRepository, never()).findById(32L);
+        verify(runStateService, never()).markInterrupted("run-live");
     }
 
     @Test

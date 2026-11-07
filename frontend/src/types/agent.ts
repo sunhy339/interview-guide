@@ -21,7 +21,7 @@ export interface AgentConversationResponse {
   goal?: AgentGoal | string | null;
   providerId?: string | null;
   runId?: string | null;
-  runStatus?: 'IDLE' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | string | null;
+  runStatus?: 'IDLE' | 'RUNNING' | 'WAITING_USER' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | string | null;
   runStartedAt?: string | null;
   runFinishedAt?: string | null;
   runError?: string | null;
@@ -36,6 +36,15 @@ export interface AgentConversationResponse {
   loopNextStep?: number;
   loopCompletedStepIndices?: number[];
   loopTrace?: AgentLoopTraceItem[];
+  pendingInteraction?: AgentPendingInteraction | null;
+}
+
+export interface AgentPendingInteraction {
+  type: 'INPUT' | 'APPROVAL' | string;
+  schemaVersion?: string | null;
+  requiredFields?: string[];
+  actionId?: string | null;
+  notice?: string | null;
 }
 
 export interface AgentLoopTraceItem {
@@ -108,6 +117,7 @@ export interface AgentUsageRun {
 export interface AgentAuditEvent {
   interviewSessionId?: string | null;
   agentSessionId?: string | null;
+  runId?: string | null;
   action: string;
   resourceType: string;
   resourceId?: string | null;
@@ -181,7 +191,7 @@ export interface AgentConversationSummary {
   agentSessionId: string;
   interviewSessionId: string | null;
   title?: string | null;
-  runStatus?: 'IDLE' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | string | null;
+  runStatus?: 'IDLE' | 'RUNNING' | 'WAITING_USER' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
 }
@@ -252,10 +262,14 @@ export interface AgentMemoryItem {
 export type AgentStepStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
 
 export interface AgentSource {
-  kind: 'skill' | 'rag';
+  kind: 'skill' | 'rag' | 'interview' | 'resume' | 'file' | string;
   title: string;
   score?: number | null;
   reference: string;
+  sourceId?: string | null;
+  version?: string | null;
+  authority?: string | null;
+  selectedReason?: string | null;
 }
 
 export interface AgentStreamEvent {

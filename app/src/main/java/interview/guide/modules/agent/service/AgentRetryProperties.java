@@ -2,6 +2,7 @@ package interview.guide.modules.agent.service;
 
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import java.math.BigDecimal;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
@@ -43,6 +44,19 @@ public class AgentRetryProperties {
     @Min(value = 0, message = "Agent 单次运行工具调用预算不能为负数")
     @Max(value = 64, message = "Agent 单次运行工具调用预算不能超过 64 次")
     private int maxToolCallsPerRun = 8;
+
+    /** 一次 Agent 运行允许累计消耗的总 Token；它不是 Provider 的单次输出上限。 */
+    @Min(value = 8_000, message = "Agent 单次运行总 Token 预算不能小于 8000")
+    @Max(value = 1_000_000, message = "Agent 单次运行总 Token 预算不能超过 1000000")
+    private int maxTotalTokensPerRun = 120_000;
+
+    /** 一次 Agent 运行的费用预算；0 表示未启用费用硬预算。 */
+    private BigDecimal maxCostPerRun = BigDecimal.ZERO;
+
+    /** 模型调用前的保守输入预算；只用于上下文裁剪，不设置 Provider 的输出上限。 */
+    @Min(value = 4_000, message = "Agent 输入上下文预算不能小于 4000 Token")
+    @Max(value = 128_000, message = "Agent 输入上下文预算不能超过 128000 Token")
+    private int contextBudgetTokens = 24_000;
 
     /** 是否启用受控 Agent Loop；关闭时回退到现有单次回答流程。 */
     private boolean loopEnabled = true;

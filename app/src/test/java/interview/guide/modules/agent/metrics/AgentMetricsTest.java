@@ -175,6 +175,35 @@ class AgentMetricsTest {
     }
 
     @Test
+    @DisplayName("为同一运行的模型尝试生成稳定且递增的轮次标识")
+    void assignsStableModelTurnIdsPerRun() {
+        AgentMetrics metrics = metrics(false);
+        AgentMetrics.RunTracker firstRun = metrics.startRun();
+        AgentMetrics.RunTracker secondRun = metrics.startRun();
+
+        AgentMetrics.ModelCallTracker first = metrics.startModelCall("pixel", firstRun);
+        AgentMetrics.ModelCallTracker retry = metrics.startModelCall("pixel", firstRun);
+        AgentMetrics.ModelCallTracker otherRun = metrics.startModelCall("pixel", secondRun);
+
+        assertThat(metrics.modelTurnId(first)).isEqualTo("turn-1");
+        assertThat(metrics.modelTurnId(retry)).isEqualTo("turn-2");
+        assertThat(metrics.modelTurnId(otherRun)).isEqualTo("turn-1");
+        assertThat(metrics.modelTurnId(null)).isNull();
+    }
+
+    @Test
+    @DisplayName("为同一运行的工具调用生成独立且递增的关联标识")
+    void assignsStableToolCallIdsPerRun() {
+        AgentMetrics metrics = metrics(false);
+        AgentMetrics.RunTracker firstRun = metrics.startRun();
+        AgentMetrics.RunTracker secondRun = metrics.startRun();
+
+        assertThat(firstRun.nextToolCallId()).isEqualTo("tool-1");
+        assertThat(firstRun.nextToolCallId()).isEqualTo("tool-2");
+        assertThat(secondRun.nextToolCallId()).isEqualTo("tool-1");
+    }
+
+    @Test
     @DisplayName("显式配置单价时按输入输出 Token 累计费用")
     void recordsConfiguredModelCost() {
         AgentCostProperties costProperties = new AgentCostProperties();
@@ -261,5 +290,59 @@ class AgentMetricsTest {
             .isInstanceOf(AgentRunBudgetExceededException.class)
             .hasMessageContaining("2");
         assertThat(metrics.snapshot(run).modelCalls()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("累计 Token 达到运行预算后不再发起下一次模型请求")
+    void enforcesTotalTokenBudget() {
+        AgentMetrics metrics = metrics(true);
+        AgentMetrics.RunTracker run = metrics.startRun(4, 4, 100, BigDecimal.ZERO);
+
+        AgentMetrics.ModelCallTracker first = metrics.startModelCall("pixel", run);
+        metrics.observeModelUsage(first, 60, 40, 100, "gpt-5.6-luna");
+        metrics.finishModelCall(first, "success");
+
+        assertThatThrownBy(() -> metrics.startModelCall("pixel", run))
+            .isInstanceOf(AgentRunBudgetExceededException.class)
+            .hasMessageContaining("总 Token")
+            .hasMessageContaining("100）")
+            .hasMessageNotContaining("100 次");
+        assertThat(metrics.snapshot(run).totalTokens()).isEqualTo(100);
+    }
+
+    @Test
+    @DisplayName("模型首个非空输出只记录一次并计算等待耗时")
+    void recordsFirstTokenOnlyOnce() {
+        AgentMetrics metrics = metrics(true);
+        AgentMetrics.ModelCallTracker tracker = metrics.startModelCall("pixel");
+
+        assertThat(metrics.markFirstToken(tracker)).isTrue();
+        assertThat(metrics.markFirstToken(tracker)).isFalse();
+        assertThat(metrics.firstTokenMillis(tracker)).isGreaterThanOrEqualTo(0L);
+
+        metrics.finishModelCall(tracker, "success");
+        assertThat(metrics.firstTokenMillis(tracker)).isGreaterThanOrEqualTo(0L);
+    }
+
+    @Test
+    @DisplayName("已配置单价时累计费用达到运行预算后不再发起下一次模型请求")
+    void enforcesCostBudgetWhenPricingIsKnown() {
+        AgentCostProperties costProperties = new AgentCostProperties();
+        AgentCostProperties.Pricing pricing = new AgentCostProperties.Pricing();
+        pricing.setInputPerMillion(new BigDecimal("2"));
+        pricing.setOutputPerMillion(new BigDecimal("3"));
+        pricing.setCurrency("CNY");
+        costProperties.getProviders().put("pixel", pricing);
+        AgentMetrics metrics = metrics(true, costProperties);
+        AgentMetrics.RunTracker run = metrics.startRun(4, 4, 10_000, new BigDecimal("0.00048"));
+
+        AgentMetrics.ModelCallTracker first = metrics.startModelCall("pixel", run);
+        metrics.observeModelUsage(first, 120, 80, 200, "gpt-5.6-luna");
+        metrics.finishModelCall(first, "success");
+
+        assertThatThrownBy(() -> metrics.startModelCall("pixel", run))
+            .isInstanceOf(AgentRunBudgetExceededException.class)
+            .hasMessageContaining("费用");
+        assertThat(metrics.snapshot(run).cost()).isEqualByComparingTo("0.00048");
     }
 }

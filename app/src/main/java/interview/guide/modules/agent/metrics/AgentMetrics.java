@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
@@ -96,10 +97,20 @@ public class AgentMetrics {
 
     /** 创建同时限制模型请求和只读工具调用的 Agent 运行追踪器。 */
     public RunTracker startRun(int maxModelCalls, int maxToolCalls) {
+        return startRun(maxModelCalls, maxToolCalls, Integer.MAX_VALUE, BigDecimal.ZERO);
+    }
+
+    /** 创建同时限制模型调用、工具调用、累计 Token 和费用的 Agent 运行追踪器。 */
+    public RunTracker startRun(
+        int maxModelCalls,
+        int maxToolCalls,
+        int maxTotalTokens,
+        BigDecimal maxCost
+    ) {
         if (enabled) {
             registry.counter(RUNS, "result", "started").increment();
         }
-        return new RunTracker(System.nanoTime(), maxModelCalls, maxToolCalls);
+        return new RunTracker(System.nanoTime(), maxModelCalls, maxToolCalls, maxTotalTokens, maxCost);
     }
 
     /** 为当前运行绑定低敏审计上下文；不放入 Prompt 或指标标签。 */
@@ -206,7 +217,15 @@ public class AgentMetrics {
         if (runTracker != null) {
             runTracker.reserveModelCall();
         }
-        return new ModelCallTracker(safeTag(providerId, "unknown"), System.nanoTime(), runTracker);
+        String modelTurnId = runTracker == null ? null : runTracker.nextModelTurnId();
+        return new ModelCallTracker(
+            safeTag(providerId, "unknown"), System.nanoTime(), runTracker, modelTurnId
+        );
+    }
+
+    /** 返回本次模型尝试在当前 Agent Run 内的稳定低敏轮次标识。 */
+    public String modelTurnId(ModelCallTracker tracker) {
+        return tracker == null ? null : tracker.modelTurnId;
     }
 
     /** 记录流式响应中的 usage 快照；Provider 可能只在最后一个 chunk 返回 usage。 */
@@ -227,6 +246,28 @@ public class AgentMetrics {
         if (responseModel != null && !responseModel.isBlank()) {
             tracker.model = safeTag(responseModel, "unknown");
         }
+    }
+
+    /**
+     * 标记一次模型调用首次产生可展示文本的时刻。
+     *
+     * <p>ToolCallingAdvisor 可能在内部继续发起模型轮次；这里的标记绑定到当前
+     * {@link ModelCallTracker}，每个外层模型流只记录一次，避免把心跳或空 chunk
+     * 当成首 Token。该信息只用于低敏 Trace/耗时指标，不保存响应正文。</p>
+     */
+    public boolean markFirstToken(ModelCallTracker tracker) {
+        if (tracker == null) {
+            return false;
+        }
+        return tracker.firstTokenNanos.compareAndSet(0L, System.nanoTime());
+    }
+
+    /** 返回从模型调用开始到首个非空输出的耗时；尚未输出时返回 0。 */
+    public long firstTokenMillis(ModelCallTracker tracker) {
+        if (tracker == null || tracker.firstTokenNanos.get() == 0L) {
+            return 0L;
+        }
+        return Math.max(0L, (tracker.firstTokenNanos.get() - tracker.startedNanos) / 1_000_000L);
     }
 
     /** 结束一次 Provider 模型调用并发布低基数 Token、调用次数和耗时指标。 */
@@ -318,14 +359,19 @@ public class AgentMetrics {
         private final String provider;
         private final long startedNanos;
         private final AtomicBoolean finished = new AtomicBoolean();
+        private final AtomicLong firstTokenNanos = new AtomicLong();
         private final AtomicReference<TokenUsage> usage = new AtomicReference<>();
         private final RunTracker runTracker;
+        private final String modelTurnId;
         private volatile String model = "unknown";
 
-        private ModelCallTracker(String provider, long startedNanos, RunTracker runTracker) {
+        private ModelCallTracker(
+            String provider, long startedNanos, RunTracker runTracker, String modelTurnId
+        ) {
             this.provider = provider;
             this.startedNanos = startedNanos;
             this.runTracker = runTracker;
+            this.modelTurnId = modelTurnId;
         }
     }
 
@@ -333,9 +379,14 @@ public class AgentMetrics {
         private final long startedNanos;
         private final int maxModelCalls;
         private final int maxToolCalls;
+        private final int maxTotalTokens;
+        private final BigDecimal maxCost;
         private final AtomicBoolean finished = new AtomicBoolean();
         private final AtomicInteger reservedModelCalls = new AtomicInteger();
         private final AtomicInteger reservedToolCalls = new AtomicInteger();
+        private final AtomicInteger modelTurnSequence = new AtomicInteger();
+        private final AtomicReference<String> currentModelTurnId = new AtomicReference<>();
+        private final AtomicInteger toolCallSequence = new AtomicInteger();
         private final AtomicInteger modelCalls = new AtomicInteger();
         private final LongAdder promptTokens = new LongAdder();
         private final LongAdder completionTokens = new LongAdder();
@@ -352,13 +403,28 @@ public class AgentMetrics {
             new AtomicReference<>(List.of());
         private volatile AuditContext auditContext = AuditContext.empty();
 
-        private RunTracker(long startedNanos, int maxModelCalls, int maxToolCalls) {
+        private RunTracker(
+            long startedNanos,
+            int maxModelCalls,
+            int maxToolCalls,
+            int maxTotalTokens,
+            BigDecimal maxCost
+        ) {
             this.startedNanos = startedNanos;
             this.maxModelCalls = Math.max(1, maxModelCalls);
             this.maxToolCalls = Math.max(0, maxToolCalls);
+            this.maxTotalTokens = Math.max(1, maxTotalTokens);
+            this.maxCost = maxCost == null || maxCost.signum() < 0 ? BigDecimal.ZERO : maxCost;
         }
 
         private void reserveModelCall() {
+            if (totalTokens.sum() >= maxTotalTokens) {
+                throw new AgentRunBudgetExceededException("总 Token", maxTotalTokens);
+            }
+            BigDecimal currentCost = cost.get();
+            if (maxCost.signum() > 0 && currentCost != null && currentCost.compareTo(maxCost) >= 0) {
+                throw new AgentRunBudgetExceededException("费用", maxCost);
+            }
             int reserved = reservedModelCalls.incrementAndGet();
             if (reserved > maxModelCalls) {
                 reservedModelCalls.decrementAndGet();
@@ -373,6 +439,22 @@ public class AgentMetrics {
                 reservedToolCalls.decrementAndGet();
                 throw new AgentRunBudgetExceededException("工具调用", maxToolCalls);
             }
+        }
+
+        private String nextModelTurnId() {
+            String id = "turn-" + modelTurnSequence.incrementAndGet();
+            currentModelTurnId.set(id);
+            return id;
+        }
+
+        /** 当前模型轮次的低敏 ID，供工具事件与模型轮次关联。 */
+        public String currentModelTurnId() {
+            return currentModelTurnId.get();
+        }
+
+        /** 为当前 Agent Run 内的逻辑工具调用生成低敏、递增的关联标识。 */
+        public String nextToolCallId() {
+            return "tool-" + toolCallSequence.incrementAndGet();
         }
 
         private void setAuditContext(AuditContext context) {

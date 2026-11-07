@@ -51,10 +51,18 @@ class AgentResumeImportActionTest {
             new PromptSanitizer(new LlmProviderProperties()), resumeImportService
         );
         var proposed = service.proposeResumeImportDraft(
-            "agent-1", "user-1", "asset-1", "import-1"
+            "agent-1", "user-1", "asset-1", "import-1", "run-1"
         );
         assertThat(proposed.status()).isEqualTo(AgentActionStatus.PROPOSED);
         assertThat(proposed.toolId()).isEqualTo("resume.import");
+
+        var saved = org.mockito.ArgumentCaptor.forClass(AgentActionRequestEntity.class);
+        verify(repository).save(saved.capture());
+        assertThat(saved.getValue().getRunId()).isEqualTo("run-1");
+        verify(auditService).recordQuietly(
+            "user-1", null, "agent-1", "run-1",
+            "ACTION_PROPOSED", "agent-action", saved.getValue().getActionId(), "PROPOSED"
+        );
         assertThat(proposed.interviewSessionId()).isNull();
 
         when(resumeImportService.importApprovedAsset("asset-1", "user-1"))

@@ -19,7 +19,7 @@ import java.util.regex.Pattern;
  */
 public final class AgentQualityEvaluator {
 
-    public static final String VERSION = "agent-quality-v1";
+    public static final String VERSION = "agent-quality-v2";
     private static final Pattern CITATION_PATTERN = Pattern.compile("\\[R\\d+\\]", Pattern.CASE_INSENSITIVE);
 
     public Evaluation evaluate(
@@ -27,6 +27,20 @@ public final class AgentQualityEvaluator {
         String answer,
         List<AgentSource> sources,
         List<AgentLoopEngine.LoopIteration> loopIterations
+    ) {
+        return evaluate(sample, answer, sources, loopIterations, null);
+    }
+
+    /**
+     * 同时校验运行结果边界。旧调用方可以继续使用四参数方法；真实运行评测应传入
+     * RunObservation，避免只凭最终文本把 WAITING_USER/FAILED 误判为成功。
+     */
+    public Evaluation evaluate(
+        Sample sample,
+        String answer,
+        List<AgentSource> sources,
+        List<AgentLoopEngine.LoopIteration> loopIterations,
+        RunObservation runObservation
     ) {
         if (sample == null) {
             throw new IllegalArgumentException("评测样本不能为空");
@@ -64,14 +78,46 @@ public final class AgentQualityEvaluator {
         double grounding = evaluateGrounding(sample, safeAnswer, sources, violations);
         double markdown = evaluateMarkdown(safeAnswer, violations);
         double loop = evaluateLoop(sample, loopIterations, violations);
+        double execution = evaluateExecution(sample, runObservation, violations);
         Map<String, Double> scores = new LinkedHashMap<>();
         scores.put("completeness", completeness);
         scores.put("factConsistency", factConsistency);
         scores.put("grounding", grounding);
         scores.put("markdown", markdown);
         scores.put("loop", loop);
+        scores.put("execution", execution);
         double overall = scores.values().stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
         return new Evaluation(sample.id(), VERSION, scores, overall, List.copyOf(violations));
+    }
+
+    private double evaluateExecution(
+        Sample sample, RunObservation observation, List<String> violations
+    ) {
+        if (observation == null || observation.status().isBlank()) {
+            return 1.0;
+        }
+        int failures = 0;
+        if (!sample.expectedRunStatus().equalsIgnoreCase(observation.status())) {
+            violations.add("运行状态不符合预期: " + observation.status()
+                + "，预期 " + sample.expectedRunStatus());
+            failures++;
+        }
+        if ("COMPLETED".equalsIgnoreCase(observation.status())
+            && !observation.error().isBlank()) {
+            violations.add("运行已标记完成但仍存在错误: " + observation.error());
+            failures++;
+        }
+        if ("COMPLETED".equalsIgnoreCase(observation.status())
+            && !observation.pendingType().isBlank()) {
+            violations.add("运行已标记完成但仍存在待处理交互: " + observation.pendingType());
+            failures++;
+        }
+        if ("COMPLETED".equalsIgnoreCase(observation.status())
+            && observation.modelCalls() <= 0) {
+            violations.add("运行完成但没有记录模型调用次数");
+            failures++;
+        }
+        return failures == 0 ? 1.0 : Math.max(0.0, 1.0 - (double) failures / 4.0);
     }
 
     private double evaluateGrounding(
@@ -196,7 +242,8 @@ public final class AgentQualityEvaluator {
         List<String> requiredSections,
         boolean ragRequired,
         int maxLoopSteps,
-        List<String> allowedLoopActions
+        List<String> allowedLoopActions,
+        String expectedRunStatus
     ) {
         public Sample {
             id = id == null ? "" : id;
@@ -208,6 +255,25 @@ public final class AgentQualityEvaluator {
             requiredSections = safeList(requiredSections);
             allowedLoopActions = safeList(allowedLoopActions);
             maxLoopSteps = Math.max(0, maxLoopSteps);
+            expectedRunStatus = expectedRunStatus == null || expectedRunStatus.isBlank()
+                ? "COMPLETED" : expectedRunStatus.trim().toUpperCase(Locale.ROOT);
+        }
+
+        /** 兼容未声明运行状态的旧评测样本和测试调用方。 */
+        public Sample(
+            String id,
+            String goal,
+            String message,
+            String split,
+            List<String> requiredFacts,
+            List<String> forbiddenFacts,
+            List<String> requiredSections,
+            boolean ragRequired,
+            int maxLoopSteps,
+            List<String> allowedLoopActions
+        ) {
+            this(id, goal, message, split, requiredFacts, forbiddenFacts, requiredSections,
+                ragRequired, maxLoopSteps, allowedLoopActions, "COMPLETED");
         }
 
         @SuppressWarnings("unchecked")
@@ -222,7 +288,8 @@ public final class AgentQualityEvaluator {
                 (List<String>) raw.getOrDefault("requiredSections", List.of()),
                 Boolean.TRUE.equals(raw.get("ragRequired")),
                 raw.get("maxLoopSteps") instanceof Number number ? number.intValue() : 3,
-                (List<String>) raw.getOrDefault("allowedLoopActions", List.of())
+                (List<String>) raw.getOrDefault("allowedLoopActions", List.of()),
+                (String) raw.getOrDefault("expectedRunStatus", "COMPLETED")
             );
         }
 
@@ -230,6 +297,22 @@ public final class AgentQualityEvaluator {
             return values == null ? List.of() : values.stream()
                 .filter(value -> value != null && !value.isBlank())
                 .toList();
+        }
+    }
+
+    public record RunObservation(
+        String status,
+        String error,
+        String pendingType,
+        int modelCalls,
+        long durationMillis
+    ) {
+        public RunObservation {
+            status = status == null ? "" : status.trim().toUpperCase(Locale.ROOT);
+            error = error == null ? "" : error.trim();
+            pendingType = pendingType == null ? "" : pendingType.trim();
+            modelCalls = Math.max(0, modelCalls);
+            durationMillis = Math.max(0, durationMillis);
         }
     }
 

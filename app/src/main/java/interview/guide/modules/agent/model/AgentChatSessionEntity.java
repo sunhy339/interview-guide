@@ -91,6 +91,22 @@ public class AgentChatSessionEntity {
     @Column(name = "run_notice", length = 500)
     private String runNotice;
 
+    /** 当前运行等待用户输入或确认时的结构化交互类型。 */
+    @Column(name = "pending_type", length = 32)
+    private String pendingType;
+
+    /** 结构化交互协议版本，便于后续增加字段而不误读旧会话。 */
+    @Column(name = "pending_schema_version", length = 32)
+    private String pendingSchemaVersion;
+
+    /** 需要用户补充的安全字段名 JSON；不保存原始资料或模型隐藏推理。 */
+    @Column(name = "pending_required_fields", columnDefinition = "TEXT")
+    private String pendingRequiredFieldsJson;
+
+    /** 待确认动作标识；审批动作没有成功落库时可以为空。 */
+    @Column(name = "pending_action_id", length = 64)
+    private String pendingActionId;
+
     @Column(name = "run_sources", columnDefinition = "TEXT")
     private String runSourcesJson;
 

@@ -222,6 +222,12 @@ app:
       max-model-calls-per-run: ${APP_AI_AGENT_MAX_MODEL_CALLS_PER_RUN:12}
       # 单次 Agent 运行最多执行的只读工具调用数
       max-tool-calls-per-run: ${APP_AI_AGENT_MAX_TOOL_CALLS_PER_RUN:8}
+      # 单次 Agent 运行累计 Token 预算；不是单次输出上限
+      max-total-tokens-per-run: ${APP_AI_AGENT_MAX_TOTAL_TOKENS_PER_RUN:120000}
+      # 单次 Agent 运行费用预算；0 表示未启用费用硬预算
+      max-cost-per-run: ${APP_AI_AGENT_MAX_COST_PER_RUN:0}
+      # 模型调用前的保守输入上下文预算；仅裁剪历史和资料，不限制模型输出长度
+      context-budget-tokens: ${APP_AI_AGENT_CONTEXT_BUDGET_TOKENS:24000}
       memory:
         # 长期记忆自动过期；关闭后保留历史记忆行为
         expiration-enabled: ${APP_AI_AGENT_MEMORY_EXPIRATION_ENABLED:true}

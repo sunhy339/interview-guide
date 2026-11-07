@@ -52,6 +52,7 @@ public final class AgentLoopToolExecutor implements AgentLoopEngine.StepExecutor
             if (runTracker != null) {
                 runTracker.reserveToolCall();
             }
+            recordStarted(toolName);
             String observation = observe(toolName, context);
             record(toolName, "success", startedNanos);
             return observation;
@@ -126,6 +127,17 @@ public final class AgentLoopToolExecutor implements AgentLoopEngine.StepExecutor
             auditService.recordQuietly(
                 auditContext.ownerKey(), auditContext.interviewSessionId(), auditContext.agentSessionId(),
                 auditContext.runId(), "TOOL_CALLED", "agent-loop-tool", toolName, result
+            );
+        }
+    }
+
+    /** Loop 内置观察工具也遵守统一的开始/完成轨迹协议。 */
+    private void recordStarted(String toolName) {
+        if (auditService != null && runTracker != null) {
+            AgentMetrics.AuditContext auditContext = runTracker.auditContext();
+            auditService.recordQuietly(
+                auditContext.ownerKey(), auditContext.interviewSessionId(), auditContext.agentSessionId(),
+                auditContext.runId(), "TOOL_STARTED", "agent-loop-tool", toolName, "started"
             );
         }
     }
