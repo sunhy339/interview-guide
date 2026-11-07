@@ -1568,6 +1568,12 @@ public class InterviewAgentService {
      * 误判为断线。收到首个增量、完成或失败后立即停止心跳，不会增加模型调用次数。
      */
     Flux<AgentStreamEvent> withModelHeartbeat(Flux<AgentStreamEvent> response) {
+        return withModelHeartbeat(response, null);
+    }
+
+    Flux<AgentStreamEvent> withModelHeartbeat(
+        Flux<AgentStreamEvent> response, AgentMetrics.RunTracker runTracker
+    ) {
         Sinks.One<Void> stopSignal = Sinks.one();
         Duration interval = Duration.ofSeconds(retryProperties.getRetryHeartbeatIntervalSeconds());
         Flux<AgentStreamEvent> guardedResponse = response
@@ -1581,10 +1587,15 @@ public class InterviewAgentService {
             .doFinally(signal -> stopSignal.tryEmitEmpty());
         Flux<AgentStreamEvent> heartbeats = Flux.interval(interval)
             .takeUntilOther(stopSignal.asMono())
-            .map(index -> AgentStreamEvent.waiting(
-                "insight",
-                "模型仍在生成回答，已等待约 " + ((index + 1) * interval.toSeconds()) + " 秒"
-            ));
+            .map(index -> {
+                if (runStateService != null) {
+                    runStateService.heartbeat(runTracker);
+                }
+                return AgentStreamEvent.waiting(
+                    "insight",
+                    "模型仍在生成回答，已等待约 " + ((index + 1) * interval.toSeconds()) + " 秒"
+                );
+            });
         return Flux.merge(guardedResponse, heartbeats);
     }
 
@@ -1624,7 +1635,7 @@ public class InterviewAgentService {
                 .takeUntil(ignored -> output.get().length() >= MAX_AGENT_OUTPUT_CHARS)
                 .filter(content -> !content.isEmpty())
                 .map(AgentStreamEvent::delta);
-            return withModelHeartbeat(attemptStream)
+            return withModelHeartbeat(attemptStream, runTracker)
             .doOnComplete(() -> finishModelCallAndPersist(
                 currentCall.tracker(), "success", providerId, assistantMessageId, runId, runTracker))
             .doOnError(error -> finishModelCallAndPersist(

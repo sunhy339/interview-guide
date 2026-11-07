@@ -1110,7 +1110,8 @@ public class AgentConversationService {
             || session.getRunStatus() != AgentRunStatus.RUNNING
             || session.getRunStartedAt() == null
             || session.getRunStartedAt().isAfter(staleBefore)
-            || session.getActiveMessageId() == null) {
+            || session.getActiveMessageId() == null
+            || runStateService != null && runStateService.hasLiveLease(session.getRunId())) {
             return null;
         }
 
@@ -1890,7 +1891,8 @@ public class AgentConversationService {
         return session != null
             && session.getRunStatus() == AgentRunStatus.RUNNING
             && session.getRunStartedAt() != null
-            && !session.getRunStartedAt().isAfter(LocalDateTime.now().minusMinutes(STALE_RUN_MINUTES));
+            && !session.getRunStartedAt().isAfter(LocalDateTime.now().minusMinutes(STALE_RUN_MINUTES))
+            && (runStateService == null || !runStateService.hasLiveLease(session.getRunId()));
     }
 
     public record PreparedMessage(Long assistantMessageId, Long sessionId, String runId, String agentSessionId) {
