@@ -248,6 +248,8 @@ function formatAuditAction(action: string) {
     ACTION_DRAFT_UPDATED: '修改动作草稿',
     ACTION_CANCELLED: '取消动作',
     ACTION_FAILED: '动作失败',
+    TOOL_STARTED: '工具开始',
+    TOOL_CALLED: '工具完成',
     PROMPT_INJECTION_DETECTED: '请求已净化',
     CONTEXT_INJECTION_DETECTED: '资料已净化',
     TOOL_SECURITY_REJECTED: '工具安全拒绝',

@@ -154,6 +154,7 @@ final class AgentObservedToolCallback implements ToolCallback {
                 recordSkillToolResult(runTracker, result, false);
                 return result;
             }
+            auditStarted(runTracker);
             String rawResult = invokeDelegate(toolInput, toolContext);
             boolean rejected = isRejectedResult(rawResult);
             String resultContractError = rejected
@@ -272,6 +273,25 @@ final class AgentObservedToolCallback implements ToolCallback {
         auditService.recordQuietly(
             context.ownerKey(), context.interviewSessionId(), context.agentSessionId(), context.runId(),
             "TOOL_CALLED", "agent-tool", getToolDefinition().name(), result
+        );
+    }
+
+    /**
+     * 记录一次逻辑工具调用真正开始执行的时刻。
+     *
+     * <p>参数校验或安全策略拒绝不会产生开始事件；这样 Trace 可以区分“模型请求了
+     * 工具但没有执行”和“工具已经进入业务回调”。同一次逻辑调用内部的只读重试仍
+     * 只记录一个开始事件，完成事件由 {@link #audit(AgentMetrics.RunTracker, String)}
+     * 记录，避免把一次调用误计成多次业务动作。</p>
+     */
+    private void auditStarted(AgentMetrics.RunTracker runTracker) {
+        if (auditService == null || runTracker == null) {
+            return;
+        }
+        AgentMetrics.AuditContext context = runTracker.auditContext();
+        auditService.recordQuietly(
+            context.ownerKey(), context.interviewSessionId(), context.agentSessionId(), context.runId(),
+            "TOOL_STARTED", "agent-tool", getToolDefinition().name(), "started"
         );
     }
 

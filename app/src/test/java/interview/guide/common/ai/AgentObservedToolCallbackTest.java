@@ -123,6 +123,10 @@ class AgentObservedToolCallbackTest {
             "user-1", "interview-1", "agent-1", "run-1",
             "TOOL_CALLED", "agent-tool", "load_skill", "success"
         );
+        verify(auditService).recordQuietly(
+            "user-1", "interview-1", "agent-1", "run-1",
+            "TOOL_STARTED", "agent-tool", "load_skill", "started"
+        );
     }
 
     @Test
@@ -158,6 +162,10 @@ class AgentObservedToolCallbackTest {
         verify(auditService).recordQuietly(
             "user-1", "interview-1", "agent-1", "run-1",
             "TOOL_CALLED", "agent-tool", "schedule.create_draft", "rejected"
+        );
+        verify(auditService).recordQuietly(
+            "user-1", "interview-1", "agent-1", "run-1",
+            "TOOL_STARTED", "agent-tool", "schedule.create_draft", "started"
         );
         verify(auditService).recordToolSecurityRejected(
             "user-1", "interview-1", "agent-1", "run-1", "schedule.create_draft"
@@ -222,6 +230,10 @@ class AgentObservedToolCallbackTest {
         assertThat(registry.get(AgentMetrics.TOOL_CALLS)
             .tag("tool", "load_skill").tag("result", "rejected").counter().count())
             .isEqualTo(1.0);
+        verify(auditService, never()).recordQuietly(
+            "user-1", "interview-1", "agent-1", "run-1",
+            "TOOL_STARTED", "agent-tool", "load_skill", "started"
+        );
         verify(auditService).recordToolSecurityRejected(
             "user-1", "interview-1", "agent-1", "run-1", "load_skill"
         );
