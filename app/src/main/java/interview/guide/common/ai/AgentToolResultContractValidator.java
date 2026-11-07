@@ -19,6 +19,9 @@ import tools.jackson.databind.ObjectMapper;
 public final class AgentToolResultContractValidator {
 
     private static final String CONTEXT_ASSET_ACTION_TOOL = "agent_context_asset_action";
+    private static final String SCHEDULE_CREATE_TOOL = "schedule_create_draft";
+    private static final String SCHEDULE_CANCEL_TOOL = "schedule_cancel_draft";
+    private static final String SCHEDULE_UPDATE_TOOL = "schedule_update_draft";
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final Pattern RESULT_BOUNDARY = Pattern.compile(
         "(?s)^\\s*<data-boundary-([0-9a-f]{8})-agent-tool-result>\\s*(.*?)\\s*"
@@ -73,6 +76,10 @@ public final class AgentToolResultContractValidator {
                 || actionId == null || !actionId.isTextual() || actionId.asText().isBlank()) {
                 return "工具动作草稿缺少 actionId，未确认任何业务状态";
             }
+            String actionError = validateProposedAction(payload, action, contract);
+            if (actionError != null) {
+                return actionError;
+            }
         }
         if ("USER_CONFIRMATION_REQUIRED".equals(statusValue)
             || "SECURITY_CONFIRMATION_REQUIRED".equals(statusValue)) {
@@ -114,6 +121,42 @@ public final class AgentToolResultContractValidator {
         }
         if (assetId == null || !assetId.isTextual() || assetId.asText().isBlank()) {
             return "资源工具结果缺少 assetId，未确认任何资源状态";
+        }
+        return null;
+    }
+
+    /** 校验动作草稿仍属于发起该工具的领域，避免错误动作被误挂到当前请求。 */
+    private static String validateProposedAction(
+        JsonNode payload, JsonNode action, AgentToolDescriptor contract
+    ) {
+        if (contract == null) {
+            return null;
+        }
+        String expectedTool = switch (contract.name()) {
+            case SCHEDULE_CREATE_TOOL -> "interview.schedule.create";
+            case SCHEDULE_CANCEL_TOOL -> "interview.schedule.cancel";
+            case SCHEDULE_UPDATE_TOOL -> "interview.schedule.update";
+            default -> null;
+        };
+        if (expectedTool != null) {
+            JsonNode toolId = action.get("toolId");
+            if (toolId == null || !toolId.isTextual() || !expectedTool.equals(toolId.asText())) {
+                return "日程工具结果的动作类型不匹配，未确认任何业务状态";
+            }
+        }
+        if (CONTEXT_ASSET_ACTION_TOOL.equals(contract.name())) {
+            JsonNode operation = payload.get("operation");
+            JsonNode assetId = payload.get("assetId");
+            if (operation == null || !operation.isTextual() || operation.asText().isBlank()) {
+                return "资源工具结果缺少 operation，未确认任何资源状态";
+            }
+            if (assetId == null || !assetId.isTextual() || assetId.asText().isBlank()) {
+                return "资源工具结果缺少 assetId，未确认任何资源状态";
+            }
+            JsonNode toolId = action.get("toolId");
+            if (toolId == null || !toolId.isTextual() || !"resume.import".equals(toolId.asText())) {
+                return "简历导入动作类型不匹配，未确认任何业务状态";
+            }
         }
         return null;
     }
