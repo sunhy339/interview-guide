@@ -67,6 +67,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\agent-quality-collector.
 - 取消动作后原会话恢复并最终进入 `COMPLETED`，且动作状态为 `CANCELLED`。
 - 缺信息续跑、确认和取消必须复用同一个 `runId`；普通新消息必须创建新的运行代次。
 - 确认/取消不能新增一条用户消息，避免把系统动作结果伪装成用户输入或造成上下文重复。
+- 日程动作步骤还会校验 Trace 中出现了正确的工具资源，例如创建必须命中
+  `schedule_create_draft`；这只验证工具选择，不把工具结果文本当作成功依据。
 
 先采集真实运行结果，再执行独立门禁：
 

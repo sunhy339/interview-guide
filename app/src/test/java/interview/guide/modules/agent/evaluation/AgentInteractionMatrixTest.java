@@ -61,6 +61,10 @@ class AgentInteractionMatrixTest {
                     assertThat(step.get("expectedTraceActions")).isInstanceOf(List.class);
                     assertThat(traceActions(step)).allMatch(value -> value != null && !value.isBlank());
                 }
+                if (step.containsKey("expectedTraceResources")) {
+                    assertThat(step.get("expectedTraceResources")).isInstanceOf(List.class);
+                    assertThat(traceResources(step)).allMatch(value -> value != null && !value.isBlank());
+                }
                 if ("message".equals(type)) {
                     assertThat(text(step, "message")).isNotBlank();
                 } else {
@@ -109,6 +113,14 @@ class AgentInteractionMatrixTest {
     @SuppressWarnings("unchecked")
     private List<String> traceActions(Map<String, Object> step) {
         return ((List<Object>) step.getOrDefault("expectedTraceActions", List.of())).stream()
+            .filter(String.class::isInstance)
+            .map(String.class::cast)
+            .toList();
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> traceResources(Map<String, Object> step) {
+        return ((List<Object>) step.getOrDefault("expectedTraceResources", List.of())).stream()
             .filter(String.class::isInstance)
             .map(String.class::cast)
             .toList();
