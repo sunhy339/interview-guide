@@ -133,6 +133,65 @@ class AgentToolResultContractValidatorTest {
             .isNull();
     }
 
+    @Test
+    void validatesInterviewSearchResultShape() {
+        String valid = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "[{\"sessionId\":\"session-1\",\"title\":\"浪速面试\"}]"
+        );
+        String invalid = sanitizer.wrapWithDelimiters(
+            "agent-tool-result", "[{\"title\":\"没有编号\"}]"
+        );
+
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            valid, contract("interview_search", AgentToolDescriptor.ResultContract.DATA_BOUNDARY)
+        )).isNull();
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            invalid, contract("interview_search", AgentToolDescriptor.ResultContract.DATA_BOUNDARY)
+        )).isEqualTo("面试搜索结果缺少有效会话标识，未确认任何查询结果");
+    }
+
+    @Test
+    void validatesContextListShape() {
+        String valid = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"bindings\":[{\"contextType\":\"INTERVIEW_REPORT\","
+                + "\"resourceId\":\"session-1\",\"scope\":\"SESSION\",\"active\":true}],"
+                + "\"assets\":[{\"assetId\":\"asset-1\",\"reviewStatus\":\"APPROVED_FOR_CONTEXT\","
+                + "\"securityFlagged\":false}]}"
+        );
+        String invalid = sanitizer.wrapWithDelimiters(
+            "agent-tool-result", "{\"bindings\":[],\"assets\":[{\"assetId\":\"asset-1\"}]}"
+        );
+
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            valid, contract("agent_context_list", AgentToolDescriptor.ResultContract.DATA_BOUNDARY)
+        )).isNull();
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            invalid, contract("agent_context_list", AgentToolDescriptor.ResultContract.DATA_BOUNDARY)
+        )).isEqualTo("上传文件状态结果字段不完整，未确认任何查询结果");
+    }
+
+    @Test
+    void validatesAttachAndClearContextResults() {
+        String attached = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"status\":\"ATTACHED\",\"message\":\"已绑定\",\"binding\":{"
+                + "\"contextType\":\"INTERVIEW_REPORT\",\"resourceId\":\"session-1\","
+                + "\"scope\":\"SESSION\",\"active\":true}}"
+        );
+        String cleared = sanitizer.wrapWithDelimiters(
+            "agent-tool-result", "{\"status\":\"CLEARED\",\"message\":\"已清除\"}"
+        );
+
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            attached, contract("interview_attach_context", AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION)
+        )).isNull();
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            cleared, contract("interview_clear_context", AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION)
+        )).isNull();
+    }
+
     private AgentToolDescriptor contextAssetContract() {
         return new AgentToolDescriptor(
             "agent_context_asset_action",
@@ -166,6 +225,22 @@ class AgentToolResultContractValidatorTest {
             AgentToolDescriptor.Idempotency.IDEMPOTENCY_KEYED,
             resultContract,
             "{\"type\":\"object\"}", mock(ToolCallback.class)
+        );
+    }
+
+    private AgentToolDescriptor contract(
+        String name, AgentToolDescriptor.ResultContract resultContract
+    ) {
+        return new AgentToolDescriptor(
+            name, "v1", AgentIntentRouter.Capability.CONTEXT,
+            resultContract == AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION
+                ? AgentToolDescriptor.RiskLevel.DRAFT_WRITE : AgentToolDescriptor.RiskLevel.READ_ONLY,
+            resultContract == AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION,
+            true, "agent:context:read", 5_000L, 1,
+            AgentToolDescriptor.RetryPolicy.NONE,
+            resultContract == AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION
+                ? AgentToolDescriptor.Idempotency.IDEMPOTENCY_KEYED : AgentToolDescriptor.Idempotency.IDEMPOTENT,
+            resultContract, "{\"type\":\"object\"}", mock(ToolCallback.class)
         );
     }
 }
