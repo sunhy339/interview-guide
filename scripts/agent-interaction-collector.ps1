@@ -238,6 +238,32 @@ function Invoke-ScenarioConfirm(
     return [pscustomobject]@{ result = $stepResult; conversation = $conversation; usage = $usage }
 }
 
+function Invoke-ScenarioCancel(
+    [object]$Scenario,
+    [object]$Step,
+    [string]$InterviewId,
+    [string]$AgentSessionId
+) {
+    $actions = Invoke-JsonApi "/api/agent/sessions/$AgentSessionId/actions"
+    $action = @($actions.data | Where-Object { [string]$_.status -eq 'PROPOSED' } | Select-Object -First 1)
+    if ($action.Count -eq 0) { throw '没有找到可取消的 Agent 动作草稿' }
+    $cancelled = Invoke-JsonApi "/api/agent/actions/$([Uri]::EscapeDataString([string]$action[0].actionId))/cancel" 'POST'
+    $actionStatus = [string]$cancelled.data.status
+    $conversation = Wait-Conversation $InterviewId $AgentSessionId $false
+    $usage = $conversation.data.runUsage
+    $stepResult = [ordered]@{
+        type = [string]$Step.type
+        status = [string]$conversation.data.runStatus
+        pendingType = Get-PendingType $conversation
+        actionStatus = $actionStatus
+        modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
+        durationMillis = if ($usage) { [long]$usage.durationMillis } else { 0 }
+        answer = Get-ConversationAnswer $conversation
+    }
+    Assert-Step $Step $stepResult.status $stepResult.pendingType $stepResult.actionStatus $script:stepIndex
+    return [pscustomobject]@{ result = $stepResult; conversation = $conversation; usage = $usage }
+}
+
 try {
     if ([string]::IsNullOrWhiteSpace($Email)) {
         $suffix = [guid]::NewGuid().ToString('N').Substring(0, 12)
@@ -298,6 +324,8 @@ try {
                 Invoke-ScenarioMessage $scenario $step $InterviewSessionId $agentSessionId $memoryKey $selectedProviderId
             } elseif ([string]$step.type -eq 'confirm_latest_action') {
                 Invoke-ScenarioConfirm $scenario $step $InterviewSessionId $agentSessionId
+            } elseif ([string]$step.type -eq 'cancel_latest_action') {
+                Invoke-ScenarioCancel $scenario $step $InterviewSessionId $agentSessionId
             } else {
                 throw "暂不支持的交互步骤：$($step.type)"
             }

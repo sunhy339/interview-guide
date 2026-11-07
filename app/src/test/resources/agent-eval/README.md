@@ -63,7 +63,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\agent-quality-collector.
 - 普通问题的连续两轮对话仍然是 `COMPLETED`；
 - 缺少日程字段时进入 `WAITING_USER/INPUT`，补充后进入
   `WAITING_USER/APPROVAL`；
-- 确认动作后原会话恢复并最终进入 `COMPLETED`。
+- 确认动作后原会话恢复并最终进入 `COMPLETED`；
+- 取消动作后原会话恢复并最终进入 `COMPLETED`，且动作状态为 `CANCELLED`。
 
 先采集真实运行结果，再执行独立门禁：
 
@@ -77,7 +78,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\agent-interaction-collec
 ```
 
 也可以使用 `-CreateInterview` 做接口和状态机 smoke，但随机面试不代表报告复盘质量。
-脚本会验证每一步的状态、pending 类型和动作状态，失败时不会生成“通过”的结果。
+脚本会验证每一步的状态、pending 类型和动作状态，并要求本次结果覆盖矩阵中的全部场景，失败时不会生成“通过”的结果。
 
 执行真实评测并生成 `JSON + Markdown` 报告：
 

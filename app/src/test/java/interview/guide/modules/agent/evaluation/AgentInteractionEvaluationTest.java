@@ -60,6 +60,9 @@ class AgentInteractionEvaluationTest {
             results.add(result(id, run, ok, violations));
         }
         assertThat(runs).isNotEmpty();
+        assertThat(ids)
+            .as("真实交互评测必须覆盖语料中的全部场景")
+            .containsExactlyInAnyOrderElementsOf(scenarios.keySet());
 
         String runId = System.getProperty(
             "agentInteractionEval.runId", "agent-interaction-eval-" + System.currentTimeMillis()
@@ -102,7 +105,8 @@ class AgentInteractionEvaluationTest {
             compare(violations, index, "type", expected, actual);
             compare(violations, index, "status", expected, actual);
             compare(violations, index, "pendingType", expected, actual);
-            if ("confirm_latest_action".equals(text(expected, "type"))) {
+            if ("confirm_latest_action".equals(text(expected, "type"))
+                || "cancel_latest_action".equals(text(expected, "type"))) {
                 compare(violations, index, "actionStatus", expected, actual);
             }
             if ("message".equals(text(expected, "type"))
