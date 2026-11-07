@@ -36,7 +36,7 @@ class AgentBehaviorMatrixTest {
     @DisplayName("普通问答、资料组合和业务动作都保持预期能力边界")
     void validatesRoutingMatrix() throws IOException {
         List<Scenario> scenarios = loadScenarios();
-        assertThat(scenarios).hasSize(15);
+        assertThat(scenarios).hasSize(18);
         Set<String> ids = new HashSet<>();
 
         for (Scenario scenario : scenarios) {

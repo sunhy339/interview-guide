@@ -410,6 +410,43 @@ class AgentContextToolCallbackFactoryTest {
     }
 
     @Test
+    void proposesPracticeQuestionsForNaturalSaveIntent() {
+        AgentActionResponse action = new AgentActionResponse(
+            "action-questions", "interview-1", "agent-1", "practice.questions.draft", "DRAFT_WRITE",
+            AgentActionStatus.PROPOSED, "练习题草稿", "确认后保存", "练习上下文边界题",
+            null, LocalDateTime.now(), LocalDateTime.now(), null, null
+        );
+        when(conversationService.activeInterviewSessionId("agent-1", "owner-1"))
+            .thenReturn(Optional.of("interview-1"));
+        when(actionService.proposePracticeQuestionsDraft(
+            "interview-1", "agent-1", "owner-1", "练习上下文边界题", null
+        )).thenReturn(action);
+
+        String result = tool("agent_action_draft").call(
+            "{\"operation\":\"practice_questions\",\"content\":\"练习上下文边界题\"}",
+            context("帮我把几道练习题保存成训练草稿")
+        );
+
+        assertThat(result).contains("ACTION_PROPOSED").contains("action-questions");
+        verify(actionService).proposePracticeQuestionsDraft(
+            "interview-1", "agent-1", "owner-1", "练习上下文边界题", null
+        );
+    }
+
+    @Test
+    void refusesPracticeQuestionDraftWhenUserOnlyAsksHowToSaveIt() {
+        String result = tool("agent_action_draft").call(
+            "{\"operation\":\"practice_questions\",\"content\":\"练习题\"}",
+            context("如何保存一道练习题？")
+        );
+
+        assertThat(result).contains("需要用户明确、直接确认");
+        verify(actionService, never()).proposePracticeQuestionsDraft(
+            any(), any(), any(), any(), any()
+        );
+    }
+
+    @Test
     void asksForInterviewContextBeforeCreatingUnifiedDraft() {
         when(conversationService.activeInterviewSessionId("agent-1", "owner-1"))
             .thenReturn(Optional.empty());
