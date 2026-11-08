@@ -203,6 +203,7 @@ function Get-RunEvents([string]$AgentSessionId, [string]$RunId) {
                 eventType = [string]$_.eventType
                 modelTurnId = [string]$_.modelTurnId
                 toolCallId = [string]$_.toolCallId
+                toolName = [string]$_.toolName
                 providerResponseId = [string]$_.providerResponseId
                 providerToolCallIdsHash = [string]$_.providerToolCallIdsHash
                 providerResponseCount = if ($null -eq $_.providerResponseCount) { 0 } else { [int]$_.providerResponseCount }

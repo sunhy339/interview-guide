@@ -27,7 +27,7 @@
 | 记忆 | 长期记忆默认只读；写入走草稿和确认；会话有滚动摘要；记忆带来源、置信度、过期时间和撤销标记；读取和 Prompt 注入只允许有效条目 | 来源仍是轻量字符串，尚未统一为可追踪的 sourceId/version/authority；过期/撤销条目暂不提供恢复界面 | P1 |
 | 恢复与并发 | 会话、RunState、动作表、审批续跑和恢复扫描已经存在；多会话互不覆盖；消息和运行状态有 owner 隔离；运行期间会刷新租约，恢复扫描会跳过有效租约 | 模型在工具链中间崩溃时不能精确恢复内部消息；跨实例租约和外部副作用对账仍需真实环境验证 | P1 |
 | 可观测性 | 有 Run Trace、审计、Loop 轨迹、Token/费用、Provider 重试、首个非空输出耗时、带 `modelTurnId` 的模型轮次开始/首 Token/完成事件、带 Run 内 `toolCallId` 的工具开始/完成/失败事件、回答的 grounding 状态、低敏来源完整性状态和统一 `EVIDENCE_ASSESSMENT` 状态，以及追加式 Run 事件（模型轮次/工具批次/参数与结果摘要哈希）；现在也采集 Provider response ID、工具调用 ID 批次摘要和响应片段计数，并展示实际输入 Token 与保守估算输入 Token 的差异；流式过程中实际观察到的新增工具批次会写入 `MODEL_TOOL_BATCH` | ToolCallingAdvisor 内部模型消息和 DB/RAG/Redis span、队列时间、基础设施关联还不完整；Provider 可能不透传稳定 ID，真实 Provider 契约仍需验收；估算 Token 仍不是 tokenizer 精确值，证据状态也不是事实级语义验证；当前恢复仍不能消费原始模型消息继续执行 | P1 |
-| 质量工程 | 有离线 Agent 质量语料、Markdown/引用/Loop/运行状态/资源预算检查和 RAG 评测；采集器支持真实 Provider 样本；多轮矩阵现在还校验 Run 连续性、用户消息数量、关键 Trace 动作、证据评估轨迹、上下文估算 Token、低敏 Run 事件中的工具批次字段和动作执行结果契约 | 真实 Provider 的多轮工具任务、等待补充、审批恢复、并发、取消/修改日程还未全部纳入固定门禁 | P1 |
+| 质量工程 | 有离线 Agent 质量语料、Markdown/引用/Loop/运行状态/资源预算检查和 RAG 评测；采集器支持真实 Provider 样本；多轮矩阵现在还校验 Run 连续性、用户消息数量、关键 Trace 动作、证据评估轨迹、上下文估算 Token、低敏 Run 事件中的工具批次字段和动作执行结果契约；RAG 真实验收脚本进一步校验知识库工具开始/完成事件、来源 `sourceId/version` 和 grounding/证据 Trace | 真实 Provider 的多轮工具任务、等待补充、审批恢复、并发、取消/修改日程还未全部纳入固定门禁；真实 RAG 脚本仍需在候选环境执行 | P1 |
 | MCP | 只有 Skill 资料和工具契约设计 | 当前没有 MCP Gateway/Runtime；不能直接把外部 MCP 工具列表当成可信权限 | P2 |
 | 多 Agent | 当前没有自由协作网络 | 暂无必要；先把单 Agent 的运行恢复、工具协议和评测做完整 | P2 |
 
