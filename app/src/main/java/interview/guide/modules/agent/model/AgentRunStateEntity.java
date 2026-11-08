@@ -56,6 +56,13 @@ public class AgentRunStateEntity {
     @Column(length = 32)
     private String phase;
 
+    /**
+     * 应用重启后用于判断能否安全重试的最后边界；不保存 Prompt、工具参数正文或结果正文。
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "recovery_boundary", length = 32)
+    private AgentRecoveryBoundary recoveryBoundary;
+
     @Column(name = "step_index", nullable = false)
     private Integer stepIndex;
 

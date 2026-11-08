@@ -949,6 +949,32 @@ public class AgentConversationService {
             .orElse(null);
     }
 
+    /**
+     * 工具调用已开始但结果未知时停止自动恢复，避免把可能有外部副作用的工具重放一次。
+     * 会话被标记为失败，用户可以先核对业务结果，再重新发起明确请求。
+     */
+    @Transactional
+    public boolean failUncertainRecovery(
+        String interviewSessionId, String agentSessionId, String notice
+    ) {
+        AgentChatSessionEntity session = findSessionForUpdate(interviewSessionId, agentSessionId)
+            .orElse(null);
+        if (session == null || session.getRunStatus() != AgentRunStatus.RUNNING) {
+            return false;
+        }
+        String safeNotice = safeStoredText(notice, 500);
+        if (session.getActiveMessageId() != null) {
+            messageRepository.findById(session.getActiveMessageId()).ifPresent(message -> {
+                message.setCompleted(false);
+                message.setErrorMessage(safeNotice);
+                messageRepository.save(message);
+            });
+        }
+        markRunFinished(session, AgentRunStatus.FAILED, safeNotice);
+        audit(session, "RUN_RECOVERY_BLOCKED", "agent-run", session.getRunId(), "uncertain-tool");
+        return true;
+    }
+
     /** 持久化当前 Agent 编排阶段，供断线和页面刷新后恢复展示。 */
     @Transactional
     public void updateRunProgress(Long messageId, String step, String status, String notice) {

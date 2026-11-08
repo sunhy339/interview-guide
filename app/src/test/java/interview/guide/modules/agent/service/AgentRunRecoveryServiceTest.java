@@ -106,4 +106,35 @@ class AgentRunRecoveryServiceTest {
         verify(conversation, never()).claimRecoverableRun(any(), any(), any());
         verify(agent, never()).recoverRun(any(AgentConversationService.RecoveredRun.class));
     }
+
+    @Test
+    void blocksRecoveryWhenToolResultIsUnknownInsteadOfReplayingTheRun() {
+        AgentChatSessionRepository repository = mock(AgentChatSessionRepository.class);
+        AgentConversationService conversation = mock(AgentConversationService.class);
+        InterviewAgentService agent = mock(InterviewAgentService.class);
+        AgentRunStateService runState = mock(AgentRunStateService.class);
+        AgentRetryProperties properties = new AgentRetryProperties();
+        properties.setRecoveryMinAgeSeconds(30);
+        AgentChatSessionEntity session = AgentChatSessionEntity.builder()
+            .interviewSessionId("interview-1")
+            .agentSessionId("agent-1")
+            .runId("run-1")
+            .runStatus(AgentRunStatus.RUNNING)
+            .runStartedAt(LocalDateTime.now().minusMinutes(2))
+            .build();
+        when(repository.findByRunStatusAndRunStartedAtBefore(eq(AgentRunStatus.RUNNING), any()))
+            .thenReturn(List.of(session));
+        when(runState.recoveryDecision("run-1"))
+            .thenReturn(AgentRunStateService.RecoveryDecision.BLOCK_UNCERTAIN_TOOL);
+        when(conversation.failUncertainRecovery(
+            eq("interview-1"), eq("agent-1"), any()
+        )).thenReturn(true);
+
+        new AgentRunRecoveryService(repository, conversation, agent, properties, null, runState)
+            .recoverInterruptedRuns();
+
+        verify(conversation).failUncertainRecovery(eq("interview-1"), eq("agent-1"), any());
+        verify(conversation, never()).claimRecoverableRun(any(), any(), any());
+        verify(agent, never()).recoverRun(any(AgentConversationService.RecoveredRun.class));
+    }
 }
