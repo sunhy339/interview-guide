@@ -52,6 +52,12 @@ public class AgentRunEventEntity {
     @Column(name = "tool_name", length = 128)
     private String toolName;
 
+    @Column(name = "resource_id", length = 128)
+    private String resourceId;
+
+    @Column(length = 64)
+    private String operation;
+
     @Column(name = "arguments_hash", length = 64)
     private String argumentsHash;
 

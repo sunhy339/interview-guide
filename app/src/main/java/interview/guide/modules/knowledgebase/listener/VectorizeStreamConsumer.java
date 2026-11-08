@@ -11,6 +11,7 @@ import interview.guide.common.log.ErrorLogSanitizer;
 import interview.guide.modules.knowledgebase.model.KnowledgeBaseEntity;
 import interview.guide.modules.knowledgebase.repository.KnowledgeBaseRepository;
 import interview.guide.common.async.recovery.VectorizeRecoveryProperties;
+import interview.guide.modules.agent.service.AgentAsyncOperationService;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseParseService;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseVectorService;
 import lombok.extern.slf4j.Slf4j;
@@ -34,6 +35,7 @@ public class VectorizeStreamConsumer extends AbstractStreamConsumer<VectorizeStr
     private final VectorizeRecoveryProperties recoveryProperties;
     /** 当前任务的 Embedding 心跳上次写库时间（领取时清零），仅内存态 */
     private volatile long lastEmbeddingHeartbeatNanos;
+    private AgentAsyncOperationService asyncOperationService;
 
     public VectorizeStreamConsumer(
         RedisService redisService,
@@ -47,6 +49,11 @@ public class VectorizeStreamConsumer extends AbstractStreamConsumer<VectorizeStr
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.parseService = parseService;
         this.recoveryProperties = recoveryProperties;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setAsyncOperationService(AgentAsyncOperationService asyncOperationService) {
+        this.asyncOperationService = asyncOperationService;
     }
 
     static final class VectorizePayload {
@@ -201,6 +208,64 @@ public class VectorizeStreamConsumer extends AbstractStreamConsumer<VectorizeStr
     }
 
     @Override
+    protected void afterProcessingClaimed(VectorizePayload payload) {
+        observeSafely(() -> asyncOperationService.markProcessing(payload.kbId()), "PROCESSING", payload);
+    }
+
+    @Override
+    protected void afterBusinessCompleted(VectorizePayload payload) {
+        observeSafely(() -> asyncOperationService.markCompleted(payload.kbId()), "COMPLETED", payload);
+    }
+
+    @Override
+    protected void afterRetryScheduled(VectorizePayload payload) {
+        observeSafely(() -> asyncOperationService.markRetrying(payload.kbId(), "vector_index_retrying"),
+            "RETRYING", payload);
+    }
+
+    @Override
+    protected void afterBusinessFailed(VectorizePayload payload) {
+        observeSafely(() -> asyncOperationService.markFailed(payload.kbId(), "vector_index_failed"),
+            "FAILED", payload);
+    }
+
+    @Override
+    protected void afterTaskSkipped(VectorizePayload payload) {
+        reconcileCurrentStatus(payload);
+    }
+
+    @Override
+    protected void afterTaskNotClaimed(VectorizePayload payload) {
+        reconcileCurrentStatus(payload);
+    }
+
+    private void reconcileCurrentStatus(VectorizePayload payload) {
+        if (asyncOperationService == null) {
+            return;
+        }
+        observeSafely(() -> knowledgeBaseRepository.findById(payload.kbId()).ifPresent(kb -> {
+            if (kb.getVectorStatus() == VectorStatus.COMPLETED) {
+                asyncOperationService.markCompleted(payload.kbId());
+            } else if (kb.getVectorStatus() == VectorStatus.FAILED) {
+                asyncOperationService.markFailed(payload.kbId(),
+                    isBlank(kb.getVectorError()) ? "vector_index_failed" : kb.getVectorError());
+            }
+        }), "RECONCILE", payload);
+    }
+
+    private void observeSafely(Runnable action, String status, VectorizePayload payload) {
+        if (asyncOperationService == null) {
+            return;
+        }
+        try {
+            action.run();
+        } catch (RuntimeException error) {
+            log.warn("Agent 异步任务对账写入失败，不影响向量化主任务: status={}, payload={}",
+                status, payloadIdentifier(payload), error);
+        }
+    }
+
+    @Override
     protected void markFailed(VectorizePayload payload, String error) {
         knowledgeBaseRepository.failVectorIfProcessing(
             payload.kbId(), payload.attemptId(), truncateError(error),
@@ -235,6 +300,8 @@ public class VectorizeStreamConsumer extends AbstractStreamConsumer<VectorizeStr
                 ErrorLogSanitizer.summarize(e), ErrorLogSanitizer.forLogging(e));
             knowledgeBaseRepository.failVectorIfPending(
                 kbId, "重试入队失败", java.time.LocalDateTime.now());
+            observeSafely(() -> asyncOperationService.markFailed(payload.kbId(), "retry_enqueue_failed"),
+                "FAILED", payload);
         }
     }
 
