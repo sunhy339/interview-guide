@@ -97,6 +97,26 @@ public class AgentRunEventService {
         );
     }
 
+    /**
+     * 记录流式模型轮次中实际观察到的工具批次；只保存低敏 ID 摘要和数量。
+     * 该事件用于诊断中途断线、工具回传缺失和恢复边界，不代表工具已执行成功。
+     */
+    public void appendProviderToolBatch(
+        AgentMetrics.RunTracker tracker,
+        String modelTurnId,
+        AgentProviderResponseTrace.BatchSnapshot batch,
+        String status
+    ) {
+        if (batch == null || !batch.hasToolBatch()) {
+            return;
+        }
+        appendInternal(
+            tracker, "MODEL_TOOL_BATCH", modelTurnId, null, null, null, null, status,
+            batch.responseId(), batch.responseIdsHash(), batch.toolCallIdsHash(),
+            batch.responseCount(), batch.toolCallCount()
+        );
+    }
+
     private void appendInternal(
         AgentMetrics.RunTracker tracker,
         String eventType,

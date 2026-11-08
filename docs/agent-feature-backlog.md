@@ -42,7 +42,7 @@
 ### P1.2 Durable RunState 与内部轮次
 
 Provider response ID、provider tool-call ID 批次摘要和轮次片段计数已经进入低敏 Run Event/RunState，
-可以把真实 Provider 的响应轮次和本地 Run 关联起来；仍需补齐 ToolCallingAdvisor 内部模型消息、
+可以把真实 Provider 的响应轮次和本地 Run 关联起来；当前新增 `MODEL_TOOL_BATCH` 低敏 Run 事件，记录流式过程中实际观察到的新增工具批次，且对重复分片和无 ID 兼容网关做去重；仍需补齐 ToolCallingAdvisor 内部模型消息、
 结构化工具结果和等待状态的可恢复检查点。目标是区分：
 
 ```text

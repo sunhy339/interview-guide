@@ -12,6 +12,51 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AgentProviderResponseTraceTest {
 
     @Test
+    void emitsOnlyOneLowSensitivityToolBatchForRepeatedStreamingCallId() {
+        AgentProviderResponseTrace trace = new AgentProviderResponseTrace();
+        AssistantMessage.ToolCall call = new AssistantMessage.ToolCall(
+            "call-1", "function", "schedule_list", "{}"
+        );
+        AssistantMessage message = AssistantMessage.builder()
+            .content("")
+            .toolCalls(List.of(call))
+            .build();
+        ChatResponse response = new ChatResponse(
+            List.of(new Generation(message)),
+            ChatResponseMetadata.builder().id("response-1").build()
+        );
+
+        AgentProviderResponseTrace.BatchSnapshot first = trace.observe(response);
+        AgentProviderResponseTrace.BatchSnapshot repeated = trace.observe(response);
+
+        assertThat(first.hasToolBatch()).isTrue();
+        assertThat(first.toolCallCount()).isEqualTo(1);
+        assertThat(repeated.hasToolBatch()).isFalse();
+        assertThat(trace.snapshot().toolCallCount()).isEqualTo(1);
+    }
+
+    @Test
+    void doesNotInflateAnonymousToolCallsAcrossStreamingFragments() {
+        AgentProviderResponseTrace trace = new AgentProviderResponseTrace();
+        AssistantMessage message = AssistantMessage.builder()
+            .toolCalls(List.of(new AssistantMessage.ToolCall(
+                "", "function", "schedule_list", "{}"
+            )))
+            .build();
+        ChatResponse response = new ChatResponse(
+            List.of(new Generation(message)),
+            ChatResponseMetadata.builder().build()
+        );
+
+        AgentProviderResponseTrace.BatchSnapshot first = trace.observe(response);
+        AgentProviderResponseTrace.BatchSnapshot repeated = trace.observe(response);
+
+        assertThat(first.hasToolBatch()).isTrue();
+        assertThat(repeated.hasToolBatch()).isFalse();
+        assertThat(trace.snapshot().toolCallCount()).isEqualTo(1);
+    }
+
+    @Test
     void aggregatesProviderIdsAndToolCallBatchWithoutPersistingMessageContent() {
         AssistantMessage toolMessage = AssistantMessage.builder()
             .content("不应进入 Trace")
