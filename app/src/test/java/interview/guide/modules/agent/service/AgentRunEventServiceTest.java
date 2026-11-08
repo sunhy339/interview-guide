@@ -95,6 +95,28 @@ class AgentRunEventServiceTest {
         assertThat(saved.toString()).doesNotContain("不可落库正文");
     }
 
+    @Test
+    void persistsAsyncOperationContextWithoutRawOperationDetails() {
+        when(repository.save(any(AgentRunEventEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+
+        new AgentRunEventService(repository).appendForContext(
+            "owner-1", "agent-1", "run-async", "ASYNC_OPERATION_SUBMITTED", "asset-1",
+            "KB_VECTORIZE", "async_job_submitted", "SUBMITTED"
+        );
+
+        ArgumentCaptor<AgentRunEventEntity> captor = ArgumentCaptor.forClass(AgentRunEventEntity.class);
+        verify(repository).save(captor.capture());
+        AgentRunEventEntity saved = captor.getValue();
+        assertThat(saved.getOwnerKey()).isEqualTo("owner-1");
+        assertThat(saved.getAgentSessionId()).isEqualTo("agent-1");
+        assertThat(saved.getRunId()).isEqualTo("run-async");
+        assertThat(saved.getResourceId()).isEqualTo("asset-1");
+        assertThat(saved.getOperation()).isEqualTo("KB_VECTORIZE");
+        assertThat(saved.getArgumentsHash()).isNull();
+        assertThat(saved.getResultHash()).hasSize(64);
+    }
+
     private AgentMetrics.RunTracker tracker(String runId) {
         @SuppressWarnings("unchecked")
         ObjectProvider<MeterRegistry> provider = org.mockito.Mockito.mock(ObjectProvider.class);

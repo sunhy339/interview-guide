@@ -101,6 +101,7 @@ public class AgentContextToolCallbackFactory {
     private final PromptSanitizer promptSanitizer;
     private final ObjectMapper objectMapper;
     private AgentRunStateService runStateService;
+    private AgentAsyncOperationService asyncOperationService;
 
     public AgentContextToolCallbackFactory(
         AgentInterviewContextService interviewContextService,
@@ -126,6 +127,11 @@ public class AgentContextToolCallbackFactory {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     void setRunStateService(AgentRunStateService runStateService) {
         this.runStateService = runStateService;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setAsyncOperationService(AgentAsyncOperationService asyncOperationService) {
+        this.asyncOperationService = asyncOperationService;
     }
 
     public List<ToolCallback> callbacks() {
@@ -473,6 +479,16 @@ public class AgentContextToolCallbackFactory {
                 submitted.assetId(), submitted.originalFilename(), submitted.reviewStatus(),
                 submitted.securityFlagged(), submitted.securityNotice(), submitted.knowledgeBaseId()
             ));
+        }
+        if (asyncOperationService != null && submitted.knowledgeBaseId() != null) {
+            try {
+                asyncOperationService.registerKnowledgeBaseVectorization(
+                    context.ownerKey(), context.agentSessionId(), context.runId(),
+                    submitted.assetId(), submitted.knowledgeBaseId()
+                );
+            } catch (RuntimeException ignored) {
+                // 已投递的向量任务不能因对账记录失败而被误报为失败；状态工具仍可读取真实状态。
+            }
         }
         return emit(new AssetActionToolResult(
             "agent-context-asset.v1", "SUBMITTED", "KB_IMPORT_SUBMITTED", "ASYNC_JOB_SUBMITTED", true, false,

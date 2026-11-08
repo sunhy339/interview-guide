@@ -10,6 +10,8 @@ public record AgentRunEventResponse(
     String modelTurnId,
     String toolCallId,
     String toolName,
+    String resourceId,
+    String operation,
     String argumentsHash,
     String resultHash,
     String providerResponseId,
@@ -24,6 +26,7 @@ public record AgentRunEventResponse(
         return new AgentRunEventResponse(
             event.getRunId(), event.getAgentSessionId(), event.getEventType(),
             event.getModelTurnId(), event.getToolCallId(), event.getToolName(),
+            event.getResourceId(), event.getOperation(),
             event.getArgumentsHash(), event.getResultHash(), event.getProviderResponseId(),
             event.getProviderResponseIdsHash(), event.getProviderToolCallIdsHash(),
             event.getProviderResponseCount(), event.getProviderToolCallCount(),

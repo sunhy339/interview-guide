@@ -60,6 +60,24 @@ public class AgentRunEventService {
         );
     }
 
+    /** 记录没有内存 RunTracker 的异步任务状态，但仍严格绑定 owner/session/run。 */
+    public void appendForContext(
+        String ownerKey,
+        String agentSessionId,
+        String runId,
+        String eventType,
+        String resourceId,
+        String operation,
+        String result,
+        String status
+    ) {
+        appendInternal(
+            ownerKey, agentSessionId, runId, eventType, null, null, null,
+            resourceId, operation, null, result, status,
+            null, null, null, null, null
+        );
+    }
+
     /**
      * 记录一个模型轮次聚合后的 Provider 元数据，不保存 Provider 消息正文。
      */
@@ -94,20 +112,51 @@ public class AgentRunEventService {
         Integer providerResponseCount,
         Integer providerToolCallCount
     ) {
+        if (tracker == null || tracker.auditContext() == null) {
+            return;
+        }
+        AgentMetrics.AuditContext context = tracker.auditContext();
+        appendInternal(
+            context.ownerKey(), context.agentSessionId(), context.runId(), eventType,
+            modelTurnId, toolCallId, toolName, null, null, arguments, result, status,
+            providerResponseId, providerResponseIdsHash, providerToolCallIdsHash,
+            providerResponseCount, providerToolCallCount
+        );
+    }
+
+    private void appendInternal(
+        String ownerKey,
+        String agentSessionId,
+        String runId,
+        String eventType,
+        String modelTurnId,
+        String toolCallId,
+        String toolName,
+        String resourceId,
+        String operation,
+        String arguments,
+        String result,
+        String status,
+        String providerResponseId,
+        String providerResponseIdsHash,
+        String providerToolCallIdsHash,
+        Integer providerResponseCount,
+        Integer providerToolCallCount
+    ) {
         try {
-            if (tracker == null || tracker.auditContext() == null
-                || blank(tracker.auditContext().runId()) || blank(eventType)) {
+            if (blank(runId) || blank(eventType)) {
                 return;
             }
-            AgentMetrics.AuditContext context = tracker.auditContext();
             repository.save(AgentRunEventEntity.builder()
-                .runId(clean(context.runId(), 64))
-                .ownerKey(clean(context.ownerKey(), 64))
-                .agentSessionId(clean(context.agentSessionId(), 64))
+                .runId(clean(runId, 64))
+                .ownerKey(clean(ownerKey, 64))
+                .agentSessionId(clean(agentSessionId, 64))
                 .eventType(cleanStable(eventType, MAX_EVENT_TYPE))
                 .modelTurnId(cleanStable(modelTurnId, 64))
                 .toolCallId(cleanStable(toolCallId, 128))
                 .toolName(cleanStable(toolName, MAX_TOOL_NAME))
+                .resourceId(cleanStable(resourceId, 128))
+                .operation(cleanStable(operation, 64))
                 .argumentsHash(arguments == null ? null : hash(arguments))
                 .resultHash(result == null ? null : hash(result))
                 .providerResponseId(cleanStable(providerResponseId, 128))

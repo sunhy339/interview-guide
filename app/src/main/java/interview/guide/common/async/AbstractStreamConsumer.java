@@ -116,28 +116,34 @@ public abstract class AbstractStreamConsumer<T> {
 
         try {
             if (shouldSkip(payload)) {
+                afterTaskSkipped(payload);
                 ackMessage(messageId);
                 log.info("{} task skipped: {}", taskDisplayName(), payloadIdentifier(payload));
                 return;
             }
             if (!tryMarkProcessing(payload)) {
+                afterTaskNotClaimed(payload);
                 ackMessage(messageId);
                 log.info("{} task was not claimed: {}", taskDisplayName(), payloadIdentifier(payload));
                 return;
             }
+            afterProcessingClaimed(payload);
             processBusiness(payload);
             markCompleted(payload);
+            afterBusinessCompleted(payload);
             ackMessage(messageId);
             log.info("{} task completed: {}", taskDisplayName(), payloadIdentifier(payload));
         } catch (Exception e) {
             log.error("{} task failed: {}, error={}", taskDisplayName(), payloadIdentifier(payload),
                 ErrorLogSanitizer.summarize(e), ErrorLogSanitizer.forLogging(e));
             if (retryCount < AsyncTaskStreamConstants.MAX_RETRY_COUNT) {
+                afterRetryScheduled(payload);
                 retryMessage(payload, retryCount + 1);
             } else {
                 markFailed(payload, truncateError(
                     taskDisplayName() + " failed after retry " + retryCount
                 ));
+                afterBusinessFailed(payload);
             }
             ackMessage(messageId);
         }
@@ -208,4 +214,28 @@ public abstract class AbstractStreamConsumer<T> {
     protected abstract void markFailed(T payload, String error);
 
     protected abstract void retryMessage(T payload, int retryCount);
+
+    /** 业务领取成功后的附加观测，不改变主任务状态机。 */
+    protected void afterProcessingClaimed(T payload) {
+    }
+
+    /** 业务完成后的附加观测，不改变主任务状态机。 */
+    protected void afterBusinessCompleted(T payload) {
+    }
+
+    /** 可重试失败后的附加观测，不改变主任务状态机。 */
+    protected void afterRetryScheduled(T payload) {
+    }
+
+    /** 达到最大重试次数后的附加观测，不改变主任务状态机。 */
+    protected void afterBusinessFailed(T payload) {
+    }
+
+    /** 任务已处于可跳过状态时的附加观测。 */
+    protected void afterTaskSkipped(T payload) {
+    }
+
+    /** 任务未被当前消费者领取时的附加观测。 */
+    protected void afterTaskNotClaimed(T payload) {
+    }
 }
