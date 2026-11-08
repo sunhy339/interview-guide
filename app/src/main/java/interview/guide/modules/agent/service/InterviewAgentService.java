@@ -9,6 +9,7 @@ import interview.guide.modules.agent.model.AgentHistoryMessage;
 import interview.guide.modules.agent.model.AgentMessageRequest;
 import interview.guide.modules.agent.model.AgentStreamEvent;
 import interview.guide.modules.agent.model.AgentLoopTraceItem;
+import interview.guide.modules.agent.model.AgentProviderResponseTrace;
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.metrics.AgentRunBudgetExceededException;
 import lombok.extern.slf4j.Slf4j;
@@ -92,6 +93,7 @@ public class InterviewAgentService {
     private final AgentContextToolCallbackFactory agentContextToolCallbackFactory;
     private final tools.jackson.databind.ObjectMapper objectMapper;
     private AgentRunStateService runStateService;
+    private AgentRunEventService runEventService;
     private final Set<String> activeSessions = ConcurrentHashMap.newKeySet();
     private final Map<String, Sinks.One<Void>> cancellationSignals = new ConcurrentHashMap<>();
     private final Map<String, AgentTaskHandle> activeTasks = new ConcurrentHashMap<>();
@@ -174,6 +176,12 @@ public class InterviewAgentService {
     @Autowired(required = false)
     void setRunStateService(AgentRunStateService runStateService) {
         this.runStateService = runStateService;
+    }
+
+    /** Provider Trace 在迁移期可选接入；缺少事件表时不影响既有流式回答。 */
+    @Autowired(required = false)
+    void setRunEventService(AgentRunEventService runEventService) {
+        this.runEventService = runEventService;
     }
 
     /**
@@ -728,6 +736,7 @@ public class InterviewAgentService {
                             return () -> {
                                 AgentMetrics.ModelCallTracker modelCall = agentMetrics.startModelCall(providerId, runTracker);
                                 String modelTurnId = agentMetrics.modelTurnId(modelCall);
+                                AgentProviderResponseTrace providerTrace = new AgentProviderResponseTrace();
                                 recordRunTrace(
                                     runTracker, "MODEL_STARTED", "agent-model", providerId,
                                     compacted ? "compacted" : "normal"
@@ -786,10 +795,11 @@ public class InterviewAgentService {
                                         // 流的兼容性；真实 Spring AI 2.0 Provider 会走 usage 分支。
                                         return new ModelStream(streamSpec.content(), modelCall);
                                     }
-                                    Flux<String> content = chatResponses.handle((response, sink) -> {
+                                    Flux<String> content = chatResponses.<String>handle((response, sink) -> {
                                         if (response == null) {
                                             return;
                                         }
+                                        providerTrace.observe(response);
                                         if (response.getMetadata() != null
                                             && response.getMetadata().getUsage() != null) {
                                             var usage = response.getMetadata().getUsage();
@@ -807,6 +817,17 @@ public class InterviewAgentService {
                                             : response.getResult().getOutput().getText();
                                         if (text != null && !text.isEmpty()) {
                                             sink.next(text);
+                                        }
+                                    }).doFinally(signal -> {
+                                        AgentProviderResponseTrace.Snapshot trace = providerTrace.snapshot();
+                                        if (runEventService != null) {
+                                            runEventService.appendProviderResponse(
+                                                runTracker, modelTurnId, trace,
+                                                signal.name().toLowerCase(Locale.ROOT)
+                                            );
+                                        }
+                                        if (runStateService != null) {
+                                            runStateService.modelResponseObserved(runTracker, trace);
                                         }
                                     });
                                     return new ModelStream(content, modelCall);

@@ -1,6 +1,7 @@
 package interview.guide.modules.agent.service;
 
 import interview.guide.modules.agent.model.AgentChatSessionEntity;
+import interview.guide.modules.agent.model.AgentProviderResponseTrace;
 import interview.guide.modules.agent.model.AgentRunStateEntity;
 import interview.guide.modules.agent.model.AgentRunStatus;
 import interview.guide.modules.agent.metrics.AgentMetrics;
@@ -154,6 +155,34 @@ class AgentRunStateServiceTest {
         assertThat(state.getToolName()).isEqualTo("schedule_list");
         assertThat(state.getToolResultReference()).startsWith("sha256:");
         assertThat(state.getPendingApproval()).isFalse();
+    }
+
+    @Test
+    void checkpointsProviderResponseMetadataWithoutTreatingItAsBusinessSuccess() {
+        AgentRunStateEntity state = AgentRunStateEntity.builder()
+            .runId("run-1")
+            .agentSessionId("agent-1")
+            .status(AgentRunStatus.RUNNING)
+            .build();
+        when(repository.findByRunId("run-1")).thenReturn(Optional.of(state));
+        when(repository.save(any(AgentRunStateEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        AgentProviderResponseTrace trace = new AgentProviderResponseTrace();
+        trace.observe(new org.springframework.ai.chat.model.ChatResponse(
+            java.util.List.of(new org.springframework.ai.chat.model.Generation(
+                new org.springframework.ai.chat.messages.AssistantMessage("回答")
+            )),
+            org.springframework.ai.chat.metadata.ChatResponseMetadata.builder()
+                .id("response-1").build()
+        ));
+
+        AgentRunStateService service = new AgentRunStateService(repository);
+        service.modelResponseObserved(tracker("run-1"), trace.snapshot());
+
+        assertThat(state.getProviderResponseId()).isEqualTo("response-1");
+        assertThat(state.getProviderResponseIdsHash()).hasSize(64);
+        assertThat(state.getProviderResponseCount()).isEqualTo(1);
+        assertThat(state.getModelTurnStatus()).isNull();
     }
 
     @Test

@@ -1,6 +1,7 @@
 package interview.guide.modules.agent.service;
 
 import interview.guide.modules.agent.metrics.AgentMetrics;
+import interview.guide.modules.agent.model.AgentProviderResponseTrace;
 import interview.guide.modules.agent.model.AgentRunEventEntity;
 import interview.guide.modules.agent.model.AgentRunEventResponse;
 import interview.guide.modules.agent.repository.AgentRunEventRepository;
@@ -65,6 +66,33 @@ class AgentRunEventServiceTest {
         verify(repository).findTop200ByOwnerKeyAndAgentSessionIdAndRunIdOrderByIdAsc(
             "owner-1", "agent-1", "run-1"
         );
+    }
+
+    @Test
+    void persistsProviderResponseCorrelationWithoutProviderMessageContent() {
+        when(repository.save(any(AgentRunEventEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        AgentProviderResponseTrace trace = new AgentProviderResponseTrace();
+        trace.observe(new org.springframework.ai.chat.model.ChatResponse(
+            List.of(new org.springframework.ai.chat.model.Generation(
+                new org.springframework.ai.chat.messages.AssistantMessage("不可落库正文")
+            )),
+            org.springframework.ai.chat.metadata.ChatResponseMetadata.builder()
+                .id("response-1").model("provider-model").build()
+        ));
+
+        new AgentRunEventService(repository).appendProviderResponse(
+            tracker("run-provider"), "turn-1", trace.snapshot(), "on_complete"
+        );
+
+        ArgumentCaptor<AgentRunEventEntity> captor = ArgumentCaptor.forClass(AgentRunEventEntity.class);
+        verify(repository).save(captor.capture());
+        AgentRunEventEntity saved = captor.getValue();
+        assertThat(saved.getEventType()).isEqualTo("MODEL_PROVIDER_RESPONSE");
+        assertThat(saved.getProviderResponseId()).isEqualTo("response-1");
+        assertThat(saved.getProviderResponseIdsHash()).hasSize(64);
+        assertThat(saved.getProviderResponseCount()).isEqualTo(1);
+        assertThat(saved.toString()).doesNotContain("不可落库正文");
     }
 
     private AgentMetrics.RunTracker tracker(String runId) {

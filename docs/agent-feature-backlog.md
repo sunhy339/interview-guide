@@ -17,7 +17,7 @@
 | 提示注入与 owner 隔离 | 已完成 | 工具边界再次校验用户意图、owner、参数和结果可信边界 |
 | 长期记忆治理 | 已完成 | 默认只读；写入需草稿和确认；支持来源、置信度、过期和撤回 |
 | 运行恢复基础层 | 已完成第一阶段 | 会话、RunState、租约、审批续跑和已完成动作可恢复；不重复执行已提交副作用 |
-| 模型与工具低敏 Trace | 已完成第一阶段 | 记录 `modelTurnId`、Run 内 `toolCallId` 和开始/完成/失败事件，不记录正文或隐藏推理 |
+| 模型与工具低敏 Trace | 已完成第一阶段，Provider 关联已补入 | 记录 `modelTurnId`、Run 内 `toolCallId`、Provider response ID/工具批次摘要和开始/完成/失败事件；不记录正文或隐藏推理 |
 | 日程工具结果契约 | 已完成第一阶段 | 校验状态、说明、动作类型和多候选 ID，不改变创建/取消/修改确认链路 |
 | 默认交互路径 | 已完成代码收敛 | 主路径保持“输入问题—得到回答”；Loop、Trace、用量只作为诊断信息 |
 
@@ -40,7 +40,8 @@
 
 ### P1.2 Durable RunState 与内部轮次
 
-补齐 ToolCallingAdvisor 内部模型消息、provider tool-call ID、tool-call batch、
+Provider response ID、provider tool-call ID 批次摘要和轮次片段计数已经进入低敏 Run Event/RunState，
+可以把真实 Provider 的响应轮次和本地 Run 关联起来；仍需补齐 ToolCallingAdvisor 内部模型消息、
 结构化工具结果和等待状态的可恢复检查点。目标是区分：
 
 ```text
@@ -48,7 +49,8 @@
 ```
 
 第一阶段允许安全重新生成；精确恢复前必须先解决重复副作用、跨实例租约和版本兼容，
-因此不能直接替换当前安全恢复路径。
+因此不能直接替换当前安全恢复路径。当前 Provider 关联用于诊断和验收，不会让恢复流程根据不完整的
+Provider 元数据重放工具。
 
 ### P1.3 领域结果契约
 

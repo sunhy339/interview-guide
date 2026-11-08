@@ -1,6 +1,7 @@
 package interview.guide.modules.agent.service;
 
 import interview.guide.modules.agent.metrics.AgentMetrics;
+import interview.guide.modules.agent.model.AgentProviderResponseTrace;
 import interview.guide.modules.agent.model.AgentRunEventEntity;
 import interview.guide.modules.agent.model.AgentRunEventResponse;
 import interview.guide.modules.agent.repository.AgentRunEventRepository;
@@ -53,6 +54,46 @@ public class AgentRunEventService {
         String result,
         String status
     ) {
+        appendInternal(
+            tracker, eventType, modelTurnId, toolCallId, toolName, arguments, result, status,
+            null, null, null, null, null
+        );
+    }
+
+    /**
+     * 记录一个模型轮次聚合后的 Provider 元数据，不保存 Provider 消息正文。
+     */
+    public void appendProviderResponse(
+        AgentMetrics.RunTracker tracker,
+        String modelTurnId,
+        AgentProviderResponseTrace.Snapshot trace,
+        String status
+    ) {
+        if (trace == null || !trace.hasProviderMetadata()) {
+            return;
+        }
+        appendInternal(
+            tracker, "MODEL_PROVIDER_RESPONSE", modelTurnId, null, null, null, null, status,
+            trace.responseId(), trace.responseIdsHash(), trace.toolCallIdsHash(),
+            trace.responseCount(), trace.toolCallCount()
+        );
+    }
+
+    private void appendInternal(
+        AgentMetrics.RunTracker tracker,
+        String eventType,
+        String modelTurnId,
+        String toolCallId,
+        String toolName,
+        String arguments,
+        String result,
+        String status,
+        String providerResponseId,
+        String providerResponseIdsHash,
+        String providerToolCallIdsHash,
+        Integer providerResponseCount,
+        Integer providerToolCallCount
+    ) {
         try {
             if (tracker == null || tracker.auditContext() == null
                 || blank(tracker.auditContext().runId()) || blank(eventType)) {
@@ -69,6 +110,11 @@ public class AgentRunEventService {
                 .toolName(cleanStable(toolName, MAX_TOOL_NAME))
                 .argumentsHash(arguments == null ? null : hash(arguments))
                 .resultHash(result == null ? null : hash(result))
+                .providerResponseId(cleanStable(providerResponseId, 128))
+                .providerResponseIdsHash(cleanStable(providerResponseIdsHash, 64))
+                .providerToolCallIdsHash(cleanStable(providerToolCallIdsHash, 64))
+                .providerResponseCount(providerResponseCount)
+                .providerToolCallCount(providerToolCallCount)
                 .status(cleanStable(status, MAX_STATUS))
                 .build());
         } catch (RuntimeException error) {

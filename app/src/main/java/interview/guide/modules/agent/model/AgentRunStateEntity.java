@@ -89,6 +89,22 @@ public class AgentRunStateEntity {
     @Column(name = "model_result_reference", length = 128)
     private String modelResultReference;
 
+    /** 最近一次模型轮次看到的 Provider 响应元数据；不保存消息正文。 */
+    @Column(name = "provider_response_id", length = 128)
+    private String providerResponseId;
+
+    @Column(name = "provider_response_ids_hash", length = 64)
+    private String providerResponseIdsHash;
+
+    @Column(name = "provider_tool_call_ids_hash", length = 64)
+    private String providerToolCallIdsHash;
+
+    @Column(name = "provider_response_count")
+    private Integer providerResponseCount;
+
+    @Column(name = "provider_tool_call_count")
+    private Integer providerToolCallCount;
+
     /** 审批事务已提交但续跑任务尚未启动时，用于重启后找回原动作。 */
     @Column(name = "resume_action_id", length = 64)
     private String resumeActionId;
