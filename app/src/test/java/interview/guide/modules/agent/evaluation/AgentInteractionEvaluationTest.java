@@ -111,6 +111,8 @@ class AgentInteractionEvaluationTest {
             compareRequiredTraceResources(violations, index, expected, actual);
             compareRequiredRunEventTypes(violations, index, expected, actual);
             compareForbiddenRunEventTypes(violations, index, expected, actual);
+            compareRequiredSourceKinds(violations, index, expected, actual);
+            compareForbiddenSourceKinds(violations, index, expected, actual);
             validateToolBatchEvents(violations, index, actual);
             if ("confirm_latest_action".equals(text(expected, "type"))
                 || "cancel_latest_action".equals(text(expected, "type"))) {
@@ -239,6 +241,45 @@ class AgentInteractionEvaluationTest {
         for (String eventType : forbidden) {
             if (actualEvents.contains(eventType)) {
                 violations.add(prefix + " Run 事件不应出现: " + eventType);
+            }
+        }
+    }
+
+    private void compareRequiredSourceKinds(
+        List<String> violations,
+        int index,
+        Map<String, Object> expected,
+        Map<String, Object> actual
+    ) {
+        List<String> required = strings(expected.get("expectedRunSourceKinds"));
+        if (required.isEmpty()) {
+            return;
+        }
+        List<String> actualSources = strings(actual.get("runSourceKinds"));
+        String prefix = "第 " + (index + 1) + " 步";
+        for (String source : required) {
+            if (!actualSources.contains(source)) {
+                violations.add(prefix + " Run 缺少上下文来源: " + source
+                    + "，实际来源: " + String.join(",", actualSources));
+            }
+        }
+    }
+
+    private void compareForbiddenSourceKinds(
+        List<String> violations,
+        int index,
+        Map<String, Object> expected,
+        Map<String, Object> actual
+    ) {
+        List<String> forbidden = strings(expected.get("forbiddenRunSourceKinds"));
+        if (forbidden.isEmpty()) {
+            return;
+        }
+        List<String> actualSources = strings(actual.get("runSourceKinds"));
+        String prefix = "第 " + (index + 1) + " 步";
+        for (String source : forbidden) {
+            if (actualSources.contains(source)) {
+                violations.add(prefix + " Run 不应读取上下文来源: " + source);
             }
         }
     }
