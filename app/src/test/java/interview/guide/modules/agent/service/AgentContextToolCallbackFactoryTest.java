@@ -112,6 +112,36 @@ class AgentContextToolCallbackFactoryTest {
     }
 
     @Test
+    void knowledgeSearchPrefersKnowledgeBasesBoundToCurrentAgentSession() {
+        KnowledgeBaseEntity knowledgeBase = new KnowledgeBaseEntity();
+        knowledgeBase.setId(9L);
+        knowledgeBase.setName("当前会话资料");
+        knowledgeBase.setVectorStatus(VectorStatus.COMPLETED);
+        when(contextBindingService.list("agent-1", "owner-1")).thenReturn(List.of(
+            new interview.guide.modules.agent.model.AgentContextBindingResponse(
+                "KNOWLEDGE_BASE", null, "9", "当前会话资料", "SESSION", true, null
+            )
+        ));
+        when(knowledgeBaseRepository.findAccessibleById(9L, "owner-1"))
+            .thenReturn(java.util.Optional.of(knowledgeBase));
+        when(knowledgeBaseQueryService.retrieveOnly(eq(List.of(9L)), eq("当前问题"), any()))
+            .thenReturn(new RagQueryExecution(
+                "当前问题", "当前问题", List.of("当前问题"), 4, 0.2,
+                List.of(), 0, 2, 0, null, "NO_RESULT"
+            ));
+
+        String result = tool("knowledge_base_search").call(
+            "{\"query\":\"当前问题\"}", context("请使用知识库检索当前问题")
+        );
+
+        assertThat(result).contains("NO_RESULT");
+        verify(knowledgeBaseQueryService).retrieveOnly(eq(List.of(9L)), eq("当前问题"), any());
+        verify(knowledgeBaseRepository, never()).findAccessibleByOwnerAndVectorStatus(
+            eq("owner-1"), eq(VectorStatus.COMPLETED), any()
+        );
+    }
+
+    @Test
     void knowledgeSearchDoesNotClaimSourcesWhenNoCompletedBaseExists() {
         when(knowledgeBaseRepository.findAccessibleByOwnerAndVectorStatus(
             eq("owner-1"), eq(VectorStatus.COMPLETED), any()

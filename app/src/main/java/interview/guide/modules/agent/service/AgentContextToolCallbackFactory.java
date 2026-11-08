@@ -262,6 +262,16 @@ public class AgentContextToolCallbackFactory {
         }
 
         List<Long> requestedIds = knowledgeBaseIds(input);
+        if (requestedIds.isEmpty() && contextBindingService != null) {
+            requestedIds = contextBindingService.list(context.agentSessionId(), context.ownerKey()).stream()
+                .filter(binding -> "KNOWLEDGE_BASE".equalsIgnoreCase(binding.contextType()))
+                .map(AgentContextBindingResponse::resourceId)
+                .map(this::positiveLongOrNull)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .limit(MAX_KNOWLEDGE_BASES)
+                .toList();
+        }
         List<KnowledgeBaseEntity> candidates = requestedIds.isEmpty()
             ? knowledgeBaseRepository.findAccessibleByOwnerAndVectorStatus(
                 context.ownerKey(), VectorStatus.COMPLETED, PageRequest.of(0, MAX_KNOWLEDGE_BASES)
@@ -316,6 +326,15 @@ public class AgentContextToolCallbackFactory {
             result.add(item.longValue());
         }
         return List.copyOf(result);
+    }
+
+    private Long positiveLongOrNull(String value) {
+        try {
+            long id = Long.parseLong(value);
+            return id > 0 ? id : null;
+        } catch (RuntimeException error) {
+            return null;
+        }
     }
 
     private String sourceName(Map<String, Object> metadata) {
