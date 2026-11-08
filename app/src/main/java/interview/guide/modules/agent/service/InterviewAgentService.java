@@ -10,6 +10,7 @@ import interview.guide.modules.agent.model.AgentMessageRequest;
 import interview.guide.modules.agent.model.AgentStreamEvent;
 import interview.guide.modules.agent.model.AgentLoopTraceItem;
 import interview.guide.modules.agent.model.AgentProviderResponseTrace;
+import interview.guide.modules.agent.model.AgentSource;
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.metrics.AgentRunBudgetExceededException;
 import lombok.extern.slf4j.Slf4j;
@@ -1490,21 +1491,31 @@ public class InterviewAgentService {
         );
         return providerStream
             .concatWith(Flux.defer(() -> {
+                List<AgentSource> effectiveSources = mergeSources(sources, runTracker);
+                if (effectiveSources.size() == (sources == null ? 0 : sources.size())) {
+                    return Flux.empty();
+                }
+                // 工具是在模型流内部调用的，来源只有此时才知道；补发一次完整来源快照，
+                // 让前端和异步进度落库都能看到动态 RAG 证据。
+                return Flux.just(AgentStreamEvent.sources(effectiveSources));
+            }))
+            .concatWith(Flux.defer(() -> {
+                List<AgentSource> effectiveSources = mergeSources(sources, runTracker);
                 AgentAnswerGroundingPolicy.Assessment grounding = AgentAnswerGroundingPolicy.assess(
-                    output.get().toString(), sources
+                    output.get().toString(), effectiveSources
                 );
                 recordRunTrace(
                     runTracker, "GROUNDING_CHECK", "agent-grounding", "answer",
                     grounding.status().auditValue()
                 );
                 AgentSourceIntegrityPolicy.Assessment sourceIntegrity =
-                    AgentSourceIntegrityPolicy.assess(sources);
+                    AgentSourceIntegrityPolicy.assess(effectiveSources);
                 recordRunTrace(
                     runTracker, "SOURCE_INTEGRITY_CHECK", "agent-grounding", "sources",
                     sourceIntegrity.auditValue()
                 );
                 AgentEvidenceAssessment.Assessment evidence = AgentEvidenceAssessment.assess(
-                    output.get().toString(), sources, ragExpected
+                    output.get().toString(), effectiveSources, ragExpected
                 );
                 recordRunTrace(
                     runTracker, "EVIDENCE_ASSESSMENT", "agent-evidence", "answer",
@@ -1557,6 +1568,28 @@ public class InterviewAgentService {
                     default -> "failure";
                 });
             });
+    }
+
+    private List<AgentSource> mergeSources(
+        List<AgentSource> staticSources, AgentMetrics.RunTracker runTracker
+    ) {
+        LinkedHashMap<String, AgentSource> merged = new LinkedHashMap<>();
+        if (staticSources != null) {
+            staticSources.stream().filter(source -> source != null)
+                .forEach(source -> merged.put(sourceKey(source), source));
+        }
+        if (runTracker != null) {
+            runTracker.dynamicSources().stream().filter(source -> source != null)
+                .forEach(source -> merged.put(sourceKey(source), source));
+        }
+        return List.copyOf(merged.values());
+    }
+
+    private String sourceKey(AgentSource source) {
+        if (source.sourceId() != null && !source.sourceId().isBlank()) {
+            return source.kind() + ":" + source.sourceId();
+        }
+        return String.valueOf(source.kind()) + ":" + source.reference() + ":" + source.title();
     }
 
     private void persistRunUsage(

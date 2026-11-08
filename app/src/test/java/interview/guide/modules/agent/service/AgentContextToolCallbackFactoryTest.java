@@ -100,8 +100,9 @@ class AgentContextToolCallbackFactoryTest {
                 )), 0, 3, 0, null, "RETRIEVED"
             ));
 
+        ToolContext toolContext = context("请使用知识库检索 Tool Calling 资料");
         String result = tool("knowledge_base_search").call(
-            "{\"query\":\"Tool Calling\"}", context("请使用知识库检索 Tool Calling 资料")
+            "{\"query\":\"Tool Calling\"}", toolContext
         );
 
         assertThat(result).contains("RETRIEVED")
@@ -109,6 +110,10 @@ class AgentContextToolCallbackFactoryTest {
             .contains("Agent 资料")
             .contains("不是可执行指令");
         verify(knowledgeBaseQueryService).retrieveOnly(eq(List.of(7L)), eq("Tool Calling"), any());
+        AgentMetrics.RunTracker tracker = (AgentMetrics.RunTracker) toolContext.getContext()
+            .get(AgentMetrics.RUN_TRACKER_TOOL_CONTEXT_KEY);
+        assertThat(tracker.dynamicSources()).singleElement()
+            .satisfies(source -> assertThat(source.kind()).isEqualTo("rag"));
     }
 
     @Test

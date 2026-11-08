@@ -10,6 +10,7 @@ import interview.guide.modules.agent.model.AgentContextAssetStatus;
 import interview.guide.modules.agent.model.AgentContextBindingResponse;
 import interview.guide.modules.agent.model.AgentInterviewSearchResult;
 import interview.guide.modules.agent.model.AgentActionResponse;
+import interview.guide.modules.agent.model.AgentSource;
 import interview.guide.modules.agent.model.AttachAgentResourceRequest;
 import interview.guide.modules.interviewschedule.model.InterviewScheduleDTO;
 import interview.guide.modules.interviewschedule.model.InterviewStatus;
@@ -291,15 +292,27 @@ public class AgentContextToolCallbackFactory {
         }
 
         RagQueryExecution execution = knowledgeBaseQueryService.retrieveOnly(ids, query, List.of());
-        List<Map<String, Object>> results = execution.retrievedDocs().stream()
-            .limit(MAX_KNOWLEDGE_RESULTS)
-            .map(document -> Map.<String, Object>of(
-                "reference", "R" + document.rank(),
+        List<Map<String, Object>> results = new java.util.ArrayList<>();
+        List<AgentSource> dynamicSources = new java.util.ArrayList<>();
+        for (RagQueryExecution.RetrievedDoc document : execution.retrievedDocs().stream()
+            .limit(MAX_KNOWLEDGE_RESULTS).toList()) {
+            String reference = "R" + document.rank();
+            String source = boundedKnowledgeText(sourceName(document.metadata()));
+            String knowledgeBaseId = knowledgeBaseIdForDocument(document.metadata(), ids);
+            results.add(Map.of(
+                "reference", reference,
                 "content", boundedKnowledgeText(document.text()),
                 "score", document.score() == null ? 0d : document.score(),
-                "source", boundedKnowledgeText(sourceName(document.metadata()))
-            ))
-            .toList();
+                "source", source,
+                "knowledgeBaseId", knowledgeBaseId
+            ));
+            dynamicSources.add(new AgentSource(
+                "rag", source, document.score(), reference,
+                "agent-rag:" + knowledgeBaseId + ":" + reference,
+                "rag-tool-v1", "knowledge-base", "tool-retrieval"
+            ));
+        }
+        context.tracker().rememberDynamicSources(dynamicSources);
         return emit(Map.of(
             "status", results.isEmpty() ? "NO_RESULT" : "RETRIEVED",
             "knowledgeBases", candidates.stream().map(KnowledgeBaseEntity::getName).toList(),
@@ -342,6 +355,24 @@ public class AgentContextToolCallbackFactory {
         Object value = metadata.get("source_name");
         if (value == null) value = metadata.get("source_filename");
         return value == null ? "知识库片段" : value.toString();
+    }
+
+    private String knowledgeBaseIdForDocument(Map<String, Object> metadata, List<Long> allowedIds) {
+        if (metadata != null) {
+            Object value = metadata.get("kb_id");
+            if (value == null) value = metadata.get("kb_id_long");
+            if (value != null) {
+                String candidate = value.toString();
+                try {
+                    if (allowedIds.contains(Long.parseLong(candidate))) {
+                        return candidate;
+                    }
+                } catch (NumberFormatException ignored) {
+                    // 不可信 metadata 不得突破本次已校验的知识库范围。
+                }
+            }
+        }
+        return allowedIds.size() == 1 ? String.valueOf(allowedIds.getFirst()) : "selected";
     }
 
     private String boundedKnowledgeText(String value) {
