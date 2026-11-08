@@ -6,6 +6,7 @@ import interview.guide.common.config.LlmProviderProperties;
 import interview.guide.modules.agent.model.AgentMessageRequest;
 import interview.guide.modules.agent.model.AgentStreamEvent;
 import interview.guide.modules.agent.model.AgentHistoryMessage;
+import interview.guide.modules.agent.model.AgentProviderResponseTrace;
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -629,6 +630,7 @@ class InterviewAgentServiceTest {
         when(streamResponse.chatResponse()).thenReturn(Flux.just(chatResponse));
         when(chatResponse.getMetadata()).thenReturn(metadata);
         when(metadata.getUsage()).thenReturn(usage);
+        when(metadata.getId()).thenReturn("response-1");
         when(metadata.getModel()).thenReturn("gpt-5.6-luna");
         when(usage.getPromptTokens()).thenReturn(120);
         when(usage.getCompletionTokens()).thenReturn(80);
@@ -641,6 +643,8 @@ class InterviewAgentServiceTest {
             contextService, conversationService, providerRegistry, promptSanitizer, resourceLoader, agentMetrics,
             agentProgressWriter, retryProperties
         );
+        AgentRunEventService runEventService = mock(AgentRunEventService.class);
+        service.setRunEventService(runEventService);
 
         List<AgentStreamEvent> events = service.stream(
             "usage-session", new AgentMessageRequest("review", "请复盘", List.of(), "primary")
@@ -650,6 +654,10 @@ class InterviewAgentServiceTest {
         assertThat(events).anySatisfy(event -> assertThat(event.content()).isEqualTo("带 usage 的回答"));
         verify(agentMetrics).observeModelUsage(isNull(), eq(120), eq(80), eq(200), eq("gpt-5.6-luna"));
         verify(conversationService).completeMessage(10L, "带 usage 的回答", "run-1");
+        ArgumentCaptor<AgentProviderResponseTrace.Snapshot> trace =
+            ArgumentCaptor.forClass(AgentProviderResponseTrace.Snapshot.class);
+        verify(runEventService).appendProviderResponse(any(), isNull(), trace.capture(), eq("on_complete"));
+        assertThat(trace.getValue().responseId()).isEqualTo("response-1");
     }
 
     @Test

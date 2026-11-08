@@ -12,6 +12,11 @@ public record AgentRunEventResponse(
     String toolName,
     String argumentsHash,
     String resultHash,
+    String providerResponseId,
+    String providerResponseIdsHash,
+    String providerToolCallIdsHash,
+    Integer providerResponseCount,
+    Integer providerToolCallCount,
     String status,
     LocalDateTime createdAt
 ) {
@@ -19,7 +24,10 @@ public record AgentRunEventResponse(
         return new AgentRunEventResponse(
             event.getRunId(), event.getAgentSessionId(), event.getEventType(),
             event.getModelTurnId(), event.getToolCallId(), event.getToolName(),
-            event.getArgumentsHash(), event.getResultHash(), event.getStatus(), event.getCreatedAt()
+            event.getArgumentsHash(), event.getResultHash(), event.getProviderResponseId(),
+            event.getProviderResponseIdsHash(), event.getProviderToolCallIdsHash(),
+            event.getProviderResponseCount(), event.getProviderToolCallCount(),
+            event.getStatus(), event.getCreatedAt()
         );
     }
 }

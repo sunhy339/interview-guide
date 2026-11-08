@@ -2,6 +2,7 @@ package interview.guide.modules.agent.service;
 
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.model.AgentChatSessionEntity;
+import interview.guide.modules.agent.model.AgentProviderResponseTrace;
 import interview.guide.modules.agent.model.AgentRunStateEntity;
 import interview.guide.modules.agent.model.AgentRunStatus;
 import interview.guide.modules.agent.repository.AgentRunStateRepository;
@@ -62,6 +63,7 @@ public class AgentRunStateService {
             state.setModelProvider(null);
             state.setModelTurnStatus(null);
             state.setModelResultReference(null);
+            clearProviderResponse(state);
             heartbeat(state);
             state.setFinishedAt(null);
             repository.save(state);
@@ -106,6 +108,7 @@ public class AgentRunStateService {
             state.setModelProvider(clean(providerId, MAX_MODEL_PROVIDER));
             state.setModelTurnStatus("STARTED");
             state.setModelResultReference(null);
+            clearProviderResponse(state);
             state.setPhase(clean(compacted ? "model_compacted" : "model", MAX_PHASE));
             state.setFinishedAt(null);
             heartbeat(state);
@@ -143,6 +146,30 @@ public class AgentRunStateService {
                 eventService.append(tracker, "MODEL_TURN_COMPLETED", state.getModelTurnId(), null,
                     null, null, null, status);
             }
+        });
+    }
+
+    /**
+     * 在模型流结束时保存 Provider 响应元数据检查点，帮助诊断工具批次和安全恢复边界。
+     * 只保存稳定 ID、摘要和数量，不代表已经完成任何业务动作。
+     */
+    public void modelResponseObserved(
+        AgentMetrics.RunTracker tracker,
+        AgentProviderResponseTrace.Snapshot trace
+    ) {
+        String runId = runId(tracker);
+        runSafely("Provider 响应检查点", runId, () -> {
+            if (blank(runId) || trace == null || !trace.hasProviderMetadata()) {
+                return;
+            }
+            AgentRunStateEntity state = findOrCreate(runId);
+            state.setProviderResponseId(clean(trace.responseId(), 128));
+            state.setProviderResponseIdsHash(clean(trace.responseIdsHash(), 64));
+            state.setProviderToolCallIdsHash(clean(trace.toolCallIdsHash(), 64));
+            state.setProviderResponseCount(Math.max(0, trace.responseCount()));
+            state.setProviderToolCallCount(Math.max(0, trace.toolCallCount()));
+            heartbeat(state);
+            repository.save(state);
         });
     }
 
@@ -423,6 +450,14 @@ public class AgentRunStateService {
         LocalDateTime now = LocalDateTime.now();
         state.setHeartbeatAt(now);
         state.setLeaseUntil(now.plusMinutes(LEASE_MINUTES));
+    }
+
+    private void clearProviderResponse(AgentRunStateEntity state) {
+        state.setProviderResponseId(null);
+        state.setProviderResponseIdsHash(null);
+        state.setProviderToolCallIdsHash(null);
+        state.setProviderResponseCount(null);
+        state.setProviderToolCallCount(null);
     }
 
     private String hash(String value) {

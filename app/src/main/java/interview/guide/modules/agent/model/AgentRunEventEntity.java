@@ -58,6 +58,24 @@ public class AgentRunEventEntity {
     @Column(name = "result_hash", length = 64)
     private String resultHash;
 
+    /** Provider 返回的稳定响应标识；可能因网关不透传而为空。 */
+    @Column(name = "provider_response_id", length = 128)
+    private String providerResponseId;
+
+    /** 同一模型轮次中多个 Provider 响应 ID 的低敏摘要。 */
+    @Column(name = "provider_response_ids_hash", length = 64)
+    private String providerResponseIdsHash;
+
+    /** 同一模型轮次中 Provider 工具调用 ID 批次的低敏摘要。 */
+    @Column(name = "provider_tool_call_ids_hash", length = 64)
+    private String providerToolCallIdsHash;
+
+    @Column(name = "provider_response_count")
+    private Integer providerResponseCount;
+
+    @Column(name = "provider_tool_call_count")
+    private Integer providerToolCallCount;
+
     @Column(length = 32)
     private String status;
 
