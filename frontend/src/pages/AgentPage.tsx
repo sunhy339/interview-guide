@@ -2258,7 +2258,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
               <div className="rounded-xl bg-slate-50 dark:bg-slate-800/70 p-3">
                 <span className="dark-text-muted">累计 Token</span>
                 <p className="mt-1 text-lg font-semibold dark-text">{usageSummary.totalTokens.toLocaleString()}</p>
-                <p className="text-[11px] dark-text-muted mt-1">输入 {usageSummary.promptTokens.toLocaleString()} · 输出 {usageSummary.completionTokens.toLocaleString()}</p>
+                <p className="text-[11px] dark-text-muted mt-1">实际输入 {usageSummary.promptTokens.toLocaleString()} · 估算输入 {usageSummary.estimatedPromptTokens.toLocaleString()} · 输出 {usageSummary.completionTokens.toLocaleString()}</p>
               </div>
               <div className="rounded-xl bg-slate-50 dark:bg-slate-800/70 p-3">
                 <span className="dark-text-muted">模型调用</span>
@@ -2339,7 +2339,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                     <span className="shrink-0 text-[11px] text-slate-400">{formatDate(run.runFinishedAt || run.createdAt)}</span>
                   </div>
                   <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">
-                    <div><span className="dark-text-muted">Token</span><p className="mt-1 font-semibold dark-text">{run.totalTokens.toLocaleString()}</p><p className="text-[11px] dark-text-muted">入 {run.promptTokens.toLocaleString()} · 出 {run.completionTokens.toLocaleString()}</p></div>
+                    <div><span className="dark-text-muted">Token</span><p className="mt-1 font-semibold dark-text">{run.totalTokens.toLocaleString()}</p><p className="text-[11px] dark-text-muted">实际入 {run.promptTokens.toLocaleString()} · 估算入 {run.estimatedPromptTokens.toLocaleString()} · 出 {run.completionTokens.toLocaleString()}</p></div>
                     <div><span className="dark-text-muted">模型调用</span><p className="mt-1 font-semibold dark-text">{run.modelCalls} 次</p></div>
                     <div><span className="dark-text-muted">耗时</span><p className="mt-1 font-semibold dark-text">{formatDurationMillis(run.durationMillis)}</p></div>
                     <div><span className="dark-text-muted">模型</span><p className="mt-1 truncate font-semibold dark-text" title={run.model || undefined}>{run.model || run.provider || '默认模型'}</p></div>
@@ -2647,7 +2647,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                   </p>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-                  <div><span className="dark-text-muted">输入 Token</span><p className="font-semibold dark-text">{runUsage?.promptTokens.toLocaleString()}</p></div>
+                  <div><span className="dark-text-muted">输入 Token</span><p className="font-semibold dark-text">{runUsage?.promptTokens.toLocaleString()}</p><p className="text-[11px] dark-text-muted">估算 {runUsage?.estimatedPromptTokens.toLocaleString()}</p></div>
                   <div><span className="dark-text-muted">输出 Token</span><p className="font-semibold dark-text">{runUsage?.completionTokens.toLocaleString()}</p></div>
                   <div><span className="dark-text-muted">模型调用</span><p className="font-semibold dark-text">{runUsage?.modelCalls} 次</p></div>
                   <div><span className="dark-text-muted">模型耗时</span><p className="font-semibold dark-text">{(runUsage?.durationMillis ?? 0) > 0 ? ((runUsage?.durationMillis ?? 0) / 1000).toFixed(1) : '--'} 秒</p></div>

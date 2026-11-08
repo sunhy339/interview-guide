@@ -238,13 +238,16 @@ class AgentMetricsTest {
         AgentMetrics metrics = metrics(true, costProperties);
         AgentMetrics.RunTracker run = metrics.startRun();
         AgentMetrics.ModelCallTracker first = metrics.startModelCall("pixel", run);
+        metrics.recordEstimatedPromptTokens(run, 1_200);
         metrics.observeModelUsage(first, 120, 80, 200, "gpt-5.6-luna");
         metrics.finishModelCall(first, "success");
         AgentMetrics.ModelCallTracker retry = metrics.startModelCall("pixel", run);
+        metrics.recordEstimatedPromptTokens(run, 100);
         metrics.observeModelUsage(retry, 10, 5, 15, "gpt-5.6-luna");
         metrics.finishModelCall(retry, "failure");
 
         assertThat(metrics.snapshot(run).promptTokens()).isEqualTo(130);
+        assertThat(metrics.snapshot(run).estimatedPromptTokens()).isEqualTo(1_300);
         assertThat(metrics.snapshot(run).completionTokens()).isEqualTo(85);
         assertThat(metrics.snapshot(run).totalTokens()).isEqualTo(215);
         assertThat(metrics.snapshot(run).modelCalls()).isEqualTo(2);

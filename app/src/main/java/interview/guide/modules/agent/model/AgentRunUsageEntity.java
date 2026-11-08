@@ -61,6 +61,11 @@ public class AgentRunUsageEntity {
     @Builder.Default
     private int promptTokens = 0;
 
+    /** Provider 未返回 usage 时的输入上下文保守估算；不作为账单 Token。 */
+    @Column(name = "estimated_prompt_tokens", nullable = false)
+    @Builder.Default
+    private int estimatedPromptTokens = 0;
+
     @Column(name = "completion_tokens", nullable = false)
     @Builder.Default
     private int completionTokens = 0;

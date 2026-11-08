@@ -734,6 +734,9 @@ public class InterviewAgentService {
                         (providerId, compacted) -> {
                             PromptVariant prompt = compacted ? compactPrompt : normalPrompt;
                             return () -> {
+                                agentMetrics.recordEstimatedPromptTokens(
+                                    runTracker, prompt.estimatedInputTokens()
+                                );
                                 AgentMetrics.ModelCallTracker modelCall = agentMetrics.startModelCall(providerId, runTracker);
                                 String modelTurnId = agentMetrics.modelTurnId(modelCall);
                                 AgentProviderResponseTrace providerTrace = new AgentProviderResponseTrace();
@@ -1965,7 +1968,9 @@ public class InterviewAgentService {
             + buildAnswerFormatInstruction(context, request, message, intentDecision)
             + "\n\n"
             + userPromptTemplate.render(variables);
-        return new PromptVariant(systemPrompt, userPrompt, buildModelHistory(budgeted.history()));
+        return new PromptVariant(
+            systemPrompt, userPrompt, buildModelHistory(budgeted.history()), budgeted.estimatedInputTokens()
+        );
     }
 
     private String buildAnswerFormatInstruction(
@@ -2238,6 +2243,8 @@ public class InterviewAgentService {
         }
     }
 
-    private record PromptVariant(String systemPrompt, String userPrompt, List<Message> history) {
+    private record PromptVariant(
+        String systemPrompt, String userPrompt, List<Message> history, int estimatedInputTokens
+    ) {
     }
 }

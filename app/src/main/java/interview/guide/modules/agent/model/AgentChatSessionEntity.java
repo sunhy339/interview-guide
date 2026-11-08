@@ -143,6 +143,10 @@ public class AgentChatSessionEntity {
     @Column(name = "run_prompt_tokens")
     private Integer runPromptTokens;
 
+    /** 最近一次运行的输入上下文估算；Provider 真实 usage 优先于该值。 */
+    @Column(name = "run_estimated_prompt_tokens")
+    private Integer runEstimatedPromptTokens;
+
     @Column(name = "run_completion_tokens")
     private Integer runCompletionTokens;
 

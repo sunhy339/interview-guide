@@ -24,6 +24,7 @@ public interface AgentRunUsageRepository extends JpaRepository<AgentRunUsageEnti
     @Query("""
         SELECT
           COALESCE(SUM(u.promptTokens), 0) AS promptTokens,
+          COALESCE(SUM(u.estimatedPromptTokens), 0) AS estimatedPromptTokens,
           COALESCE(SUM(u.completionTokens), 0) AS completionTokens,
           COALESCE(SUM(u.totalTokens), 0) AS totalTokens,
           COALESCE(SUM(u.modelCalls), 0) AS modelCalls,
@@ -43,6 +44,7 @@ public interface AgentRunUsageRepository extends JpaRepository<AgentRunUsageEnti
 
     interface AgentUsageTotalsProjection {
         Long getPromptTokens();
+        Long getEstimatedPromptTokens();
         Long getCompletionTokens();
         Long getTotalTokens();
         Long getModelCalls();

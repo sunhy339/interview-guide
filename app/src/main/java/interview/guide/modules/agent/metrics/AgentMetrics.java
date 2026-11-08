@@ -352,6 +352,13 @@ public class AgentMetrics {
         return tracker == null ? AgentRunUsage.empty() : tracker.snapshot();
     }
 
+    /** 记录本次实际选用的 Prompt 变体的保守输入估算，不参与 Provider 账单。 */
+    public void recordEstimatedPromptTokens(RunTracker tracker, int estimatedPromptTokens) {
+        if (tracker != null) {
+            tracker.recordEstimatedPromptTokens(estimatedPromptTokens);
+        }
+    }
+
     public record TokenUsage(int promptTokens, int completionTokens, int totalTokens) {
     }
 
@@ -389,6 +396,7 @@ public class AgentMetrics {
         private final AtomicInteger toolCallSequence = new AtomicInteger();
         private final AtomicInteger modelCalls = new AtomicInteger();
         private final LongAdder promptTokens = new LongAdder();
+        private final LongAdder estimatedPromptTokens = new LongAdder();
         private final LongAdder completionTokens = new LongAdder();
         private final LongAdder totalTokens = new LongAdder();
         private final LongAdder durationMillis = new LongAdder();
@@ -496,9 +504,14 @@ public class AgentMetrics {
             }
         }
 
+        private void recordEstimatedPromptTokens(int value) {
+            estimatedPromptTokens.add(Math.max(0, value));
+        }
+
         private AgentRunUsage snapshot() {
             return new AgentRunUsage(
                 (int) Math.min(Integer.MAX_VALUE, promptTokens.sum()),
+                (int) Math.min(Integer.MAX_VALUE, estimatedPromptTokens.sum()),
                 (int) Math.min(Integer.MAX_VALUE, completionTokens.sum()),
                 (int) Math.min(Integer.MAX_VALUE, totalTokens.sum()),
                 modelCalls.get(),
