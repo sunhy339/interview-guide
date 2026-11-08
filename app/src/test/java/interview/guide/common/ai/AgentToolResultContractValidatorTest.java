@@ -320,6 +320,30 @@ class AgentToolResultContractValidatorTest {
         )).isEqualTo("知识库完成状态结果不一致，未确认任何查询结果");
     }
 
+    @Test
+    void validatesKnowledgeSearchResultContractAndEvidenceFields() {
+        String valid = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"contractVersion\":\"agent-rag.result.v1\",\"status\":\"RETRIEVED\","
+                + "\"message\":\"仅作为资料依据\",\"knowledgeBases\":[\"Agent 资料\"],"
+                + "\"results\":[{\"reference\":\"R1\",\"content\":\"工具调用\","
+                + "\"score\":0.91,\"source\":\"Agent 资料\",\"knowledgeBaseId\":\"7\"}]}"
+        );
+        String missingEvidence = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"contractVersion\":\"agent-rag.result.v1\",\"status\":\"RETRIEVED\","
+                + "\"message\":\"仅作为资料依据\",\"results\":[{\"reference\":\"R1\","
+                + "\"content\":\"工具调用\",\"score\":1.3,\"source\":\"Agent 资料\"}]}"
+        );
+
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            valid, contract("knowledge_base_search", AgentToolDescriptor.ResultContract.DATA_BOUNDARY)
+        )).isNull();
+        assertThat(AgentToolResultContractValidator.validateOutput(
+            missingEvidence, contract("knowledge_base_search", AgentToolDescriptor.ResultContract.DATA_BOUNDARY)
+        )).isEqualTo("知识库检索片段字段不完整，未确认任何检索结果");
+    }
+
     private AgentToolDescriptor contextAssetContract() {
         return new AgentToolDescriptor(
             "agent_context_asset_action",

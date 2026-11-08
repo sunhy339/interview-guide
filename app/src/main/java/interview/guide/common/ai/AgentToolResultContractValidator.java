@@ -27,6 +27,8 @@ public final class AgentToolResultContractValidator {
     private static final String CONTEXT_LIST_TOOL = "agent_context_list";
     private static final String CONTEXT_ASSET_STATUS_TOOL = "agent_context_asset_status";
     private static final String CONTEXT_ASSET_STATUS_CONTRACT = "agent-context-asset-status.v1";
+    private static final String KNOWLEDGE_BASE_SEARCH_TOOL = "knowledge_base_search";
+    private static final String KNOWLEDGE_BASE_RESULT_CONTRACT = "agent-rag.result.v1";
     private static final String SCHEDULE_CREATE_TOOL = "schedule_create_draft";
     private static final String SCHEDULE_CANCEL_TOOL = "schedule_cancel_draft";
     private static final String SCHEDULE_UPDATE_TOOL = "schedule_update_draft";
@@ -72,6 +74,9 @@ public final class AgentToolResultContractValidator {
         }
         if (INTERVIEW_SEARCH_TOOL.equals(contract.name())) {
             return validateInterviewSearch(payload);
+        }
+        if (KNOWLEDGE_BASE_SEARCH_TOOL.equals(contract.name())) {
+            return validateKnowledgeBaseSearch(payload);
         }
         if (payload == null || !payload.isObject()) {
             return "工具结果必须是结构化对象，未确认任何业务状态";
@@ -215,7 +220,55 @@ public final class AgentToolResultContractValidator {
     private static boolean isStructuredReadOnlyTool(String toolName) {
         return SCHEDULE_LIST_TOOL.equals(toolName) || SCHEDULE_CONFLICT_TOOL.equals(toolName)
             || INTERVIEW_SEARCH_TOOL.equals(toolName) || CONTEXT_LIST_TOOL.equals(toolName)
-            || CONTEXT_ASSET_STATUS_TOOL.equals(toolName);
+            || CONTEXT_ASSET_STATUS_TOOL.equals(toolName)
+            || KNOWLEDGE_BASE_SEARCH_TOOL.equals(toolName);
+    }
+
+    private static String validateKnowledgeBaseSearch(JsonNode payload) {
+        if (payload == null || !payload.isObject()) {
+            return "知识库检索结果必须是结构化对象，未确认任何检索结果";
+        }
+        if (!textEquals(payload, "contractVersion", KNOWLEDGE_BASE_RESULT_CONTRACT)) {
+            return "知识库检索结果缺少受支持的契约版本，未确认任何检索结果";
+        }
+        JsonNode status = payload.get("status");
+        if (status == null || !status.isTextual()
+            || !java.util.Set.of("UNAVAILABLE", "NO_SOURCES", "NO_RESULT", "RETRIEVED")
+                .contains(status.asText())) {
+            return "知识库检索结果状态不受支持，未确认任何检索结果";
+        }
+        String messageError = requireMessage(payload, "知识库检索结果缺少说明，未确认任何检索结果");
+        if (messageError != null) {
+            return messageError;
+        }
+        if ("UNAVAILABLE".equals(status.asText()) || "NO_SOURCES".equals(status.asText())) {
+            return null;
+        }
+        JsonNode results = payload.get("results");
+        if (results == null || !results.isArray()) {
+            return "知识库检索结果缺少 results 列表，未确认任何检索结果";
+        }
+        if ("RETRIEVED".equals(status.asText()) && results.isEmpty()) {
+            return "知识库检索标记为 RETRIEVED 但没有结果，未确认任何检索结果";
+        }
+        if ("NO_RESULT".equals(status.asText()) && !results.isEmpty()) {
+            return "知识库检索标记为 NO_RESULT 但包含结果，未确认任何检索结果";
+        }
+        for (JsonNode result : results) {
+            if (result == null || !result.isObject()
+                || !textField(result, "reference")
+                || !textField(result, "content")
+                || !textField(result, "source")
+                || !textField(result, "knowledgeBaseId")) {
+                return "知识库检索片段字段不完整，未确认任何检索结果";
+            }
+            JsonNode score = result.get("score");
+            if (score == null || !score.isNumber()
+                || score.doubleValue() < 0d || score.doubleValue() > 1d) {
+                return "知识库检索片段 score 无效，未确认任何检索结果";
+            }
+        }
+        return null;
     }
 
     private static String validateInterviewSearch(JsonNode payload) {

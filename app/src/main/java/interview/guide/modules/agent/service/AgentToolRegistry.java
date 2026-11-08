@@ -131,6 +131,8 @@ public class AgentToolRegistry {
             ? "agent:action:draft"
             : capability == AgentIntentRouter.Capability.SCHEDULE
             ? readOnly ? "agent:schedule:read" : "agent:schedule:draft"
+            : capability == AgentIntentRouter.Capability.RAG
+            ? "agent:rag:read"
             : readOnly ? "agent:context:read" : "agent:context:draft";
         return new AgentToolDescriptor(
             name,

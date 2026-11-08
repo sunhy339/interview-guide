@@ -81,7 +81,7 @@ class AgentToolRegistryTest {
         assertThat(descriptor.capability()).isEqualTo(AgentIntentRouter.Capability.RAG);
         assertThat(descriptor.riskLevel()).isEqualTo(AgentToolDescriptor.RiskLevel.READ_ONLY);
         assertThat(descriptor.requiresApproval()).isFalse();
-        assertThat(descriptor.requiredPermission()).isEqualTo("agent:context:read");
+        assertThat(descriptor.requiredPermission()).isEqualTo("agent:rag:read");
         assertThat(descriptor.idempotency()).isEqualTo(AgentToolDescriptor.Idempotency.IDEMPOTENT);
         assertThat(descriptor.retryPolicy()).isEqualTo(AgentToolDescriptor.RetryPolicy.SAFE_READ_ONLY);
         assertThat(descriptor.resultContract())
