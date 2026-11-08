@@ -269,6 +269,10 @@ function Invoke-ScenarioMessage(
         traceResources = @(Get-TraceResources $AgentSessionId ([string]$conversation.data.runId))
         runEventTypes = @(Get-RunEventTypes $AgentSessionId ([string]$conversation.data.runId))
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
+        promptTokens = if ($usage) { [int]$usage.promptTokens } else { 0 }
+        estimatedPromptTokens = if ($usage) { [int]$usage.estimatedPromptTokens } else { 0 }
+        completionTokens = if ($usage) { [int]$usage.completionTokens } else { 0 }
+        totalTokens = if ($usage) { [int]$usage.totalTokens } else { 0 }
         durationMillis = if ($usage) { [long]$usage.durationMillis } else { 0 }
         answer = Get-ConversationAnswer $conversation
     }
@@ -306,6 +310,10 @@ function Invoke-ScenarioConfirm(
         traceResources = @(Get-TraceResources $AgentSessionId ([string]$conversation.data.runId))
         runEventTypes = @(Get-RunEventTypes $AgentSessionId ([string]$conversation.data.runId))
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
+        promptTokens = if ($usage) { [int]$usage.promptTokens } else { 0 }
+        estimatedPromptTokens = if ($usage) { [int]$usage.estimatedPromptTokens } else { 0 }
+        completionTokens = if ($usage) { [int]$usage.completionTokens } else { 0 }
+        totalTokens = if ($usage) { [int]$usage.totalTokens } else { 0 }
         durationMillis = if ($usage) { [long]$usage.durationMillis } else { 0 }
         answer = Get-ConversationAnswer $conversation
     }
@@ -344,6 +352,10 @@ function Invoke-ScenarioCancel(
         traceResources = @(Get-TraceResources $AgentSessionId ([string]$conversation.data.runId))
         runEventTypes = @(Get-RunEventTypes $AgentSessionId ([string]$conversation.data.runId))
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
+        promptTokens = if ($usage) { [int]$usage.promptTokens } else { 0 }
+        estimatedPromptTokens = if ($usage) { [int]$usage.estimatedPromptTokens } else { 0 }
+        completionTokens = if ($usage) { [int]$usage.completionTokens } else { 0 }
+        totalTokens = if ($usage) { [int]$usage.totalTokens } else { 0 }
         durationMillis = if ($usage) { [long]$usage.durationMillis } else { 0 }
         answer = Get-ConversationAnswer $conversation
     }

@@ -203,6 +203,7 @@ try {
             $usage = $conversation.data.runUsage
             $usageText = if ($null -eq $usage) { 'null' } else { $usage | ConvertTo-Json -Compress }
             Assert-Pass ($null -ne $usage -and [int]$usage.modelCalls -ge 1 -and [int64]$usage.durationMillis -ge 0) "Agent 第 $($i + 1) 轮用量摘要已持久化（实际=$usageText）"
+            Assert-Pass ($null -ne $usage -and [int]$usage.estimatedPromptTokens -ge 0) "Agent 第 $($i + 1) 轮上下文估算 Token 已持久化"
         }
 
     } else {
