@@ -2,6 +2,7 @@ package interview.guide.modules.agent.service;
 
 import interview.guide.modules.agent.model.AgentChatSessionEntity;
 import interview.guide.modules.agent.model.AgentProviderResponseTrace;
+import interview.guide.modules.agent.model.AgentRecoveryBoundary;
 import interview.guide.modules.agent.model.AgentRunStateEntity;
 import interview.guide.modules.agent.model.AgentRunStatus;
 import interview.guide.modules.agent.metrics.AgentMetrics;
@@ -53,6 +54,8 @@ class AgentRunStateServiceTest {
         assertThat(started.getValue().getStepIndex()).isEqualTo(2);
         assertThat(started.getValue().getStatus()).isEqualTo(AgentRunStatus.RUNNING);
         assertThat(started.getValue().getPendingApproval()).isFalse();
+        assertThat(started.getValue().getRecoveryBoundary())
+            .isEqualTo(AgentRecoveryBoundary.CONTEXT);
         assertThat(started.getValue().getHeartbeatAt()).isNotNull();
         assertThat(started.getValue().getLeaseUntil()).isNotNull();
 
@@ -115,6 +118,8 @@ class AgentRunStateServiceTest {
         assertThat(state.getModelProvider()).isEqualTo("pixel");
         assertThat(state.getModelTurnStatus()).isEqualTo("STARTED");
         assertThat(state.getPhase()).isEqualTo("model");
+        assertThat(state.getRecoveryBoundary())
+            .isEqualTo(AgentRecoveryBoundary.MODEL_TURN_IN_PROGRESS);
         assertThat(state.getModelResultReference()).isNull();
 
         service.modelTurnStarted(tracker, "pixel", true, "turn-17");
@@ -125,12 +130,16 @@ class AgentRunStateServiceTest {
 
         assertThat(state.getModelTurnStatus()).isEqualTo("SUCCEEDED");
         assertThat(state.getModelResultReference()).isEqualTo("status:succeeded");
+        assertThat(state.getRecoveryBoundary())
+            .isEqualTo(AgentRecoveryBoundary.MODEL_RESPONSE_OBSERVED);
 
         state.setModelTurnStatus("STARTED");
         service.markInterrupted("run-1");
         assertThat(state.getModelTurnStatus()).isEqualTo("INTERRUPTED");
         assertThat(state.getModelResultReference()).isEqualTo("status:interrupted");
         assertThat(state.getPhase()).isEqualTo("model_interrupted");
+        assertThat(service.recoveryDecision("run-1"))
+            .isEqualTo(AgentRunStateService.RecoveryDecision.SAFE_RETRY);
     }
 
     @Test
@@ -155,6 +164,54 @@ class AgentRunStateServiceTest {
         assertThat(state.getToolName()).isEqualTo("schedule_list");
         assertThat(state.getToolResultReference()).startsWith("sha256:");
         assertThat(state.getPendingApproval()).isFalse();
+        assertThat(state.getRecoveryBoundary())
+            .isEqualTo(AgentRecoveryBoundary.TOOL_RESULT_OBSERVED);
+    }
+
+    @Test
+    void blocksRecoveryWhenToolExecutionHasNoObservedResult() {
+        AgentRunStateEntity state = AgentRunStateEntity.builder()
+            .runId("run-1")
+            .agentSessionId("agent-1")
+            .status(AgentRunStatus.RUNNING)
+            .phase("tool")
+            .toolCallId("tool-1")
+            .recoveryBoundary(AgentRecoveryBoundary.TOOL_EXECUTION_IN_PROGRESS)
+            .build();
+        when(repository.findByRunId("run-1")).thenReturn(Optional.of(state));
+        when(repository.save(any(AgentRunStateEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+
+        AgentRunStateService service = new AgentRunStateService(repository);
+        service.markInterrupted("run-1");
+
+        assertThat(state.getRecoveryBoundary())
+            .isEqualTo(AgentRecoveryBoundary.TOOL_EXECUTION_UNCERTAIN);
+        assertThat(service.recoveryDecision("run-1"))
+            .isEqualTo(AgentRunStateService.RecoveryDecision.BLOCK_UNCERTAIN_TOOL);
+    }
+
+    @Test
+    void keepsApprovalResumeRecoverableAsItsOwnDecision() {
+        AgentRunStateEntity state = AgentRunStateEntity.builder()
+            .runId("run-1")
+            .agentSessionId("agent-1")
+            .status(AgentRunStatus.RUNNING)
+            .recoveryBoundary(AgentRecoveryBoundary.APPROVAL_RESUME_PENDING)
+            .build();
+        when(repository.findByRunId("run-1")).thenReturn(Optional.of(state));
+
+        assertThat(new AgentRunStateService(repository).recoveryDecision("run-1"))
+            .isEqualTo(AgentRunStateService.RecoveryDecision.RESUME_APPROVAL);
+    }
+
+    @Test
+    void defersRecoveryWhenBoundaryCannotBeRead() {
+        when(repository.findByRunId("run-1"))
+            .thenThrow(new IllegalStateException("database unavailable"));
+
+        assertThat(new AgentRunStateService(repository).recoveryDecision("run-1"))
+            .isEqualTo(AgentRunStateService.RecoveryDecision.DEFER);
     }
 
     @Test

@@ -604,6 +604,7 @@ class AgentConversationServiceTest {
     void entersWaitingUserUntilApprovalIsResolved() {
         AgentChatSessionEntity session = AgentChatSessionEntity.builder()
             .id(11L)
+            .interviewSessionId("interview-1")
             .agentSessionId("agent-1")
             .runId("run-1")
             .runStatus(AgentRunStatus.RUNNING)
@@ -634,6 +635,36 @@ class AgentConversationServiceTest {
         )).isTrue();
         assertThat(session.getRunStatus()).isEqualTo(AgentRunStatus.COMPLETED);
         verify(usageService).record(session, null);
+    }
+
+    @Test
+    @DisplayName("工具结果未知时结束运行并保留可见错误，不自动重放")
+    void failsUncertainRecoveryWithoutReplayingTheRun() {
+        AgentChatSessionEntity session = AgentChatSessionEntity.builder()
+            .id(11L)
+            .interviewSessionId("interview-1")
+            .agentSessionId("agent-1")
+            .runId("run-1")
+            .runStatus(AgentRunStatus.RUNNING)
+            .activeMessageId(22L)
+            .build();
+        AgentChatMessageEntity assistant = AgentChatMessageEntity.builder()
+            .id(22L).session(session).role(AgentChatMessageEntity.MessageRole.ASSISTANT)
+            .content("").completed(false).build();
+        when(sessionRepository.findByAgentSessionIdForUpdate("agent-1"))
+            .thenReturn(Optional.of(session));
+        when(messageRepository.findById(22L)).thenReturn(Optional.of(assistant));
+        service.setRunStateService(runStateService);
+
+        assertThat(service.failUncertainRecovery(
+            "interview-1", "agent-1", "工具执行结果未知，请确认后重试"
+        )).isTrue();
+
+        assertThat(session.getRunStatus()).isEqualTo(AgentRunStatus.FAILED);
+        assertThat(session.getRunError()).isEqualTo("工具执行结果未知，请确认后重试");
+        assertThat(assistant.getErrorMessage()).isEqualTo("工具执行结果未知，请确认后重试");
+        verify(runStateService).finish(session);
+        verify(messageRepository).save(assistant);
     }
 
     @Test

@@ -3,6 +3,7 @@ package interview.guide.modules.agent.service;
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.model.AgentChatSessionEntity;
 import interview.guide.modules.agent.model.AgentProviderResponseTrace;
+import interview.guide.modules.agent.model.AgentRecoveryBoundary;
 import interview.guide.modules.agent.model.AgentRunStateEntity;
 import interview.guide.modules.agent.model.AgentRunStatus;
 import interview.guide.modules.agent.repository.AgentRunStateRepository;
@@ -55,6 +56,7 @@ public class AgentRunStateService {
             state.setAssistantMessageId(session.getActiveMessageId());
             state.setStatus(session.getRunStatus() == null ? AgentRunStatus.RUNNING : session.getRunStatus());
             state.setPhase(clean("context", MAX_PHASE));
+            state.setRecoveryBoundary(AgentRecoveryBoundary.CONTEXT);
             state.setStepIndex(Math.max(0, session.getLoopNextStep()));
             state.setPendingApproval(false);
             state.setContextVersion(1);
@@ -108,6 +110,7 @@ public class AgentRunStateService {
             state.setModelProvider(clean(providerId, MAX_MODEL_PROVIDER));
             state.setModelTurnStatus("STARTED");
             state.setModelResultReference(null);
+            state.setRecoveryBoundary(AgentRecoveryBoundary.MODEL_TURN_IN_PROGRESS);
             clearProviderResponse(state);
             state.setPhase(clean(compacted ? "model_compacted" : "model", MAX_PHASE));
             state.setFinishedAt(null);
@@ -139,6 +142,11 @@ public class AgentRunStateService {
             }
             state.setModelTurnStatus(status);
             state.setModelResultReference("status:" + status.toLowerCase(java.util.Locale.ROOT));
+            state.setRecoveryBoundary(switch (status) {
+                case "SUCCEEDED" -> AgentRecoveryBoundary.MODEL_RESPONSE_OBSERVED;
+                case "CANCELLED" -> AgentRecoveryBoundary.CANCELLED;
+                default -> AgentRecoveryBoundary.SAFE_RETRY;
+            });
             state.setPhase("model");
             heartbeat(state);
             repository.save(state);
@@ -168,6 +176,9 @@ public class AgentRunStateService {
             state.setProviderToolCallIdsHash(clean(trace.toolCallIdsHash(), 64));
             state.setProviderResponseCount(Math.max(0, trace.responseCount()));
             state.setProviderToolCallCount(Math.max(0, trace.toolCallCount()));
+            state.setRecoveryBoundary(trace.toolCallCount() > 0
+                ? AgentRecoveryBoundary.TOOL_EXECUTION_UNCERTAIN
+                : AgentRecoveryBoundary.MODEL_RESPONSE_OBSERVED);
             heartbeat(state);
             repository.save(state);
         });
@@ -183,12 +194,30 @@ public class AgentRunStateService {
                 return;
             }
             AgentRunStateEntity state = repository.findByRunId(runId).orElse(null);
-            if (state == null || !"STARTED".equals(state.getModelTurnStatus())) {
+            if (state == null) {
+                return;
+            }
+            boolean toolExecutionUncertain = state.getRecoveryBoundary()
+                == AgentRecoveryBoundary.TOOL_EXECUTION_IN_PROGRESS
+                || (state.getRecoveryBoundary() == null
+                    && "tool".equals(state.getPhase())
+                    && !blank(state.getToolCallId())
+                    && blank(state.getToolResultReference()));
+            if (toolExecutionUncertain) {
+                state.setRecoveryBoundary(AgentRecoveryBoundary.TOOL_EXECUTION_UNCERTAIN);
+                state.setPhase("tool_uncertain");
+                state.setFinishedAt(LocalDateTime.now());
+                heartbeat(state);
+                repository.save(state);
+                return;
+            }
+            if (!"STARTED".equals(state.getModelTurnStatus())) {
                 return;
             }
             state.setModelTurnStatus("INTERRUPTED");
             state.setModelResultReference("status:interrupted");
             state.setPhase("model_interrupted");
+            state.setRecoveryBoundary(AgentRecoveryBoundary.SAFE_RETRY);
             state.setFinishedAt(LocalDateTime.now());
             heartbeat(state);
             repository.save(state);
@@ -208,6 +237,11 @@ public class AgentRunStateService {
             state.setStatus(session.getRunStatus() == null ? AgentRunStatus.RUNNING : session.getRunStatus());
             state.setPhase(clean(session.getRunStep(), MAX_PHASE));
             state.setStepIndex(Math.max(0, session.getLoopNextStep()));
+            if (session.getRunStatus() == AgentRunStatus.WAITING_USER) {
+                state.setRecoveryBoundary(AgentRecoveryBoundary.WAITING_USER);
+            } else if (state.getRecoveryBoundary() == null) {
+                state.setRecoveryBoundary(AgentRecoveryBoundary.CONTEXT);
+            }
             heartbeat(state);
             repository.save(state);
         });
@@ -275,6 +309,9 @@ public class AgentRunStateService {
             state.setPendingApproval(false);
             state.setResumeActionId(clean(actionId, 64));
             state.setResumeNotice(clean(notice, 500));
+            state.setRecoveryBoundary(blank(actionId)
+                ? AgentRecoveryBoundary.APPROVAL_RESUME_IN_PROGRESS
+                : AgentRecoveryBoundary.APPROVAL_RESUME_PENDING);
             state.setAttempt(value(state.getAttempt()) + 1);
             state.setFinishedAt(null);
             heartbeat(state);
@@ -312,6 +349,7 @@ public class AgentRunStateService {
                 return;
             }
             state.setPhase("resume");
+            state.setRecoveryBoundary(AgentRecoveryBoundary.APPROVAL_RESUME_IN_PROGRESS);
             heartbeat(state);
             repository.save(state);
         });
@@ -332,6 +370,13 @@ public class AgentRunStateService {
                 state.setResumeNotice(null);
             }
             state.setAssistantMessageId(session.getActiveMessageId());
+            state.setRecoveryBoundary(switch (state.getStatus()) {
+                case COMPLETED -> AgentRecoveryBoundary.COMPLETED;
+                case CANCELLED -> AgentRecoveryBoundary.CANCELLED;
+                case WAITING_USER -> AgentRecoveryBoundary.WAITING_USER;
+                case FAILED -> AgentRecoveryBoundary.FAILED;
+                default -> AgentRecoveryBoundary.SAFE_RETRY;
+            });
             state.setFinishedAt(LocalDateTime.now());
             heartbeat(state);
             repository.save(state);
@@ -364,6 +409,7 @@ public class AgentRunStateService {
             state.setPendingApproval(false);
             state.setAttempt(value(state.getAttempt()) + 1);
             state.setPhase("tool");
+            state.setRecoveryBoundary(AgentRecoveryBoundary.TOOL_EXECUTION_IN_PROGRESS);
             heartbeat(state);
             repository.save(state);
             if (eventService != null) {
@@ -405,6 +451,9 @@ public class AgentRunStateService {
             state.setToolResultReference("sha256:" + hash(result));
             state.setPendingApproval(pendingApproval);
             state.setPhase(pendingApproval ? "waiting_user" : "tool");
+            state.setRecoveryBoundary(pendingApproval
+                ? AgentRecoveryBoundary.WAITING_USER
+                : AgentRecoveryBoundary.TOOL_RESULT_OBSERVED);
             heartbeat(state);
             repository.save(state);
             if (eventService != null) {
@@ -426,6 +475,53 @@ public class AgentRunStateService {
         } catch (RuntimeException error) {
             log.warn("读取 Agent 待确认状态失败，按无待确认动作处理: runId={}", runId, error);
             return false;
+        }
+    }
+
+    /**
+     * 判断应用重启后是否可以重新生成回答。
+     *
+     * <p>没有旧检查点时返回 SAFE_RETRY，兼容迁移前会话；读取检查点失败时返回 DEFER，
+     * 让恢复扫描停下来而不是在无法确认工具结果时冒险重放。</p>
+     */
+    public RecoveryDecision recoveryDecision(String runId) {
+        if (blank(runId)) {
+            return RecoveryDecision.DEFER;
+        }
+        try {
+            Optional<AgentRunStateEntity> found = repository.findByRunId(runId);
+            if (found.isEmpty()) {
+                return RecoveryDecision.SAFE_RETRY;
+            }
+            AgentRunStateEntity state = found.get();
+            if (state.getStatus() == AgentRunStatus.COMPLETED
+                || state.getStatus() == AgentRunStatus.FAILED
+                || state.getStatus() == AgentRunStatus.CANCELLED) {
+                return RecoveryDecision.TERMINAL;
+            }
+            if (state.getRecoveryBoundary() == AgentRecoveryBoundary.APPROVAL_RESUME_PENDING
+                || state.getRecoveryBoundary() == AgentRecoveryBoundary.APPROVAL_RESUME_IN_PROGRESS) {
+                return RecoveryDecision.RESUME_APPROVAL;
+            }
+            if (Boolean.TRUE.equals(state.getPendingApproval())
+                || state.getRecoveryBoundary() == AgentRecoveryBoundary.WAITING_USER) {
+                return RecoveryDecision.WAIT_FOR_USER;
+            }
+            if (state.getRecoveryBoundary() == AgentRecoveryBoundary.TOOL_EXECUTION_IN_PROGRESS
+                || state.getRecoveryBoundary() == AgentRecoveryBoundary.TOOL_EXECUTION_UNCERTAIN
+                || (state.getRecoveryBoundary() == null
+                    && "tool".equals(state.getPhase())
+                    && !blank(state.getToolCallId())
+                    && blank(state.getToolResultReference()))
+                || (state.getRecoveryBoundary() == null
+                    && value(state.getProviderToolCallCount()) > 0
+                    && blank(state.getToolResultReference()))) {
+                return RecoveryDecision.BLOCK_UNCERTAIN_TOOL;
+            }
+            return RecoveryDecision.SAFE_RETRY;
+        } catch (RuntimeException error) {
+            log.warn("读取 Agent 恢复边界失败，暂不接管运行: runId={}", runId, error);
+            return RecoveryDecision.DEFER;
         }
     }
 
@@ -502,5 +598,14 @@ public class AgentRunStateService {
     }
 
     public record ApprovalResumeMarker(String actionId, String notice) {
+    }
+
+    public enum RecoveryDecision {
+        SAFE_RETRY,
+        WAIT_FOR_USER,
+        RESUME_APPROVAL,
+        BLOCK_UNCERTAIN_TOOL,
+        TERMINAL,
+        DEFER
     }
 }

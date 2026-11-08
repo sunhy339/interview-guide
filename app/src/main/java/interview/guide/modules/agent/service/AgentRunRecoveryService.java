@@ -23,6 +23,7 @@ public class AgentRunRecoveryService {
     private final InterviewAgentService agentService;
     private final AgentRetryProperties retryProperties;
     private final AgentActionService actionService;
+    private final AgentRunStateService runStateService;
 
     /** 兼容旧测试和迁移期轻量调用方。 */
     public AgentRunRecoveryService(
@@ -31,7 +32,18 @@ public class AgentRunRecoveryService {
         InterviewAgentService agentService,
         AgentRetryProperties retryProperties
     ) {
-        this(sessionRepository, conversationService, agentService, retryProperties, null);
+        this(sessionRepository, conversationService, agentService, retryProperties, null, null);
+    }
+
+    /** 兼容迁移期旧调用方；恢复边界服务缺失时沿用原有行为。 */
+    public AgentRunRecoveryService(
+        AgentChatSessionRepository sessionRepository,
+        AgentConversationService conversationService,
+        InterviewAgentService agentService,
+        AgentRetryProperties retryProperties,
+        AgentActionService actionService
+    ) {
+        this(sessionRepository, conversationService, agentService, retryProperties, actionService, null);
     }
 
     @Autowired
@@ -40,13 +52,15 @@ public class AgentRunRecoveryService {
         AgentConversationService conversationService,
         InterviewAgentService agentService,
         AgentRetryProperties retryProperties,
-        AgentActionService actionService
+        AgentActionService actionService,
+        AgentRunStateService runStateService
     ) {
         this.sessionRepository = sessionRepository;
         this.conversationService = conversationService;
         this.agentService = agentService;
         this.retryProperties = retryProperties;
         this.actionService = actionService;
+        this.runStateService = runStateService;
     }
 
     @Scheduled(fixedDelayString = "${app.ai.agent.recovery-scan-interval-ms:10000}")
@@ -66,6 +80,29 @@ public class AgentRunRecoveryService {
                     return;
                 }
                 try {
+                    AgentRunStateService.RecoveryDecision recoveryDecision = runStateService == null
+                        ? AgentRunStateService.RecoveryDecision.SAFE_RETRY
+                        : runStateService.recoveryDecision(session.getRunId());
+                    if (recoveryDecision == AgentRunStateService.RecoveryDecision.DEFER
+                        || recoveryDecision == AgentRunStateService.RecoveryDecision.TERMINAL) {
+                        log.warn("恢复边界不可安全接管，暂不重放 Agent 任务: sessionId={}, runId={}, decision={}",
+                            session.getInterviewSessionId(), session.getRunId(), recoveryDecision);
+                        return;
+                    }
+                    if (recoveryDecision == AgentRunStateService.RecoveryDecision.BLOCK_UNCERTAIN_TOOL) {
+                        boolean blocked = session.getAgentSessionId() == null
+                            ? conversationService.failUncertainRecovery(
+                                session.getInterviewSessionId(), null,
+                                "上一次工具执行结果未知，已停止自动恢复。请先确认业务结果，再重新发起请求。")
+                            : conversationService.failUncertainRecovery(
+                                session.getInterviewSessionId(), session.getAgentSessionId(),
+                                "上一次工具执行结果未知，已停止自动恢复。请先确认业务结果，再重新发起请求。");
+                        if (blocked) {
+                            log.warn("已阻止不确定工具任务自动重放: sessionId={}, runId={}",
+                                session.getInterviewSessionId(), session.getRunId());
+                        }
+                        return;
+                    }
                     AgentConversationService.ApprovalResumeCandidate candidate = session.getAgentSessionId() == null
                         ? conversationService.findApprovalResumeCandidate(
                             null, session.getInterviewSessionId(), staleBefore
@@ -73,6 +110,12 @@ public class AgentRunRecoveryService {
                         : conversationService.findApprovalResumeCandidate(
                             session.getAgentSessionId(), session.getInterviewSessionId(), staleBefore
                         );
+                    if (candidate == null
+                        && recoveryDecision == AgentRunStateService.RecoveryDecision.RESUME_APPROVAL) {
+                        log.warn("审批续跑边界存在但动作候选不可用，暂不重放原始请求: sessionId={}, runId={}",
+                            session.getInterviewSessionId(), session.getRunId());
+                        return;
+                    }
                     if (candidate != null) {
                         if (actionService == null) {
                             log.warn("审批续跑动作服务未配置，暂不接管原任务: sessionId={}, actionId={}",
@@ -103,6 +146,11 @@ public class AgentRunRecoveryService {
                         log.info("接管审批续跑任务: sessionId={}, runId={}, actionId={}",
                             enriched.interviewSessionId(), enriched.runId(), enriched.actionId());
                         agentService.resumeApprovedRun(enriched);
+                        return;
+                    }
+                    if (recoveryDecision == AgentRunStateService.RecoveryDecision.WAIT_FOR_USER) {
+                        log.warn("Agent 仍在等待用户确认，暂不重放原始请求: sessionId={}, runId={}",
+                            session.getInterviewSessionId(), session.getRunId());
                         return;
                     }
                     AgentConversationService.RecoveredRun recovered = session.getAgentSessionId() == null
