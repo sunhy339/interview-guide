@@ -131,6 +131,49 @@ public final class AgentToolResultContractValidator {
         return null;
     }
 
+    /**
+     * 提取可用于运行检查点的低敏结构化摘要。
+     *
+     * <p>这里只读取版本和状态两个受限字段，不把工具结果正文暴露给恢复层；非法或
+     * 非结构化结果返回空摘要。该方法不代表结果通过完整契约校验，真正的可信边界
+     * 仍由 {@link #validateOutput(String, AgentToolDescriptor)} 负责。</p>
+     */
+    public static ResultMetadata metadata(String rawResult) {
+        if (rawResult == null || rawResult.isBlank()) {
+            return ResultMetadata.empty();
+        }
+        Matcher boundary = RESULT_BOUNDARY.matcher(rawResult);
+        if (!boundary.matches()) {
+            return ResultMetadata.empty();
+        }
+        try {
+            JsonNode payload = OBJECT_MAPPER.readTree(boundary.group(2));
+            if (payload == null || !payload.isObject()) {
+                return ResultMetadata.empty();
+            }
+            return new ResultMetadata(
+                safeMetadataValue(payload.get("contractVersion")),
+                safeMetadataValue(payload.get("status"))
+            );
+        } catch (JacksonException error) {
+            return ResultMetadata.empty();
+        }
+    }
+
+    private static String safeMetadataValue(JsonNode value) {
+        if (value == null || !value.isTextual()) {
+            return null;
+        }
+        String text = value.asText();
+        return text.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,63}") ? text : null;
+    }
+
+    public record ResultMetadata(String contractVersion, String status) {
+        public static ResultMetadata empty() {
+            return new ResultMetadata(null, null);
+        }
+    }
+
     /** 非日程业务动作统一要求 operation 与动作服务 toolId 一一对应。 */
     private static String validateAgentActionDraft(
         JsonNode payload, AgentToolDescriptor contract, String status

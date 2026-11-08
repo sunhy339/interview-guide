@@ -344,6 +344,23 @@ class AgentToolResultContractValidatorTest {
         )).isEqualTo("知识库检索片段字段不完整，未确认任何检索结果");
     }
 
+    @Test
+    void extractsOnlyBoundedMetadataForRunCheckpoint() {
+        String result = sanitizer.wrapWithDelimiters(
+            "agent-tool-result",
+            "{\"contractVersion\":\"agent-rag.result.v1\","
+                + "\"status\":\"RETRIEVED\",\"content\":\"do not persist\"}"
+        );
+
+        AgentToolResultContractValidator.ResultMetadata metadata =
+            AgentToolResultContractValidator.metadata(result);
+
+        assertThat(metadata.contractVersion()).isEqualTo("agent-rag.result.v1");
+        assertThat(metadata.status()).isEqualTo("RETRIEVED");
+        assertThat(AgentToolResultContractValidator.metadata("plain text").contractVersion())
+            .isNull();
+    }
+
     private AgentToolDescriptor contextAssetContract() {
         return new AgentToolDescriptor(
             "agent_context_asset_action",

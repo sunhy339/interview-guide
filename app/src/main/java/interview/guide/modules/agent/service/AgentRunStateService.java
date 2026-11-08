@@ -1,5 +1,6 @@
 package interview.guide.modules.agent.service;
 
+import interview.guide.common.ai.AgentToolResultContractValidator;
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.model.AgentChatSessionEntity;
 import interview.guide.modules.agent.model.AgentProviderResponseTrace;
@@ -406,6 +407,8 @@ public class AgentRunStateService {
             state.setToolName(clean(toolName, MAX_TOOL_NAME));
             state.setToolArgumentsHash(hash(toolInput));
             state.setToolResultReference(null);
+            state.setToolResultContractVersion(null);
+            state.setToolResultStatus(null);
             state.setPendingApproval(false);
             state.setAttempt(value(state.getAttempt()) + 1);
             state.setPhase("tool");
@@ -449,6 +452,10 @@ public class AgentRunStateService {
             }
             state.setToolName(clean(toolName, MAX_TOOL_NAME));
             state.setToolResultReference("sha256:" + hash(result));
+            AgentToolResultContractValidator.ResultMetadata metadata =
+                AgentToolResultContractValidator.metadata(result);
+            state.setToolResultContractVersion(clean(metadata.contractVersion(), 64));
+            state.setToolResultStatus(clean(metadata.status(), 64));
             state.setPendingApproval(pendingApproval);
             state.setPhase(pendingApproval ? "waiting_user" : "tool");
             state.setRecoveryBoundary(pendingApproval

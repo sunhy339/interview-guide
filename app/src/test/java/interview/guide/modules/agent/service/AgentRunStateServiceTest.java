@@ -157,12 +157,19 @@ class AgentRunStateServiceTest {
         AgentMetrics.RunTracker tracker = tracker("run-1");
 
         String toolCallId = service.recordToolCall(tracker, "schedule_list", "{}");
-        service.recordToolResult(tracker, "schedule_list", toolCallId, "success", false);
+        service.recordToolResult(
+            tracker, "knowledge_base_search", toolCallId,
+            "<data-boundary-ab12cd34-agent-tool-result>"
+                + "{\"contractVersion\":\"agent-rag.result.v1\",\"status\":\"RETRIEVED\"}"
+                + "</data-boundary-ab12cd34-agent-tool-result>", false
+        );
 
         assertThat(toolCallId).isEqualTo("tool-1");
         assertThat(state.getToolCallId()).isEqualTo("tool-1");
-        assertThat(state.getToolName()).isEqualTo("schedule_list");
+        assertThat(state.getToolName()).isEqualTo("knowledge_base_search");
         assertThat(state.getToolResultReference()).startsWith("sha256:");
+        assertThat(state.getToolResultContractVersion()).isEqualTo("agent-rag.result.v1");
+        assertThat(state.getToolResultStatus()).isEqualTo("RETRIEVED");
         assertThat(state.getPendingApproval()).isFalse();
         assertThat(state.getRecoveryBoundary())
             .isEqualTo(AgentRecoveryBoundary.TOOL_RESULT_OBSERVED);

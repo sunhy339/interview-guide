@@ -78,6 +78,14 @@ public class AgentRunStateEntity {
     @Column(name = "tool_result_reference", length = 128)
     private String toolResultReference;
 
+    /** 工具结果的版本化契约摘要；不保存工具结果正文。 */
+    @Column(name = "tool_result_contract_version", length = 64)
+    private String toolResultContractVersion;
+
+    /** 工具结果的有限状态摘要；不保存工具结果正文。 */
+    @Column(name = "tool_result_status", length = 64)
+    private String toolResultStatus;
+
     /** 当前或最近一次模型轮次的稳定摘要标识；不保存请求正文或模型隐藏推理。 */
     @Column(name = "model_turn_id", length = 64)
     private String modelTurnId;

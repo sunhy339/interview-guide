@@ -12,7 +12,8 @@
 - `agent_chat_sessions.loop_next_step`：下一个待执行步骤的零基索引；
 - `agent_chat_sessions.loop_completed_steps`：已完成步骤的零基索引集合，逗号分隔且最多保留 128 项；
 - 状态通过 `AgentProgressWriter` 合并写入，并在终态前刷盘；
-- 计划没有写入用户问答，也不保存隐藏推理或完整 RAG 原文。
+- 计划没有写入用户问答，也不保存隐藏推理或完整 RAG 原文。工具检查点只保存结果哈希、
+  契约版本和有限状态（例如 `agent-rag.result.v1 / RETRIEVED`），不保存工具参数或结果正文。
 
 ## 恢复流程
 
