@@ -37,12 +37,13 @@
 - 数据库实际副作用是否只发生一次。
 
 当前已有离线矩阵和 fixture 门禁；矩阵已要求普通问答、Skill/RAG、提示注入场景产生
-`EVIDENCE_ASSESSMENT`，真实采集结果还会保存实际/估算输入 Token。真实 Provider 样本仍待在目标环境执行。
+`EVIDENCE_ASSESSMENT`，真实采集结果还会保存实际/估算输入 Token 和低敏 Run 事件字段；
+如果真实 Provider 产生 `MODEL_TOOL_BATCH`，评测会校验模型轮次和工具调用数量。真实 Provider 样本仍待在目标环境执行。
 
 ### P1.2 Durable RunState 与内部轮次
 
 Provider response ID、provider tool-call ID 批次摘要和轮次片段计数已经进入低敏 Run Event/RunState，
-可以把真实 Provider 的响应轮次和本地 Run 关联起来；仍需补齐 ToolCallingAdvisor 内部模型消息、
+可以把真实 Provider 的响应轮次和本地 Run 关联起来；当前新增 `MODEL_TOOL_BATCH` 低敏 Run 事件，记录流式过程中实际观察到的新增工具批次，且对重复分片和无 ID 兼容网关做去重；仍需补齐 ToolCallingAdvisor 内部模型消息、
 结构化工具结果和等待状态的可恢复检查点。目标是区分：
 
 ```text

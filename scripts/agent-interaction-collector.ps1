@@ -86,21 +86,34 @@ function Parse-SseEvents([string]$Raw) {
     return $events
 }
 
-function Invoke-AgentStream([string]$SessionId, [object]$Body) {
+function Invoke-AgentStream([string]$InterviewId, [string]$AgentSessionId, [object]$Body) {
     $output = Join-Path $env:TEMP "agent-interaction-stream-$([guid]::NewGuid()).txt"
+    $headers = Join-Path $env:TEMP "agent-interaction-stream-$([guid]::NewGuid()).headers"
     try {
         $args = @(
             '-sS', '--max-time', '300', '-b', $jar, '-X', 'POST',
-            "$BaseUrl/api/agent/sessions/$SessionId/messages/stream",
+            "$BaseUrl/api/agent/interview-sessions/$InterviewId/messages/stream",
             '-H', "X-XSRF-TOKEN:$script:xsrf", '-H', 'Content-Type: application/json',
-            '--data-raw', ($Body | ConvertTo-Json -Depth 50 -Compress), '-o', $output
+            '--data-raw', ($Body | ConvertTo-Json -Depth 50 -Compress),
+            '-D', $headers, '-o', $output
         )
         & curl.exe @args 2>$null | Out-Null
+        $statusLine = if (Test-Path -LiteralPath $headers) {
+            Get-Content -LiteralPath $headers | Where-Object { $_ -match '^HTTP/' } | Select-Object -Last 1
+        } else { '' }
+        if ($statusLine -notmatch '\s2\d\d\s') {
+            $status = if ($statusLine) { $statusLine.Trim() } else { 'HTTP 状态未知' }
+            $errorBody = if (Test-Path -LiteralPath $output) {
+                (Get-Content -LiteralPath $output -Raw).Trim()
+            } else { '' }
+            throw "Agent SSE 请求失败（$status）：$errorBody"
+        }
         $raw = if (Test-Path -LiteralPath $output) { Get-Content -LiteralPath $output -Raw } else { '' }
         if ([string]::IsNullOrWhiteSpace($raw)) { throw 'Agent SSE 返回为空' }
         return $raw
     } finally {
         Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $headers -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -164,16 +177,31 @@ function Get-TraceResources([string]$AgentSessionId, [string]$RunId) {
     }
 }
 
-function Get-RunEventTypes([string]$AgentSessionId, [string]$RunId) {
+function Get-RunEvents([string]$AgentSessionId, [string]$RunId) {
     if ([string]::IsNullOrWhiteSpace($RunId)) { return @() }
     try {
         $events = Invoke-JsonApi "/api/agent/sessions/$AgentSessionId/run-events?runId=$([Uri]::EscapeDataString($RunId))&limit=200"
-        return @($events.data | ForEach-Object { [string]$_.eventType } |
-            Where-Object { $_ } | Select-Object -Unique)
+        return @($events.data | ForEach-Object {
+            [ordered]@{
+                eventType = [string]$_.eventType
+                modelTurnId = [string]$_.modelTurnId
+                toolCallId = [string]$_.toolCallId
+                providerResponseId = [string]$_.providerResponseId
+                providerToolCallIdsHash = [string]$_.providerToolCallIdsHash
+                providerResponseCount = if ($null -eq $_.providerResponseCount) { 0 } else { [int]$_.providerResponseCount }
+                providerToolCallCount = if ($null -eq $_.providerToolCallCount) { 0 } else { [int]$_.providerToolCallCount }
+                status = [string]$_.status
+            }
+        } | Where-Object { $_.eventType })
     } catch {
         # Run 事件是诊断补充；核心状态和 Trace 仍由会话接口校验。
         return @()
     }
+}
+
+function Get-RunEventTypes([string]$AgentSessionId, [string]$RunId) {
+    return @(Get-RunEvents $AgentSessionId $RunId |
+        ForEach-Object { [string]$_.eventType } | Select-Object -Unique)
 }
 
 function Get-CodeVersion {
@@ -216,6 +244,21 @@ function Assert-Step(
     }
 }
 
+function Assert-RunObservability([object]$StepResult) {
+    if ($StepResult.type -ne 'message' -or [int]$StepResult.modelCalls -le 0) {
+        return
+    }
+    if ([int]$StepResult.estimatedPromptTokens -le 0) {
+        throw "真实 Provider 已调用模型，但部署未返回上下文估算 Token（modelCalls=$($StepResult.modelCalls)）；请先部署包含 Agent 预算观测的版本"
+    }
+    $eventTypes = @($StepResult.runEventTypes)
+    foreach ($required in @('MODEL_TURN_STARTED', 'MODEL_TURN_COMPLETED')) {
+        if ($eventTypes -notcontains $required) {
+            throw "真实 Provider 已调用模型，但 Run 事件缺少 $required；请检查 Agent 事件迁移和部署版本"
+        }
+    }
+}
+
 function Assert-ActionResult(
     [object]$ScenarioStep,
     [object]$ActionResponse
@@ -250,13 +293,14 @@ function Invoke-ScenarioMessage(
         memoryKey = $MemoryKey
         agentSessionId = $AgentSessionId
     }
-    $stream = Invoke-AgentStream $AgentSessionId $payload
+    $stream = Invoke-AgentStream $InterviewId $AgentSessionId $payload
     $events = @(Parse-SseEvents $stream)
     $errors = @($events | Where-Object { $_.data.type -eq 'error' })
     if ($errors.Count -gt 0) { throw "SSE 返回错误：$([string]$errors[0].data.message)" }
     $acceptWaiting = [string]$Step.expectedStatus -eq 'WAITING_USER'
     $conversation = Wait-Conversation $InterviewId $AgentSessionId $acceptWaiting
     $usage = $conversation.data.runUsage
+    $runEvents = @(Get-RunEvents $AgentSessionId ([string]$conversation.data.runId))
     $stepResult = [ordered]@{
         type = 'message'
         status = [string]$conversation.data.runStatus
@@ -267,7 +311,8 @@ function Invoke-ScenarioMessage(
         userMessageCount = Get-UserMessageCount $conversation
         traceActions = @(Get-TraceActions $AgentSessionId ([string]$conversation.data.runId))
         traceResources = @(Get-TraceResources $AgentSessionId ([string]$conversation.data.runId))
-        runEventTypes = @(Get-RunEventTypes $AgentSessionId ([string]$conversation.data.runId))
+        runEvents = $runEvents
+        runEventTypes = @($runEvents | ForEach-Object { [string]$_.eventType } | Select-Object -Unique)
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
         promptTokens = if ($usage) { [int]$usage.promptTokens } else { 0 }
         estimatedPromptTokens = if ($usage) { [int]$usage.estimatedPromptTokens } else { 0 }
@@ -277,6 +322,7 @@ function Invoke-ScenarioMessage(
         answer = Get-ConversationAnswer $conversation
     }
     Assert-Step $Step $stepResult.status $stepResult.pendingType '' $script:stepIndex
+    Assert-RunObservability $stepResult
     return [pscustomobject]@{ result = $stepResult; conversation = $conversation; usage = $usage }
 }
 
@@ -293,6 +339,7 @@ function Invoke-ScenarioConfirm(
     $actionStatus = [string]$confirmed.data.status
     $conversation = Wait-Conversation $InterviewId $AgentSessionId $false
     $usage = $conversation.data.runUsage
+    $runEvents = @(Get-RunEvents $AgentSessionId ([string]$conversation.data.runId))
     $stepResult = [ordered]@{
         type = [string]$Step.type
         status = [string]$conversation.data.runStatus
@@ -308,7 +355,8 @@ function Invoke-ScenarioConfirm(
         userMessageCount = Get-UserMessageCount $conversation
         traceActions = @(Get-TraceActions $AgentSessionId ([string]$conversation.data.runId))
         traceResources = @(Get-TraceResources $AgentSessionId ([string]$conversation.data.runId))
-        runEventTypes = @(Get-RunEventTypes $AgentSessionId ([string]$conversation.data.runId))
+        runEvents = $runEvents
+        runEventTypes = @($runEvents | ForEach-Object { [string]$_.eventType } | Select-Object -Unique)
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
         promptTokens = if ($usage) { [int]$usage.promptTokens } else { 0 }
         estimatedPromptTokens = if ($usage) { [int]$usage.estimatedPromptTokens } else { 0 }
@@ -335,6 +383,7 @@ function Invoke-ScenarioCancel(
     $actionStatus = [string]$cancelled.data.status
     $conversation = Wait-Conversation $InterviewId $AgentSessionId $false
     $usage = $conversation.data.runUsage
+    $runEvents = @(Get-RunEvents $AgentSessionId ([string]$conversation.data.runId))
     $stepResult = [ordered]@{
         type = [string]$Step.type
         status = [string]$conversation.data.runStatus
@@ -350,7 +399,8 @@ function Invoke-ScenarioCancel(
         userMessageCount = Get-UserMessageCount $conversation
         traceActions = @(Get-TraceActions $AgentSessionId ([string]$conversation.data.runId))
         traceResources = @(Get-TraceResources $AgentSessionId ([string]$conversation.data.runId))
-        runEventTypes = @(Get-RunEventTypes $AgentSessionId ([string]$conversation.data.runId))
+        runEvents = $runEvents
+        runEventTypes = @($runEvents | ForEach-Object { [string]$_.eventType } | Select-Object -Unique)
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
         promptTokens = if ($usage) { [int]$usage.promptTokens } else { 0 }
         estimatedPromptTokens = if ($usage) { [int]$usage.estimatedPromptTokens } else { 0 }
