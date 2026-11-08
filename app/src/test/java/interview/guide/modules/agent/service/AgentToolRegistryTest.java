@@ -69,6 +69,26 @@ class AgentToolRegistryTest {
     }
 
     @Test
+    void classifiesKnowledgeSearchAsReadOnlyAndNonApprovalTool() {
+        AgentContextToolCallbackFactory factory = mock(AgentContextToolCallbackFactory.class);
+        ToolCallback knowledgeSearch = callback(AgentContextToolCallbackFactory.KNOWLEDGE_BASE_SEARCH);
+        when(factory.callbacks()).thenReturn(List.of(knowledgeSearch));
+
+        AgentToolDescriptor descriptor = new AgentToolRegistry(factory)
+            .descriptor(AgentContextToolCallbackFactory.KNOWLEDGE_BASE_SEARCH);
+
+        assertThat(descriptor).isNotNull();
+        assertThat(descriptor.capability()).isEqualTo(AgentIntentRouter.Capability.RAG);
+        assertThat(descriptor.riskLevel()).isEqualTo(AgentToolDescriptor.RiskLevel.READ_ONLY);
+        assertThat(descriptor.requiresApproval()).isFalse();
+        assertThat(descriptor.requiredPermission()).isEqualTo("agent:context:read");
+        assertThat(descriptor.idempotency()).isEqualTo(AgentToolDescriptor.Idempotency.IDEMPOTENT);
+        assertThat(descriptor.retryPolicy()).isEqualTo(AgentToolDescriptor.RetryPolicy.SAFE_READ_ONLY);
+        assertThat(descriptor.resultContract())
+            .isEqualTo(AgentToolDescriptor.ResultContract.DATA_BOUNDARY);
+    }
+
+    @Test
     void givesSkillsToolTheSameReadOnlyExecutionContract() {
         AgentContextToolCallbackFactory factory = mock(AgentContextToolCallbackFactory.class);
         ToolCallback skill = callback("load_skill");

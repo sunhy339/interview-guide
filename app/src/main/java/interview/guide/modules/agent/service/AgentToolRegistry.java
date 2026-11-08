@@ -120,6 +120,7 @@ public class AgentToolRegistry {
             case AgentContextToolCallbackFactory.INTERVIEW_SEARCH,
                 AgentContextToolCallbackFactory.CONTEXT_LIST,
                 AgentContextToolCallbackFactory.CONTEXT_ASSET_STATUS,
+                AgentContextToolCallbackFactory.KNOWLEDGE_BASE_SEARCH,
                 AgentContextToolCallbackFactory.SCHEDULE_LIST,
                 AgentContextToolCallbackFactory.SCHEDULE_CONFLICT ->
                 AgentToolDescriptor.RiskLevel.READ_ONLY;
