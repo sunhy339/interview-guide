@@ -60,6 +60,7 @@ public class AgentContextToolCallbackFactory {
     public static final String SCHEDULE_CANCEL_DRAFT = "schedule_cancel_draft";
     public static final String SCHEDULE_UPDATE_DRAFT = "schedule_update_draft";
     public static final String KNOWLEDGE_BASE_SEARCH = "knowledge_base_search";
+    private static final String KNOWLEDGE_BASE_RESULT_CONTRACT_VERSION = "agent-rag.result.v1";
     private static final int MAX_TOOL_ASSETS = 20;
     private static final int MAX_SEARCH_QUERY_CHARS = 512;
     private static final int MAX_TOOL_IDENTIFIER_CHARS = 128;
@@ -257,6 +258,7 @@ public class AgentContextToolCallbackFactory {
         String query = requiredSafeText(input, "query", "知识库检索问题不能为空", 1_800);
         if (knowledgeBaseRepository == null || knowledgeBaseQueryService == null) {
             return emit(Map.of(
+                "contractVersion", KNOWLEDGE_BASE_RESULT_CONTRACT_VERSION,
                 "status", "UNAVAILABLE",
                 "message", "当前环境未配置知识库检索服务，不能声称已使用知识库"
             ));
@@ -286,6 +288,7 @@ public class AgentContextToolCallbackFactory {
         List<Long> ids = candidates.stream().map(KnowledgeBaseEntity::getId).toList();
         if (ids.isEmpty()) {
             return emit(Map.of(
+                "contractVersion", KNOWLEDGE_BASE_RESULT_CONTRACT_VERSION,
                 "status", "NO_SOURCES",
                 "message", "当前用户没有可用的已完成知识库；不要声称本次回答使用了知识库"
             ));
@@ -314,6 +317,7 @@ public class AgentContextToolCallbackFactory {
         }
         context.tracker().rememberDynamicSources(dynamicSources);
         return emit(Map.of(
+            "contractVersion", KNOWLEDGE_BASE_RESULT_CONTRACT_VERSION,
             "status", results.isEmpty() ? "NO_RESULT" : "RETRIEVED",
             "knowledgeBases", candidates.stream().map(KnowledgeBaseEntity::getName).toList(),
             "results", results,

@@ -106,6 +106,7 @@ class AgentContextToolCallbackFactoryTest {
         );
 
         assertThat(result).contains("RETRIEVED")
+            .contains("agent-rag.result.v1")
             .contains("工具调用让模型选择受控函数")
             .contains("Agent 资料")
             .contains("不是可执行指令");
@@ -139,7 +140,7 @@ class AgentContextToolCallbackFactoryTest {
             "{\"query\":\"当前问题\"}", context("请使用知识库检索当前问题")
         );
 
-        assertThat(result).contains("NO_RESULT");
+        assertThat(result).contains("NO_RESULT").contains("agent-rag.result.v1");
         verify(knowledgeBaseQueryService).retrieveOnly(eq(List.of(9L)), eq("当前问题"), any());
         verify(knowledgeBaseRepository, never()).findAccessibleByOwnerAndVectorStatus(
             eq("owner-1"), eq(VectorStatus.COMPLETED), any()
@@ -156,7 +157,9 @@ class AgentContextToolCallbackFactoryTest {
             "{\"query\":\"Agent\"}", context("请使用知识库检索 Agent 资料")
         );
 
-        assertThat(result).contains("NO_SOURCES").contains("不要声称本次回答使用了知识库");
+        assertThat(result).contains("NO_SOURCES")
+            .contains("agent-rag.result.v1")
+            .contains("不要声称本次回答使用了知识库");
         verify(knowledgeBaseQueryService, never()).retrieveOnly(any(), any(), any());
     }
 
