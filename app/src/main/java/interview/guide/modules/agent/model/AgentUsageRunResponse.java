@@ -13,6 +13,7 @@ public record AgentUsageRunResponse(
     String agentSessionTitle,
     String runStatus,
     int promptTokens,
+    int estimatedPromptTokens,
     int completionTokens,
     int totalTokens,
     int modelCalls,

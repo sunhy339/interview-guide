@@ -80,9 +80,10 @@ Provider 元数据重放工具。
 
 ### P1.5 精确预算与成本可见性
 
-当前字符预算是安全兜底，不是精确 Token 计量。后续在 Provider 支持时增加 tokenizer
-估算，并分别统计应用摘要、实际 Prompt/Completion Token、裁剪原因、重试消耗和缓存命中。
-任何预算增强都不能重新引入单次 Provider `max-output-tokens` 的硬限制。
+当前字符预算是安全兜底，不是精确 Token 计量。已增加按实际选用 Prompt 变体累计的输入上下文估算，
+并在最近一次运行、历史运行明细和累计用量中展示；Provider 返回的真实 Prompt Token 仍单独保留，
+估算值不会冒充账单，也不会重新引入单次 Provider `max-output-tokens` 的硬限制。后续在 Provider
+支持时再增加 tokenizer 估算、裁剪原因和缓存命中等更精确字段。
 
 ## 后置：P2 外部能力
 

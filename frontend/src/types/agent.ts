@@ -59,6 +59,7 @@ export interface AgentLoopTraceItem {
 
 export interface AgentRunUsage {
   promptTokens: number;
+  estimatedPromptTokens: number;
   completionTokens: number;
   totalTokens: number;
   modelCalls: number;
@@ -83,6 +84,7 @@ export interface AgentUsageSummary {
   failedRunCount: number;
   cancelledRunCount: number;
   promptTokens: number;
+  estimatedPromptTokens: number;
   completionTokens: number;
   totalTokens: number;
   modelCalls: number;
@@ -99,6 +101,7 @@ export interface AgentUsageRun {
   agentSessionTitle?: string | null;
   runStatus?: string | null;
   promptTokens: number;
+  estimatedPromptTokens: number;
   completionTokens: number;
   totalTokens: number;
   modelCalls: number;

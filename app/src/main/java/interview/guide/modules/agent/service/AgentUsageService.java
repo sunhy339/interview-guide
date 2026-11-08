@@ -65,6 +65,7 @@ public class AgentUsageService {
         entity.setRunStartedAt(session.getRunStartedAt());
         entity.setRunFinishedAt(session.getRunFinishedAt());
         entity.setPromptTokens(safe.promptTokens());
+        entity.setEstimatedPromptTokens(safe.estimatedPromptTokens());
         entity.setCompletionTokens(safe.completionTokens());
         entity.setTotalTokens(safe.totalTokens());
         entity.setModelCalls(safe.modelCalls());
@@ -114,6 +115,7 @@ public class AgentUsageService {
         return new AgentUsageSummaryResponse(
             runCount, completedRunCount, failedRunCount, cancelledRunCount,
             value(totals == null ? null : totals.getPromptTokens()),
+            value(totals == null ? null : totals.getEstimatedPromptTokens()),
             value(totals == null ? null : totals.getCompletionTokens()),
             value(totals == null ? null : totals.getTotalTokens()),
             value(totals == null ? null : totals.getModelCalls()),
@@ -154,7 +156,7 @@ public class AgentUsageService {
                 run.getAgentSessionId(),
                 agentSession == null ? null : agentSession.getTitle(),
                 run.getRunStatus() == null ? null : run.getRunStatus().name(),
-                run.getPromptTokens(), run.getCompletionTokens(), run.getTotalTokens(),
+                run.getPromptTokens(), run.getEstimatedPromptTokens(), run.getCompletionTokens(), run.getTotalTokens(),
                 run.getModelCalls(), run.getDurationMillis(), run.getCost(), run.getCurrency(),
                 run.getProvider(), run.getModel(), run.getRunStartedAt(), run.getRunFinishedAt(), run.getCreatedAt(),
                 run.getPromptVersion(), run.getPromptFingerprint()

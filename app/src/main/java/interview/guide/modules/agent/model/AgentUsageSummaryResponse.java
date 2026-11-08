@@ -10,6 +10,7 @@ public record AgentUsageSummaryResponse(
     long failedRunCount,
     long cancelledRunCount,
     long promptTokens,
+    long estimatedPromptTokens,
     long completionTokens,
     long totalTokens,
     long modelCalls,
@@ -20,9 +21,26 @@ public record AgentUsageSummaryResponse(
         costs = costs == null ? List.of() : List.copyOf(costs);
     }
 
+    /** 兼容尚未统计上下文估算值的旧调用方。 */
+    public AgentUsageSummaryResponse(
+        long runCount,
+        long completedRunCount,
+        long failedRunCount,
+        long cancelledRunCount,
+        long promptTokens,
+        long completionTokens,
+        long totalTokens,
+        long modelCalls,
+        long durationMillis,
+        List<AgentUsageCostSummary> costs
+    ) {
+        this(runCount, completedRunCount, failedRunCount, cancelledRunCount, promptTokens, 0,
+            completionTokens, totalTokens, modelCalls, durationMillis, costs);
+    }
+
     public static AgentUsageSummaryResponse empty() {
         return new AgentUsageSummaryResponse(
-            0, 0, 0, 0, 0, 0, 0, 0, 0, List.of()
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, List.of()
         );
     }
 }

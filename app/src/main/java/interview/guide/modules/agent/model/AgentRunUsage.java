@@ -10,6 +10,7 @@ import java.math.BigDecimal;
  */
 public record AgentRunUsage(
     int promptTokens,
+    int estimatedPromptTokens,
     int completionTokens,
     int totalTokens,
     int modelCalls,
@@ -33,12 +34,31 @@ public record AgentRunUsage(
         String provider,
         String model
     ) {
-        this(promptTokens, completionTokens, totalTokens, modelCalls, durationMillis,
+        this(promptTokens, 0, completionTokens, totalTokens, modelCalls, durationMillis,
             cost, currency, provider, model, null, null);
+    }
+
+    /** 兼容带 Prompt 版本元数据但尚未提供估算输入 Token 的旧调用方。 */
+    public AgentRunUsage(
+        int promptTokens,
+        int completionTokens,
+        int totalTokens,
+        int modelCalls,
+        long durationMillis,
+        BigDecimal cost,
+        String currency,
+        String provider,
+        String model,
+        String promptVersion,
+        String promptFingerprint
+    ) {
+        this(promptTokens, 0, completionTokens, totalTokens, modelCalls, durationMillis,
+            cost, currency, provider, model, promptVersion, promptFingerprint);
     }
 
     public AgentRunUsage {
         promptTokens = Math.max(0, promptTokens);
+        estimatedPromptTokens = Math.max(0, estimatedPromptTokens);
         completionTokens = Math.max(0, completionTokens);
         totalTokens = Math.max(0, totalTokens);
         modelCalls = Math.max(0, modelCalls);
@@ -55,7 +75,7 @@ public record AgentRunUsage(
     }
 
     public static AgentRunUsage empty() {
-        return new AgentRunUsage(0, 0, 0, 0, 0, null, null, null, null, null, null);
+        return new AgentRunUsage(0, 0, 0, 0, 0, 0, null, null, null, null, null, null);
     }
 
     public boolean available() {

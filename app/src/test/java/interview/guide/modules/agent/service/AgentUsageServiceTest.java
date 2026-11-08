@@ -58,7 +58,8 @@ class AgentUsageServiceTest {
             .runFinishedAt(finished)
             .build();
         AgentRunUsage usage = new AgentRunUsage(
-            120, 80, 200, 2, 8_000, new BigDecimal("0.0123"), "USD", "pixel", "gpt-5.6-luna"
+            120, 300, 80, 200, 2, 8_000,
+            new BigDecimal("0.0123"), "USD", "pixel", "gpt-5.6-luna", null, null
         );
         when(usageRepository.findByRunId("run-1")).thenReturn(Optional.empty());
 
@@ -69,6 +70,7 @@ class AgentUsageServiceTest {
         AgentRunUsageEntity saved = captor.getValue();
         assertThat(saved.getRunId()).isEqualTo("run-1");
         assertThat(saved.getTotalTokens()).isEqualTo(200);
+        assertThat(saved.getEstimatedPromptTokens()).isEqualTo(300);
         assertThat(saved.getCost()).isEqualByComparingTo("0.0123");
         assertThat(saved.getRunStatus()).isEqualTo(AgentRunStatus.COMPLETED);
 
@@ -106,6 +108,7 @@ class AgentUsageServiceTest {
     void summarizesTokensStatusesDurationAndCostsByOwner() {
         AgentUsageTotalsProjection totals = org.mockito.Mockito.mock(AgentUsageTotalsProjection.class);
         when(totals.getPromptTokens()).thenReturn(150L);
+        when(totals.getEstimatedPromptTokens()).thenReturn(600L);
         when(totals.getCompletionTokens()).thenReturn(55L);
         when(totals.getTotalTokens()).thenReturn(205L);
         when(totals.getModelCalls()).thenReturn(4L);
@@ -128,6 +131,7 @@ class AgentUsageServiceTest {
         assertThat(summary.failedRunCount()).isEqualTo(1);
         assertThat(summary.cancelledRunCount()).isEqualTo(1);
         assertThat(summary.promptTokens()).isEqualTo(150);
+        assertThat(summary.estimatedPromptTokens()).isEqualTo(600);
         assertThat(summary.completionTokens()).isEqualTo(55);
         assertThat(summary.totalTokens()).isEqualTo(205);
         assertThat(summary.modelCalls()).isEqualTo(4);

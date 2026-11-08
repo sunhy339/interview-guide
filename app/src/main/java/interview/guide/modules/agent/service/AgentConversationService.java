@@ -1755,6 +1755,7 @@ public class AgentConversationService {
 
     private void clearRunUsage(AgentChatSessionEntity session) {
         session.setRunPromptTokens(null);
+        session.setRunEstimatedPromptTokens(null);
         session.setRunCompletionTokens(null);
         session.setRunTotalTokens(null);
         session.setRunModelCalls(null);
@@ -1770,6 +1771,7 @@ public class AgentConversationService {
     private void applyRunUsage(AgentChatSessionEntity session, AgentRunUsage usage) {
         AgentRunUsage safe = usage == null ? AgentRunUsage.empty() : usage;
         session.setRunPromptTokens(safe.promptTokens());
+        session.setRunEstimatedPromptTokens(safe.estimatedPromptTokens());
         session.setRunCompletionTokens(safe.completionTokens());
         session.setRunTotalTokens(safe.totalTokens());
         session.setRunModelCalls(safe.modelCalls());
@@ -1790,6 +1792,7 @@ public class AgentConversationService {
 
     private AgentRunUsage readRunUsage(AgentChatSessionEntity session) {
         boolean present = session.getRunPromptTokens() != null
+            || session.getRunEstimatedPromptTokens() != null
             || session.getRunCompletionTokens() != null
             || session.getRunTotalTokens() != null
             || session.getRunModelCalls() != null
@@ -1799,6 +1802,7 @@ public class AgentConversationService {
             || session.getRunModel() != null;
         return present ? new AgentRunUsage(
             value(session.getRunPromptTokens()),
+            value(session.getRunEstimatedPromptTokens()),
             value(session.getRunCompletionTokens()),
             value(session.getRunTotalTokens()),
             value(session.getRunModelCalls()),
