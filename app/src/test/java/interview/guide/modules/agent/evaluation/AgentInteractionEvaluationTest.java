@@ -129,6 +129,11 @@ class AgentInteractionEvaluationTest {
                 && number(actual.get("modelCalls")) <= 0) {
                 violations.add("第 " + (index + 1) + " 步消息没有模型调用记录");
             }
+            if ("message".equals(text(expected, "type"))
+                && number(actual.get("modelCalls")) > 0
+                && number(actual.get("estimatedPromptTokens")) <= 0) {
+                violations.add("第 " + (index + 1) + " 步消息没有上下文估算 Token 记录");
+            }
         }
         compare(violations, -1, "finalStatus", scenario, run);
         compare(violations, -1, "finalPendingType", scenario, run);

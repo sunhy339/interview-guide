@@ -36,7 +36,8 @@
 - Trace 动作、Token、耗时和费用；
 - 数据库实际副作用是否只发生一次。
 
-当前已有离线矩阵和 fixture 门禁，真实 Provider 样本仍待在目标环境执行。
+当前已有离线矩阵和 fixture 门禁；矩阵已要求普通问答、Skill/RAG、提示注入场景产生
+`EVIDENCE_ASSESSMENT`，真实采集结果还会保存实际/估算输入 Token。真实 Provider 样本仍待在目标环境执行。
 
 ### P1.2 Durable RunState 与内部轮次
 
