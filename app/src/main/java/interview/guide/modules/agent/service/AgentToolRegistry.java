@@ -111,6 +111,8 @@ public class AgentToolRegistry {
         String name = callback.getToolDefinition().name();
         AgentIntentRouter.Capability capability = AgentContextToolCallbackFactory.ACTION_DRAFT.equals(name)
             ? AgentIntentRouter.Capability.ACTION
+            : AgentContextToolCallbackFactory.KNOWLEDGE_BASE_SEARCH.equals(name)
+            ? AgentIntentRouter.Capability.RAG
             : name.startsWith("schedule_")
             ? AgentIntentRouter.Capability.SCHEDULE
             : AgentIntentRouter.Capability.CONTEXT;

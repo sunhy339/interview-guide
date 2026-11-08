@@ -462,6 +462,9 @@ public class AgentIntentRouter {
         if (capabilities.contains(Capability.SCHEDULE)) {
             tools.addAll(SCHEDULE_TOOLS);
         }
+        if (capabilities.contains(Capability.RAG)) {
+            tools.add(AgentContextToolCallbackFactory.KNOWLEDGE_BASE_SEARCH);
+        }
         if (capabilities.contains(Capability.ACTION)) {
             tools.add(AgentContextToolCallbackFactory.ACTION_DRAFT);
         }

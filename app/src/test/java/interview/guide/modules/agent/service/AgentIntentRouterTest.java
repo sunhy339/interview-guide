@@ -348,7 +348,8 @@ class AgentIntentRouterTest {
             AgentContextToolCallbackFactory.INTERVIEW_CLEAR,
             AgentContextToolCallbackFactory.CONTEXT_LIST,
             AgentContextToolCallbackFactory.CONTEXT_ASSET_ACTION,
-            AgentContextToolCallbackFactory.CONTEXT_ASSET_STATUS
+            AgentContextToolCallbackFactory.CONTEXT_ASSET_STATUS,
+            AgentContextToolCallbackFactory.KNOWLEDGE_BASE_SEARCH
         );
         assertThat(policy.allowedToolNames())
             .doesNotContain(AgentContextToolCallbackFactory.SCHEDULE_DRAFT);
