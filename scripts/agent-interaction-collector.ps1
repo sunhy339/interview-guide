@@ -164,16 +164,31 @@ function Get-TraceResources([string]$AgentSessionId, [string]$RunId) {
     }
 }
 
-function Get-RunEventTypes([string]$AgentSessionId, [string]$RunId) {
+function Get-RunEvents([string]$AgentSessionId, [string]$RunId) {
     if ([string]::IsNullOrWhiteSpace($RunId)) { return @() }
     try {
         $events = Invoke-JsonApi "/api/agent/sessions/$AgentSessionId/run-events?runId=$([Uri]::EscapeDataString($RunId))&limit=200"
-        return @($events.data | ForEach-Object { [string]$_.eventType } |
-            Where-Object { $_ } | Select-Object -Unique)
+        return @($events.data | ForEach-Object {
+            [ordered]@{
+                eventType = [string]$_.eventType
+                modelTurnId = [string]$_.modelTurnId
+                toolCallId = [string]$_.toolCallId
+                providerResponseId = [string]$_.providerResponseId
+                providerToolCallIdsHash = [string]$_.providerToolCallIdsHash
+                providerResponseCount = if ($null -eq $_.providerResponseCount) { 0 } else { [int]$_.providerResponseCount }
+                providerToolCallCount = if ($null -eq $_.providerToolCallCount) { 0 } else { [int]$_.providerToolCallCount }
+                status = [string]$_.status
+            }
+        } | Where-Object { $_.eventType })
     } catch {
         # Run 事件是诊断补充；核心状态和 Trace 仍由会话接口校验。
         return @()
     }
+}
+
+function Get-RunEventTypes([string]$AgentSessionId, [string]$RunId) {
+    return @(Get-RunEvents $AgentSessionId $RunId |
+        ForEach-Object { [string]$_.eventType } | Select-Object -Unique)
 }
 
 function Get-CodeVersion {
@@ -257,6 +272,7 @@ function Invoke-ScenarioMessage(
     $acceptWaiting = [string]$Step.expectedStatus -eq 'WAITING_USER'
     $conversation = Wait-Conversation $InterviewId $AgentSessionId $acceptWaiting
     $usage = $conversation.data.runUsage
+    $runEvents = @(Get-RunEvents $AgentSessionId ([string]$conversation.data.runId))
     $stepResult = [ordered]@{
         type = 'message'
         status = [string]$conversation.data.runStatus
@@ -267,7 +283,8 @@ function Invoke-ScenarioMessage(
         userMessageCount = Get-UserMessageCount $conversation
         traceActions = @(Get-TraceActions $AgentSessionId ([string]$conversation.data.runId))
         traceResources = @(Get-TraceResources $AgentSessionId ([string]$conversation.data.runId))
-        runEventTypes = @(Get-RunEventTypes $AgentSessionId ([string]$conversation.data.runId))
+        runEvents = $runEvents
+        runEventTypes = @($runEvents | ForEach-Object { [string]$_.eventType } | Select-Object -Unique)
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
         promptTokens = if ($usage) { [int]$usage.promptTokens } else { 0 }
         estimatedPromptTokens = if ($usage) { [int]$usage.estimatedPromptTokens } else { 0 }
@@ -293,6 +310,7 @@ function Invoke-ScenarioConfirm(
     $actionStatus = [string]$confirmed.data.status
     $conversation = Wait-Conversation $InterviewId $AgentSessionId $false
     $usage = $conversation.data.runUsage
+    $runEvents = @(Get-RunEvents $AgentSessionId ([string]$conversation.data.runId))
     $stepResult = [ordered]@{
         type = [string]$Step.type
         status = [string]$conversation.data.runStatus
@@ -308,7 +326,8 @@ function Invoke-ScenarioConfirm(
         userMessageCount = Get-UserMessageCount $conversation
         traceActions = @(Get-TraceActions $AgentSessionId ([string]$conversation.data.runId))
         traceResources = @(Get-TraceResources $AgentSessionId ([string]$conversation.data.runId))
-        runEventTypes = @(Get-RunEventTypes $AgentSessionId ([string]$conversation.data.runId))
+        runEvents = $runEvents
+        runEventTypes = @($runEvents | ForEach-Object { [string]$_.eventType } | Select-Object -Unique)
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
         promptTokens = if ($usage) { [int]$usage.promptTokens } else { 0 }
         estimatedPromptTokens = if ($usage) { [int]$usage.estimatedPromptTokens } else { 0 }
@@ -335,6 +354,7 @@ function Invoke-ScenarioCancel(
     $actionStatus = [string]$cancelled.data.status
     $conversation = Wait-Conversation $InterviewId $AgentSessionId $false
     $usage = $conversation.data.runUsage
+    $runEvents = @(Get-RunEvents $AgentSessionId ([string]$conversation.data.runId))
     $stepResult = [ordered]@{
         type = [string]$Step.type
         status = [string]$conversation.data.runStatus
@@ -350,7 +370,8 @@ function Invoke-ScenarioCancel(
         userMessageCount = Get-UserMessageCount $conversation
         traceActions = @(Get-TraceActions $AgentSessionId ([string]$conversation.data.runId))
         traceResources = @(Get-TraceResources $AgentSessionId ([string]$conversation.data.runId))
-        runEventTypes = @(Get-RunEventTypes $AgentSessionId ([string]$conversation.data.runId))
+        runEvents = $runEvents
+        runEventTypes = @($runEvents | ForEach-Object { [string]$_.eventType } | Select-Object -Unique)
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
         promptTokens = if ($usage) { [int]$usage.promptTokens } else { 0 }
         estimatedPromptTokens = if ($usage) { [int]$usage.estimatedPromptTokens } else { 0 }
