@@ -850,7 +850,7 @@ public class InterviewAgentService {
                         : streamModelWithRetry(
                             modelStreamFactory, request.providerId(), sessionId,
                             preparedMessage.assistantMessageId(), preparedMessage.runId(), context.sources(),
-                            runTracker, taskHandle
+                            ragExpected(context, request, intentDecision), runTracker, taskHandle
                         );
                     boolean generalRequest = "general".equalsIgnoreCase(request.goal());
                     boolean hasOptionalSource = context.sources().stream()
@@ -1458,6 +1458,7 @@ public class InterviewAgentService {
         Long assistantMessageId,
         String runId,
         List<interview.guide.modules.agent.model.AgentSource> sources,
+        boolean ragExpected,
         AgentMetrics.RunTracker runTracker,
         AgentTaskHandle taskHandle
     ) {
@@ -1492,6 +1493,13 @@ public class InterviewAgentService {
                 recordRunTrace(
                     runTracker, "SOURCE_INTEGRITY_CHECK", "agent-grounding", "sources",
                     sourceIntegrity.auditValue()
+                );
+                AgentEvidenceAssessment.Assessment evidence = AgentEvidenceAssessment.assess(
+                    output.get().toString(), sources, ragExpected
+                );
+                recordRunTrace(
+                    runTracker, "EVIDENCE_ASSESSMENT", "agent-evidence", "answer",
+                    evidence.auditValue()
                 );
                 String notice = grounding.notice();
                 String emittedNotice = appendOutputChunk(notice, output);
@@ -2008,6 +2016,28 @@ public class InterviewAgentService {
             3. 依据边界要区分面试报告、Skill 资料和知识库是否真实可用；不能把未作答或占位分数当成能力结论。
             4. 重点和行动建议要覆盖报告中实际出现的主要主题，不得编造报告没有出现的经历或结果。
             """;
+    }
+
+    /** 判断本轮是否期待知识库证据；只影响低敏评估，不改变工具和上下文装配。 */
+    private boolean ragExpected(
+        AgentContextService.AgentContext context,
+        AgentMessageRequest request,
+        AgentIntentRouter.Decision intentDecision
+    ) {
+        if (context != null && context.sources() != null && context.sources().stream()
+            .anyMatch(source -> source != null && "rag".equalsIgnoreCase(source.kind()))) {
+            return true;
+        }
+        if (intentDecision != null
+            && intentDecision.capabilities().contains(AgentIntentRouter.Capability.RAG)) {
+            return true;
+        }
+        String combined = ((request == null ? "" : request.goal()) + "\n"
+            + (request == null ? "" : request.message())).toLowerCase(java.util.Locale.ROOT);
+        boolean explicitlyNoRag = combined.contains("没有知识库")
+            || combined.contains("没有检索") || combined.contains("无知识库")
+            || combined.contains("无检索");
+        return !explicitlyNoRag && (combined.contains("知识库") || combined.contains("rag"));
     }
 
     private String compactPromptText(String value, int maxChars) {
