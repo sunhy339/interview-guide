@@ -31,7 +31,7 @@ class AgentInteractionMatrixTest {
     @DisplayName("覆盖普通多轮、缺信息续跑和确认恢复")
     void validatesInteractionMatrix() throws IOException {
         List<Map<String, Object>> scenarios = loadScenarios();
-        assertThat(scenarios).hasSize(6);
+        assertThat(scenarios).hasSize(8);
         Set<String> ids = new HashSet<>();
         Set<String> stepTypes = new HashSet<>();
         for (Map<String, Object> scenario : scenarios) {
@@ -39,6 +39,9 @@ class AgentInteractionMatrixTest {
             assertThat(id).isNotBlank();
             assertThat(ids.add(id)).as("场景 ID 重复: %s", id).isTrue();
             assertThat(text(scenario, "goal")).isNotBlank();
+            if ("general".equals(text(scenario, "sessionType"))) {
+                assertThat(text(scenario, "id")).startsWith("general-");
+            }
             List<Map<String, Object>> steps = steps(scenario);
             assertThat(steps).isNotEmpty();
             assertThat(text(scenario, "expectedFinalStatus")).isIn(

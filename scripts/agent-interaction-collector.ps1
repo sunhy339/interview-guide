@@ -27,6 +27,7 @@ $BaseUrl = $BaseUrl.TrimEnd('/')
 $jar = Join-Path $env:TEMP "agent-interaction-$([guid]::NewGuid()).cookie"
 $createdInterview = $false
 $createdThreads = [System.Collections.Generic.List[string]]::new()
+$createdGeneralThreads = [System.Collections.Generic.List[string]]::new()
 
 function Assert-Pass([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -86,13 +87,23 @@ function Parse-SseEvents([string]$Raw) {
     return $events
 }
 
-function Invoke-AgentStream([string]$InterviewId, [string]$AgentSessionId, [object]$Body) {
+function Invoke-AgentStream(
+    [string]$InterviewId,
+    [string]$AgentSessionId,
+    [object]$Body,
+    [bool]$GeneralSession = $false
+) {
     $output = Join-Path $env:TEMP "agent-interaction-stream-$([guid]::NewGuid()).txt"
     $headers = Join-Path $env:TEMP "agent-interaction-stream-$([guid]::NewGuid()).headers"
     try {
+        $streamPath = if ($GeneralSession) {
+            "/api/agent/sessions/$AgentSessionId/messages/stream"
+        } else {
+            "/api/agent/interview-sessions/$InterviewId/messages/stream"
+        }
         $args = @(
             '-sS', '--max-time', '300', '-b', $jar, '-X', 'POST',
-            "$BaseUrl/api/agent/interview-sessions/$InterviewId/messages/stream",
+            "$BaseUrl$streamPath",
             '-H', "X-XSRF-TOKEN:$script:xsrf", '-H', 'Content-Type: application/json',
             '--data-raw', ($Body | ConvertTo-Json -Depth 50 -Compress),
             '-D', $headers, '-o', $output
@@ -120,12 +131,18 @@ function Invoke-AgentStream([string]$InterviewId, [string]$AgentSessionId, [obje
 function Wait-Conversation(
     [string]$SessionId,
     [string]$AgentSessionId,
-    [bool]$AcceptWaitingUser = $false
+    [bool]$AcceptWaitingUser = $false,
+    [bool]$GeneralSession = $false
 ) {
     $query = "?agentSessionId=$([Uri]::EscapeDataString($AgentSessionId))"
     $last = $null
     for ($attempt = 1; $attempt -le 90; $attempt++) {
-        $last = Invoke-JsonApi "/api/agent/interview-sessions/$SessionId/conversation$query"
+        $conversationPath = if ($GeneralSession) {
+            "/api/agent/sessions/$AgentSessionId"
+        } else {
+            "/api/agent/interview-sessions/$SessionId/conversation$query"
+        }
+        $last = Invoke-JsonApi $conversationPath
         $status = [string]$last.data.runStatus
         $terminal = $status -eq 'COMPLETED' -or $status -eq 'FAILED' -or $status -eq 'CANCELLED'
         $terminal = $terminal -or ($AcceptWaitingUser -and $status -eq 'WAITING_USER')
@@ -227,6 +244,37 @@ function New-Interview {
     return [string]$created.data.sessionId
 }
 
+function New-GeneralConversation([string]$ScenarioId) {
+    $created = Invoke-JsonApi '/api/agent/sessions' 'POST' @{
+        title = "交互评测 $ScenarioId"
+    }
+    Assert-Pass ($created.code -eq 200 -and $null -ne $created.data.agentSessionId) `
+        "创建通用 Agent 交互线程成功（$ScenarioId）"
+    $agentSessionId = [string]$created.data.agentSessionId
+    $createdGeneralThreads.Add($agentSessionId)
+    return $agentSessionId
+}
+
+function Attach-ScenarioContext(
+    [object]$Scenario,
+    [string]$InterviewId,
+    [string]$AgentSessionId
+) {
+    if ($Scenario.attachInterviewContext -ne $true) {
+        return
+    }
+    $binding = Invoke-JsonApi "/api/agent/sessions/$AgentSessionId/contexts" 'POST' @{
+        sourceType = 'INTERVIEW_REPORT'
+        resourceId = $InterviewId
+        scope = 'SESSION'
+    }
+    $bindingOk = ($binding.code -eq 200) `
+        -and ([string]$binding.data.contextType -eq 'INTERVIEW_REPORT') `
+        -and ([string]$binding.data.resourceId -eq $InterviewId)
+    Assert-Pass $bindingOk `
+        "显式绑定面试报告到通用 Agent 会话成功（$($Scenario.id)）"
+}
+
 function Assert-Step(
     [object]$ScenarioStep,
     [string]$ActualStatus,
@@ -283,7 +331,8 @@ function Invoke-ScenarioMessage(
     [string]$InterviewId,
     [string]$AgentSessionId,
     [string]$MemoryKey,
-    [string]$Provider
+    [string]$Provider,
+    [bool]$GeneralSession = $false
 ) {
     $payload = @{
         goal = [string]$Scenario.goal
@@ -293,12 +342,12 @@ function Invoke-ScenarioMessage(
         memoryKey = $MemoryKey
         agentSessionId = $AgentSessionId
     }
-    $stream = Invoke-AgentStream $InterviewId $AgentSessionId $payload
+    $stream = Invoke-AgentStream $InterviewId $AgentSessionId $payload $GeneralSession
     $events = @(Parse-SseEvents $stream)
     $errors = @($events | Where-Object { $_.data.type -eq 'error' })
     if ($errors.Count -gt 0) { throw "SSE 返回错误：$([string]$errors[0].data.message)" }
     $acceptWaiting = [string]$Step.expectedStatus -eq 'WAITING_USER'
-    $conversation = Wait-Conversation $InterviewId $AgentSessionId $acceptWaiting
+    $conversation = Wait-Conversation $InterviewId $AgentSessionId $acceptWaiting $GeneralSession
     $usage = $conversation.data.runUsage
     $runEvents = @(Get-RunEvents $AgentSessionId ([string]$conversation.data.runId))
     $stepResult = [ordered]@{
@@ -311,6 +360,8 @@ function Invoke-ScenarioMessage(
         userMessageCount = Get-UserMessageCount $conversation
         traceActions = @(Get-TraceActions $AgentSessionId ([string]$conversation.data.runId))
         traceResources = @(Get-TraceResources $AgentSessionId ([string]$conversation.data.runId))
+        runSourceKinds = @($conversation.data.runSources |
+            ForEach-Object { [string]$_.kind } | Where-Object { $_ } | Select-Object -Unique)
         runEvents = $runEvents
         runEventTypes = @($runEvents | ForEach-Object { [string]$_.eventType } | Select-Object -Unique)
         modelCalls = if ($usage) { [int]$usage.modelCalls } else { 0 }
@@ -456,12 +507,20 @@ try {
     foreach ($scenario in $scenarios) {
         $scenarioIndex++
         $scenarioId = [string]$scenario.id
-        $thread = Invoke-JsonApi "/api/agent/interview-sessions/$InterviewSessionId/conversations" 'POST' @{
-            title = "交互评测 $scenarioId"
+        $generalSession = [string]$scenario.sessionType -eq 'general'
+        $agentSessionId = if ($generalSession) {
+            New-GeneralConversation $scenarioId
+        } else {
+            $thread = Invoke-JsonApi "/api/agent/interview-sessions/$InterviewSessionId/conversations" 'POST' @{
+                title = "交互评测 $scenarioId"
+            }
+            Assert-Pass ($thread.code -eq 200 -and $null -ne $thread.data.agentSessionId) `
+                "创建交互线程成功（$scenarioId）"
+            $id = [string]$thread.data.agentSessionId
+            $createdThreads.Add($id)
+            $id
         }
-        Assert-Pass ($thread.code -eq 200 -and $null -ne $thread.data.agentSessionId) "创建交互线程成功（$scenarioId）"
-        $agentSessionId = [string]$thread.data.agentSessionId
-        $createdThreads.Add($agentSessionId)
+        Attach-ScenarioContext $scenario $InterviewSessionId $agentSessionId
         $memoryKey = "aiq-$([guid]::NewGuid().ToString('N').Substring(0, 16))"
         $stepResults = [System.Collections.Generic.List[object]]::new()
         $lastConversation = $null
@@ -472,7 +531,8 @@ try {
             $script:stepIndex++
             Write-Host "[$scenarioIndex/$($scenarios.Count)] $scenarioId 第 $script:stepIndex 步：$($step.type)" -ForegroundColor Cyan
             $execution = if ([string]$step.type -eq 'message') {
-                Invoke-ScenarioMessage $scenario $step $InterviewSessionId $agentSessionId $memoryKey $selectedProviderId
+                Invoke-ScenarioMessage $scenario $step $InterviewSessionId $agentSessionId $memoryKey `
+                    $selectedProviderId $generalSession
             } elseif ([string]$step.type -eq 'confirm_latest_action') {
                 Invoke-ScenarioConfirm $scenario $step $InterviewSessionId $agentSessionId
             } elseif ([string]$step.type -eq 'cancel_latest_action') {
@@ -505,7 +565,13 @@ try {
             steps = @($stepResults)
         }
         $record | ConvertTo-Json -Depth 50 -Compress | Add-Content -LiteralPath $OutputPath -Encoding utf8
-        Invoke-JsonApi "/api/agent/interview-sessions/$InterviewSessionId/conversations/$agentSessionId" 'DELETE' | Out-Null
+        if ($generalSession) {
+            Invoke-JsonApi "/api/agent/sessions/$agentSessionId" 'DELETE' | Out-Null
+            $createdGeneralThreads.Remove($agentSessionId)
+        } else {
+            Invoke-JsonApi "/api/agent/interview-sessions/$InterviewSessionId/conversations/$agentSessionId" 'DELETE' | Out-Null
+            $createdThreads.Remove($agentSessionId)
+        }
     }
 
     Write-Host "[PASS] 已生成真实多轮交互 JSONL：$OutputPath" -ForegroundColor Green
@@ -521,6 +587,11 @@ try {
     foreach ($agentSessionId in $createdThreads) {
         try {
             Invoke-JsonApi "/api/agent/interview-sessions/$InterviewSessionId/conversations/$agentSessionId" 'DELETE' | Out-Null
+        } catch { }
+    }
+    foreach ($agentSessionId in $createdGeneralThreads) {
+        try {
+            Invoke-JsonApi "/api/agent/sessions/$agentSessionId" 'DELETE' | Out-Null
         } catch { }
     }
     if ($createdInterview -and -not [string]::IsNullOrWhiteSpace($InterviewSessionId)) {
