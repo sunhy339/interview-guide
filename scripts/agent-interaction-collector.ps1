@@ -86,21 +86,34 @@ function Parse-SseEvents([string]$Raw) {
     return $events
 }
 
-function Invoke-AgentStream([string]$SessionId, [object]$Body) {
+function Invoke-AgentStream([string]$InterviewId, [string]$AgentSessionId, [object]$Body) {
     $output = Join-Path $env:TEMP "agent-interaction-stream-$([guid]::NewGuid()).txt"
+    $headers = Join-Path $env:TEMP "agent-interaction-stream-$([guid]::NewGuid()).headers"
     try {
         $args = @(
             '-sS', '--max-time', '300', '-b', $jar, '-X', 'POST',
-            "$BaseUrl/api/agent/sessions/$SessionId/messages/stream",
+            "$BaseUrl/api/agent/interview-sessions/$InterviewId/messages/stream",
             '-H', "X-XSRF-TOKEN:$script:xsrf", '-H', 'Content-Type: application/json',
-            '--data-raw', ($Body | ConvertTo-Json -Depth 50 -Compress), '-o', $output
+            '--data-raw', ($Body | ConvertTo-Json -Depth 50 -Compress),
+            '-D', $headers, '-o', $output
         )
         & curl.exe @args 2>$null | Out-Null
+        $statusLine = if (Test-Path -LiteralPath $headers) {
+            Get-Content -LiteralPath $headers | Where-Object { $_ -match '^HTTP/' } | Select-Object -Last 1
+        } else { '' }
+        if ($statusLine -notmatch '\s2\d\d\s') {
+            $status = if ($statusLine) { $statusLine.Trim() } else { 'HTTP 状态未知' }
+            $errorBody = if (Test-Path -LiteralPath $output) {
+                (Get-Content -LiteralPath $output -Raw).Trim()
+            } else { '' }
+            throw "Agent SSE 请求失败（$status）：$errorBody"
+        }
         $raw = if (Test-Path -LiteralPath $output) { Get-Content -LiteralPath $output -Raw } else { '' }
         if ([string]::IsNullOrWhiteSpace($raw)) { throw 'Agent SSE 返回为空' }
         return $raw
     } finally {
         Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $headers -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -231,6 +244,21 @@ function Assert-Step(
     }
 }
 
+function Assert-RunObservability([object]$StepResult) {
+    if ($StepResult.type -ne 'message' -or [int]$StepResult.modelCalls -le 0) {
+        return
+    }
+    if ([int]$StepResult.estimatedPromptTokens -le 0) {
+        throw "真实 Provider 已调用模型，但部署未返回上下文估算 Token（modelCalls=$($StepResult.modelCalls)）；请先部署包含 Agent 预算观测的版本"
+    }
+    $eventTypes = @($StepResult.runEventTypes)
+    foreach ($required in @('MODEL_TURN_STARTED', 'MODEL_TURN_COMPLETED')) {
+        if ($eventTypes -notcontains $required) {
+            throw "真实 Provider 已调用模型，但 Run 事件缺少 $required；请检查 Agent 事件迁移和部署版本"
+        }
+    }
+}
+
 function Assert-ActionResult(
     [object]$ScenarioStep,
     [object]$ActionResponse
@@ -265,7 +293,7 @@ function Invoke-ScenarioMessage(
         memoryKey = $MemoryKey
         agentSessionId = $AgentSessionId
     }
-    $stream = Invoke-AgentStream $AgentSessionId $payload
+    $stream = Invoke-AgentStream $InterviewId $AgentSessionId $payload
     $events = @(Parse-SseEvents $stream)
     $errors = @($events | Where-Object { $_.data.type -eq 'error' })
     if ($errors.Count -gt 0) { throw "SSE 返回错误：$([string]$errors[0].data.message)" }
@@ -294,6 +322,7 @@ function Invoke-ScenarioMessage(
         answer = Get-ConversationAnswer $conversation
     }
     Assert-Step $Step $stepResult.status $stepResult.pendingType '' $script:stepIndex
+    Assert-RunObservability $stepResult
     return [pscustomobject]@{ result = $stepResult; conversation = $conversation; usage = $usage }
 }
 
