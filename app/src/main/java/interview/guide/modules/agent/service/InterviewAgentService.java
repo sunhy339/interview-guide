@@ -802,7 +802,13 @@ public class InterviewAgentService {
                                         if (response == null) {
                                             return;
                                         }
-                                        providerTrace.observe(response);
+                                        AgentProviderResponseTrace.BatchSnapshot batch =
+                                            providerTrace.observe(response);
+                                        if (runEventService != null && batch.hasToolBatch()) {
+                                            runEventService.appendProviderToolBatch(
+                                                runTracker, modelTurnId, batch, "observed"
+                                            );
+                                        }
                                         if (response.getMetadata() != null
                                             && response.getMetadata().getUsage() != null) {
                                             var usage = response.getMetadata().getUsage();

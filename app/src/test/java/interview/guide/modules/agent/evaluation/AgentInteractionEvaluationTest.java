@@ -111,6 +111,7 @@ class AgentInteractionEvaluationTest {
             compareRequiredTraceResources(violations, index, expected, actual);
             compareRequiredRunEventTypes(violations, index, expected, actual);
             compareForbiddenRunEventTypes(violations, index, expected, actual);
+            validateToolBatchEvents(violations, index, actual);
             if ("confirm_latest_action".equals(text(expected, "type"))
                 || "cancel_latest_action".equals(text(expected, "type"))) {
                 compare(violations, index, "actionStatus", expected, actual);
@@ -138,6 +139,29 @@ class AgentInteractionEvaluationTest {
         compare(violations, -1, "finalStatus", scenario, run);
         compare(violations, -1, "finalPendingType", scenario, run);
         return violations;
+    }
+
+    private void validateToolBatchEvents(
+        List<String> violations, int index, Map<String, Object> actual
+    ) {
+        Object value = actual.get("runEvents");
+        if (!(value instanceof List<?> events)) {
+            return;
+        }
+        String prefix = "第 " + (index + 1) + " 步";
+        for (Object item : events) {
+            if (!(item instanceof Map<?, ?> event)
+                || !"MODEL_TOOL_BATCH".equals(String.valueOf(event.get("eventType")))) {
+                continue;
+            }
+            if (eventText(event, "modelTurnId").isBlank()) {
+                violations.add(prefix + " MODEL_TOOL_BATCH 缺少 modelTurnId");
+            }
+            Object count = event.get("providerToolCallCount");
+            if (!(count instanceof Number number) || number.intValue() <= 0) {
+                violations.add(prefix + " MODEL_TOOL_BATCH 的工具调用数量无效");
+            }
+        }
     }
 
     private void compareRequiredTraceActions(
@@ -317,6 +341,11 @@ class AgentInteractionEvaluationTest {
     }
 
     private String text(Map<String, Object> value, String key) {
+        Object item = value.get(key);
+        return item instanceof String text ? text : "";
+    }
+
+    private String eventText(Map<?, ?> value, String key) {
         Object item = value.get(key);
         return item instanceof String text ? text : "";
     }

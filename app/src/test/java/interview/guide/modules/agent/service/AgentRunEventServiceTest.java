@@ -96,6 +96,30 @@ class AgentRunEventServiceTest {
     }
 
     @Test
+    void persistsToolBatchCorrelationWithoutToolArguments() {
+        when(repository.save(any(AgentRunEventEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        AgentProviderResponseTrace.BatchSnapshot batch =
+            new AgentProviderResponseTrace.BatchSnapshot(
+                "response-1", "response-hash", "tool-hash", 1, 1, true
+            );
+
+        new AgentRunEventService(repository).appendProviderToolBatch(
+            tracker("run-tool-batch"), "turn-1", batch, "observed"
+        );
+
+        ArgumentCaptor<AgentRunEventEntity> captor = ArgumentCaptor.forClass(AgentRunEventEntity.class);
+        verify(repository).save(captor.capture());
+        AgentRunEventEntity saved = captor.getValue();
+        assertThat(saved.getEventType()).isEqualTo("MODEL_TOOL_BATCH");
+        assertThat(saved.getModelTurnId()).isEqualTo("turn-1");
+        assertThat(saved.getProviderResponseId()).isEqualTo("response-1");
+        assertThat(saved.getProviderToolCallIdsHash()).isEqualTo("tool-hash");
+        assertThat(saved.getProviderToolCallCount()).isEqualTo(1);
+        assertThat(saved.getArgumentsHash()).isNull();
+    }
+
+    @Test
     void persistsAsyncOperationContextWithoutRawOperationDetails() {
         when(repository.save(any(AgentRunEventEntity.class)))
             .thenAnswer(invocation -> invocation.getArgument(0));
