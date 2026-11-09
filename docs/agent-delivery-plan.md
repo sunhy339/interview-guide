@@ -22,6 +22,7 @@
 | A0 | 真实 Provider 多轮验收 | `feature/agent-real-provider-eval` | 当前 Agent 运行时 | 只增加采集和门禁，不改业务行为 | 普通问答、Skill/RAG、报告、工具、补充、确认、取消、断线和并发 |
 | A1 | 记忆来源链 | `feature/agent-memory-provenance` | P0 记忆治理 | 记忆 JSON 新增可选元数据，旧数据字段为空仍可读 | 来源字段、脱敏、旧 JSON、编辑/撤回、Prompt 不泄漏 |
 | A2 | 内部模型轮次与恢复检查点 | `feature/agent-durable-turn-checkpoint` | A0、现有 RunState | 先只读记录；精确续跑由开关控制，默认安全重生成 | Provider 轮次、工具批次、等待状态、重启和不重复副作用 |
+| A1.5 | 会话输入草稿隔离 | `feature/agent-draft-persistence` | 现有会话切换 | 仅浏览器当前标签页缓存，不写服务端、不进模型上下文 | 切换、刷新、发送清理、通用/面试会话隔离、存储异常回退 |
 | A3 | 全领域工具结果契约 | `feature/agent-domain-result-contracts` | A2 | 只在工具边界校验和包装，不改变领域 API | 简历、记忆、训练、文件和日程的结果码/资源 ID/状态 |
 | A4 | 证据冲突和事实支持度 | `feature/agent-evidence-verifier` | A0、A2 | 先记录评估状态，不阻断回答；后续按评测结果决定是否提示 | 引用缺失、来源冲突、无命中、事实支持度分层 |
 | A5 | 精确预算和缓存指标 | `feature/agent-token-budget-metrics` | A0、A2 | 字符预算继续作为安全兜底，Provider 不支持时保持现状 | 实际 Token、估算 Token、裁剪原因、缓存命中和费用 |
@@ -58,16 +59,21 @@ A1 可以与 A0 并行，因为它只扩展记忆数据结构；A2 以前不直�
 
 ## 4. 当前执行项
 
-当前分支：`feature/agent-memory-provenance`。
+当前分支：按功能包分别验收；最近已完成 `feature/agent-memory-provenance`、
+`feature/agent-run-checkpoint-version`，当前推进 `feature/agent-draft-persistence`。
 
-本分支正在实现 A1：
+本分支正在实现 A1.5：
 
-- 为记忆条目增加可选的 `sourceId`、`version`、`authority`、`selectedReason`；
-- 业务动作写入时关联当前面试会话 ID，但不让模型传入来源归属；
-- 旧记忆 JSON 没有这些字段时照常读取；
-- 编辑和撤回保留来源元数据；
-- 来源元数据不进入长期记忆 Prompt；
-- 通过专项测试后，再执行 Agent 相关全量回归，最后才具备合入条件。
+- Agent 输入草稿按会话写入当前标签页 `sessionStorage`；
+- 切换会话或刷新页面后恢复对应草稿，通用会话与面试会话互不串稿；
+- 发送成功开始运行时清理草稿，不写入服务端历史，也不进入模型上下文；
+- 存储不可用时回退到原有内存草稿逻辑；
+- 通过专项测试后，再执行前端构建和相关 Agent 回归，最后才具备合入条件。
+
+当前已完成的可靠性增量还包括：
+
+- RunState 增加 `checkpoint_version`；旧记录按 v1 兼容，未知版本延迟自动恢复；
+- Agent 输入草稿按会话写入当前标签页 `sessionStorage`，发送成功后清理，切换会话不串稿。
 
 真实 Provider 验收、内部轮次精确恢复、MCP 和外部会议连接仍然是后续独立功能包，不能因为
 离线测试通过就提前宣称完成。
