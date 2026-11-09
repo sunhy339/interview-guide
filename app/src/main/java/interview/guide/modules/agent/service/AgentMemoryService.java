@@ -33,6 +33,7 @@ public class AgentMemoryService {
     private static final int MAX_WEAKNESSES = 8;
     private static final int MAX_GOALS = 5;
     private static final int MAX_ITEM_CHARS = 160;
+    private static final int MAX_PROVENANCE_CHARS = 128;
     private static final String CATEGORY_WEAKNESS = "weakness";
     private static final String CATEGORY_GOAL = "goal";
     private static final String DEFAULT_SOURCE = "interview-report";
@@ -131,11 +132,12 @@ public class AgentMemoryService {
             nextSkill = previous.lastSkillId();
         }
         List<AgentMemoryItem> items = mergeItems(
-            previous.items(), weaknesses, CATEGORY_WEAKNESS, DEFAULT_SOURCE, nextSkill, MAX_WEAKNESSES
+            previous.items(), weaknesses, CATEGORY_WEAKNESS, DEFAULT_SOURCE,
+            null, null, "legacy", "legacy-summary", nextSkill, MAX_WEAKNESSES
         );
         items = mergeItems(
             items, goal == null ? List.of() : List.of(goal), CATEGORY_GOAL,
-            DEFAULT_SOURCE, nextSkill, MAX_GOALS
+            DEFAULT_SOURCE, null, null, "legacy", "legacy-summary", nextSkill, MAX_GOALS
         );
         AgentMemorySnapshot snapshot = saveSnapshot(key, nextSkill, items);
         audit(key, "MEMORY_REMEMBERED", "memory", key, "success");
@@ -146,6 +148,29 @@ public class AgentMemoryService {
     @Transactional
     public AgentMemorySnapshot rememberItem(
         String memoryKey, String category, String content, String jobScope
+    ) {
+        return rememberItemWithProvenance(
+            memoryKey, category, content, jobScope,
+            null, null, "user-confirmed", "explicit-memory-action"
+        );
+    }
+
+    /**
+     * 由已确认的 Agent 动作写入一条带来源链的结构化记忆。
+     *
+     * <p>来源信息只作为治理元数据保存，不参与记忆正文和模型上下文；sourceId
+     * 通常是当前业务资源 ID，不能由模型自行传入。</p>
+     */
+    @Transactional
+    public AgentMemorySnapshot rememberItemWithProvenance(
+        String memoryKey,
+        String category,
+        String content,
+        String jobScope,
+        String sourceId,
+        String version,
+        String authority,
+        String selectedReason
     ) {
         String key = normalizeKey(memoryKey);
         String normalizedCategory = normalizeCategory(category);
@@ -160,7 +185,10 @@ public class AgentMemoryService {
         int max = CATEGORY_GOAL.equals(normalizedCategory) ? MAX_GOALS : MAX_WEAKNESSES;
         List<AgentMemoryItem> items = mergeItems(
             previous.items(), List.of(normalizedContent), normalizedCategory,
-            "agent-action", cleanMetadata(jobScope, 64), max
+            "agent-action", cleanMetadata(sourceId, MAX_PROVENANCE_CHARS),
+            cleanMetadata(version, MAX_PROVENANCE_CHARS),
+            normalizeAuthority(authority), cleanMetadata(selectedReason, MAX_PROVENANCE_CHARS),
+            cleanMetadata(jobScope, 64), max
         );
         AgentMemorySnapshot snapshot = saveSnapshot(key, previous.lastSkillId(), items);
         audit(key, "MEMORY_REMEMBERED", "memory", key, "success");
@@ -188,8 +216,9 @@ public class AgentMemoryService {
         String normalizedScope = jobScope == null ? current.jobScope() : cleanMetadata(jobScope, 64);
         items.set(index, new AgentMemoryItem(
             current.id(), current.category(), normalizedContent, current.source(),
+            current.sourceId(), current.version(), current.authority(), current.selectedReason(),
             normalizedScope,
-            current.confidence(), LocalDateTime.now(), expiresAt(LocalDateTime.now())
+            current.confidence(), LocalDateTime.now(), expiresAt(LocalDateTime.now()), null
         ));
         AgentMemorySnapshot snapshot = saveSnapshot(key, previous.lastSkillId(), items);
         audit(key, "MEMORY_UPDATED", "memory-item", normalizedId, "success");
@@ -209,7 +238,9 @@ public class AgentMemoryService {
         }
         AgentMemoryItem current = items.get(index);
         items.set(index, new AgentMemoryItem(
-            current.id(), current.category(), current.content(), current.source(), current.jobScope(),
+            current.id(), current.category(), current.content(), current.source(),
+            current.sourceId(), current.version(), current.authority(), current.selectedReason(),
+            current.jobScope(),
             current.confidence(), current.updatedAt(), current.expiresAt(), LocalDateTime.now()
         ));
         AgentMemorySnapshot snapshot = saveSnapshot(key, previous.lastSkillId(), items);
@@ -260,6 +291,10 @@ public class AgentMemoryService {
         List<String> newValues,
         String category,
         String source,
+        String sourceId,
+        String version,
+        String authority,
+        String selectedReason,
         String jobScope,
         int max
     ) {
@@ -286,7 +321,9 @@ public class AgentMemoryService {
                 }
                 categoryItems.add(0, new AgentMemoryItem(
                     UUID.randomUUID().toString(), category, normalized, source,
-                    cleanMetadata(jobScope, 64), 0.7d, LocalDateTime.now(), expiresAt(LocalDateTime.now())
+                    sourceId, version, authority, selectedReason,
+                    cleanMetadata(jobScope, 64), 0.7d, LocalDateTime.now(),
+                    expiresAt(LocalDateTime.now()), null
                 ));
             });
         }
@@ -318,6 +355,10 @@ public class AgentMemoryService {
                 }
                 result.add(new AgentMemoryItem(
                     id, category, content, cleanMetadata(item.source(), 64),
+                    cleanMetadata(item.sourceId(), MAX_PROVENANCE_CHARS),
+                    cleanMetadata(item.version(), MAX_PROVENANCE_CHARS),
+                    normalizeAuthority(item.authority()),
+                    cleanMetadata(item.selectedReason(), MAX_PROVENANCE_CHARS),
                     cleanMetadata(item.jobScope(), 64),
                     normalizeConfidence(item.confidence()),
                     item.updatedAt() == null ? fallbackUpdatedAt : item.updatedAt(),
@@ -346,8 +387,9 @@ public class AgentMemoryService {
         List<String> cleaned = cleanList(values, max);
         for (int index = 0; index < cleaned.size(); index++) {
             result.add(new AgentMemoryItem(
-                category + "-" + index, category, cleaned.get(index), "legacy-summary", null,
-                0.5d, updatedAt, expiresAt(updatedAt)
+                category + "-" + index, category, cleaned.get(index), "legacy-summary",
+                null, null, "legacy", "legacy-summary", null,
+                0.5d, updatedAt, expiresAt(updatedAt), null
             ));
         }
     }
@@ -415,6 +457,17 @@ public class AgentMemoryService {
         return null;
     }
 
+    private String normalizeAuthority(String authority) {
+        String normalized = cleanMetadata(authority, MAX_PROVENANCE_CHARS);
+        if (normalized == null) {
+            return null;
+        }
+        return switch (normalized) {
+            case "user-confirmed", "system-derived", "legacy" -> normalized;
+            default -> "unclassified";
+        };
+    }
+
     private void addIfPresent(LinkedHashSet<String> values, String value) {
         String clean = cleanContent(value);
         if (clean != null) {
@@ -475,6 +528,10 @@ public class AgentMemoryService {
         String category,
         String content,
         String source,
+        String sourceId,
+        String version,
+        String authority,
+        String selectedReason,
         String jobScope,
         Double confidence,
         LocalDateTime updatedAt,
@@ -483,7 +540,8 @@ public class AgentMemoryService {
     ) {
         private static MemoryItemPayload from(AgentMemoryItem item) {
             return new MemoryItemPayload(
-                item.id(), item.category(), item.content(), item.source(), item.jobScope(),
+                item.id(), item.category(), item.content(), item.source(), item.sourceId(),
+                item.version(), item.authority(), item.selectedReason(), item.jobScope(),
                 item.confidence(), item.updatedAt(), item.expiresAt(), item.revokedAt()
             );
         }
