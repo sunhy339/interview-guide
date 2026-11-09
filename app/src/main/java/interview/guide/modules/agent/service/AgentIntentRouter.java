@@ -119,10 +119,11 @@ public class AgentIntentRouter {
     private final PromptSanitizer promptSanitizer;
     private final ObjectMapper objectMapper;
     private final AgentMetrics agentMetrics;
+    private final AgentToolRegistry agentToolRegistry;
 
     /** 保留无 Spring 构造方式，供规则兜底单元测试和旧内部调用方使用。 */
     public AgentIntentRouter() {
-        this(null, null, null, null);
+        this(null, null, null, null, null);
     }
 
     @Autowired
@@ -130,12 +131,26 @@ public class AgentIntentRouter {
         LlmProviderRegistry providerRegistry,
         PromptSanitizer promptSanitizer,
         ObjectMapper objectMapper,
-        AgentMetrics agentMetrics
+        AgentMetrics agentMetrics,
+        @Autowired(required = false) AgentToolRegistry agentToolRegistry
     ) {
         this.providerRegistry = providerRegistry;
         this.promptSanitizer = promptSanitizer;
         this.objectMapper = objectMapper;
         this.agentMetrics = agentMetrics;
+        this.agentToolRegistry = agentToolRegistry;
+    }
+
+    /**
+     * 保留无工具目录的测试和迁移期构造方式；生产装配使用带注册中心的构造器。
+     */
+    public AgentIntentRouter(
+        LlmProviderRegistry providerRegistry,
+        PromptSanitizer promptSanitizer,
+        ObjectMapper objectMapper,
+        AgentMetrics agentMetrics
+    ) {
+        this(providerRegistry, promptSanitizer, objectMapper, agentMetrics, null);
     }
 
     /** 兼容旧调用方：没有模型依赖时执行安全的本地兜底路由。 */
@@ -453,8 +468,18 @@ public class AgentIntentRouter {
         if (decision == null || decision.capabilities() == null || decision.capabilities().isEmpty()) {
             return ToolPolicy.none();
         }
-        Set<String> tools = new HashSet<>();
         Set<Capability> capabilities = decision.capabilities();
+        Set<String> tools = agentToolRegistry == null
+            ? staticToolsFor(capabilities)
+            : agentToolRegistry.descriptors().stream()
+                .filter(descriptor -> capabilityMatches(descriptor.capability(), capabilities))
+                .map(AgentToolDescriptor::name)
+                .collect(java.util.stream.Collectors.toSet());
+        return new ToolPolicy(Set.copyOf(tools), capabilities.contains(Capability.SKILL));
+    }
+
+    private Set<String> staticToolsFor(Set<Capability> capabilities) {
+        Set<String> tools = new HashSet<>();
         if (capabilities.contains(Capability.CONTEXT)
             || capabilities.contains(Capability.INTERVIEW_REPORT)) {
             tools.addAll(CONTEXT_TOOLS);
@@ -468,7 +493,15 @@ public class AgentIntentRouter {
         if (capabilities.contains(Capability.ACTION)) {
             tools.add(AgentContextToolCallbackFactory.ACTION_DRAFT);
         }
-        return new ToolPolicy(Set.copyOf(tools), capabilities.contains(Capability.SKILL));
+        return tools;
+    }
+
+    private boolean capabilityMatches(Capability toolCapability, Set<Capability> requested) {
+        if (toolCapability == Capability.CONTEXT) {
+            return requested.contains(Capability.CONTEXT)
+                || requested.contains(Capability.INTERVIEW_REPORT);
+        }
+        return requested.contains(toolCapability);
     }
 
     private static final Set<String> CONTEXT_TOOLS = Set.of(

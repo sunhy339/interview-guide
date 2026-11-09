@@ -5,6 +5,7 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.tool.ToolCallback;
 import tools.jackson.databind.ObjectMapper;
 
 import static org.mockito.ArgumentMatchers.anyString;
@@ -370,6 +371,41 @@ class AgentIntentRouterTest {
             AgentContextToolCallbackFactory.SCHEDULE_CANCEL_DRAFT,
             AgentContextToolCallbackFactory.SCHEDULE_UPDATE_DRAFT
         );
+    }
+
+    @Test
+    @DisplayName("生产工具注册中心按能力生成白名单，新增工具不会绕过路由")
+    void derivesToolPolicyFromToolRegistryWhenAvailable() {
+        AgentContextToolCallbackFactory factory = mock(AgentContextToolCallbackFactory.class);
+        ToolCallback context = callback(AgentContextToolCallbackFactory.INTERVIEW_SEARCH);
+        ToolCallback rag = callback(AgentContextToolCallbackFactory.KNOWLEDGE_BASE_SEARCH);
+        ToolCallback schedule = callback(AgentContextToolCallbackFactory.SCHEDULE_LIST);
+        when(factory.callbacks()).thenReturn(List.of(context, rag, schedule));
+
+        AgentIntentRouter registryBackedRouter = new AgentIntentRouter(
+            null, null, new ObjectMapper(), null, new AgentToolRegistry(factory)
+        );
+        AgentIntentRouter.Decision decision = registryBackedRouter.parseModelDecision(
+            "{\"mode\":\"GENERAL\",\"capabilities\":[\"CONTEXT\",\"RAG\"],"
+                + "\"confidence\":0.94,\"reason\":\"需要资料和检索\"}",
+            "请根据面试报告并结合知识库资料回答"
+        );
+
+        assertThat(registryBackedRouter.toolPolicy(decision).allowedToolNames())
+            .containsExactlyInAnyOrder(
+                AgentContextToolCallbackFactory.INTERVIEW_SEARCH,
+                AgentContextToolCallbackFactory.KNOWLEDGE_BASE_SEARCH
+            )
+            .doesNotContain(AgentContextToolCallbackFactory.SCHEDULE_LIST);
+    }
+
+    private ToolCallback callback(String name) {
+        ToolCallback callback = mock(ToolCallback.class);
+        when(callback.getToolDefinition()).thenReturn(
+            org.springframework.ai.tool.definition.ToolDefinition.builder()
+                .name(name).description("test").inputSchema("{\"type\":\"object\"}").build()
+        );
+        return callback;
     }
 
     @Test
