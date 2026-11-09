@@ -393,6 +393,9 @@ function Invoke-ScenarioConfirm(
     if ([string]$confirmed.data.resultCode -eq 'SCHEDULE_CREATED' -and -not [string]::IsNullOrWhiteSpace([string]$confirmed.data.resultResourceId)) {
         $createdScheduleIds.Add([string]$confirmed.data.resultResourceId)
     }
+    if ([string]$confirmed.data.resultCode -eq 'SCHEDULE_CANCELLED' -and -not [string]::IsNullOrWhiteSpace([string]$confirmed.data.resultResourceId)) {
+        [void]$createdScheduleIds.Remove([string]$confirmed.data.resultResourceId)
+    }
     $conversation = Wait-Conversation $InterviewId $AgentSessionId $false
     $usage = $conversation.data.runUsage
     $runEvents = @(Get-RunEvents $AgentSessionId ([string]$conversation.data.runId))
