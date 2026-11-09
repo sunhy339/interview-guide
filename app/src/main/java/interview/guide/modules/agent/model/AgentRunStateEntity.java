@@ -46,6 +46,10 @@ public class AgentRunStateEntity {
     @Column(name = "agent_session_id", nullable = false, length = 64)
     private String agentSessionId;
 
+    /** RunState 持久化契约版本；旧记录为空时按 v1 兼容读取。 */
+    @Column(name = "checkpoint_version")
+    private Integer checkpointVersion;
+
     @Column(name = "assistant_message_id")
     private Long assistantMessageId;
 
@@ -172,6 +176,9 @@ public class AgentRunStateEntity {
         }
         if (modelTurnIndex == null) {
             modelTurnIndex = 0;
+        }
+        if (checkpointVersion == null) {
+            checkpointVersion = 1;
         }
     }
 

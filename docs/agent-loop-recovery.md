@@ -10,6 +10,8 @@
 
 - `agent_chat_sessions.loop_plan`：最近一次已生成的有限计划；
 - `agent_chat_sessions.loop_next_step`：下一个待执行步骤的零基索引；
+- `agent_run_states.checkpoint_version`：RunState 持久化契约版本；旧记录为空时按 v1
+  兼容，未知版本只延迟自动恢复，不猜测字段语义；
 - `agent_chat_sessions.loop_completed_steps`：已完成步骤的零基索引集合，逗号分隔且最多保留 128 项；
 - 状态通过 `AgentProgressWriter` 合并写入，并在终态前刷盘；
 - 计划没有写入用户问答，也不保存隐藏推理或完整 RAG 原文。工具检查点只保存结果哈希、
