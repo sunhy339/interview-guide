@@ -28,6 +28,7 @@ $jar = Join-Path $env:TEMP "agent-interaction-$([guid]::NewGuid()).cookie"
 $createdInterview = $false
 $createdThreads = [System.Collections.Generic.List[string]]::new()
 $createdGeneralThreads = [System.Collections.Generic.List[string]]::new()
+$createdScheduleIds = [System.Collections.Generic.List[string]]::new()
 
 function Assert-Pass([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -389,6 +390,9 @@ function Invoke-ScenarioConfirm(
     if ($action.Count -eq 0) { throw '没有找到可确认的 Agent 动作草稿' }
     $confirmed = Invoke-JsonApi "/api/agent/actions/$([Uri]::EscapeDataString([string]$action[0].actionId))/confirm" 'POST'
     $actionStatus = [string]$confirmed.data.status
+    if ([string]$confirmed.data.resultCode -eq 'SCHEDULE_CREATED' -and -not [string]::IsNullOrWhiteSpace([string]$confirmed.data.resultResourceId)) {
+        $createdScheduleIds.Add([string]$confirmed.data.resultResourceId)
+    }
     $conversation = Wait-Conversation $InterviewId $AgentSessionId $false
     $usage = $conversation.data.runUsage
     $runEvents = @(Get-RunEvents $AgentSessionId ([string]$conversation.data.runId))
@@ -585,6 +589,13 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Agent 多轮交互评测门禁失败' }
     }
 } finally {
+    foreach ($scheduleId in $createdScheduleIds) {
+        try {
+            Invoke-JsonApi "/api/interview-schedule/$([Uri]::EscapeDataString($scheduleId))" 'DELETE' | Out-Null
+        } catch {
+            Write-Warning "清理交互评测创建的日程失败，需人工核对 scheduleId=$scheduleId：$($_.Exception.Message)"
+        }
+    }
     foreach ($agentSessionId in $createdThreads) {
         try {
             Invoke-JsonApi "/api/agent/interview-sessions/$InterviewSessionId/conversations/$agentSessionId" 'DELETE' | Out-Null
