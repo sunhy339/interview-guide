@@ -112,6 +112,7 @@ class AgentInteractionEvaluationTest {
             compareRequiredRunEventTypes(violations, index, expected, actual);
             compareRequiredRunToolNames(violations, index, expected, actual);
             compareForbiddenRunEventTypes(violations, index, expected, actual);
+            validateModelTerminalEvents(violations, index, actual);
             compareRequiredSourceKinds(violations, index, expected, actual);
             compareForbiddenSourceKinds(violations, index, expected, actual);
             validateToolBatchEvents(violations, index, actual);
@@ -273,6 +274,40 @@ class AgentInteractionEvaluationTest {
             if (!actualTools.contains(toolName)) {
                 violations.add(prefix + " Run 缺少工具调用: " + toolName
                     + "，实际工具: " + String.join(",", actualTools));
+            }
+        }
+    }
+
+    /**
+     * 模型轮次的终态必须和事件名一致，避免把失败或取消记录成“完成”。
+     * 只检查低敏 Run 事件，不读取 Prompt、回答或隐藏推理。
+     */
+    void validateModelTerminalEvents(
+        List<String> violations, int index, Map<String, Object> actual
+    ) {
+        Object value = actual.get("runEvents");
+        if (!(value instanceof List<?> events)) {
+            return;
+        }
+        String prefix = index < 0 ? "最终" : "第 " + (index + 1) + " 步";
+        for (Object item : events) {
+            if (!(item instanceof Map<?, ?> event)) {
+                continue;
+            }
+            String eventType = eventText(event, "eventType");
+            String expectedStatus = switch (eventType) {
+                case "MODEL_TURN_COMPLETED" -> "SUCCEEDED";
+                case "MODEL_TURN_FAILED" -> "FAILED";
+                case "MODEL_TURN_CANCELLED" -> "CANCELLED";
+                default -> null;
+            };
+            if (expectedStatus == null) {
+                continue;
+            }
+            String actualStatus = eventText(event, "status");
+            if (!expectedStatus.equalsIgnoreCase(actualStatus)) {
+                violations.add(prefix + " 模型终态事件与状态不一致: " + eventType
+                    + " / " + actualStatus + "，预期 " + expectedStatus);
             }
         }
     }
