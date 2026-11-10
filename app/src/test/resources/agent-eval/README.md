@@ -65,6 +65,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\agent-quality-collector.
   `WAITING_USER/APPROVAL`；
 - 确认动作后原会话恢复并最终进入 `COMPLETED`；
 - 取消动作后原会话恢复并最终进入 `COMPLETED`，且动作状态为 `CANCELLED`。
+- 日程先创建并确认，再发起改期；评测检查改期工具、独立新 Run、审批续跑以及 `SCHEDULE_UPDATED` 结果契约。
 - 通用 Agent 在没有显式资料时不读取面试报告；只有先绑定面试报告后，运行来源才出现 `interview`。
 - 缺信息续跑、确认和取消必须复用同一个 `runId`；普通新消息必须创建新的运行代次。
 - 确认/取消不能新增一条用户消息，避免把系统动作结果伪装成用户输入或造成上下文重复。

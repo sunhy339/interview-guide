@@ -3,7 +3,7 @@
     执行 Agent 真实多轮交互评测场景，并生成 agentInteractionEvaluation 可消费的 JSONL。
 
 .DESCRIPTION
-    场景覆盖普通多轮对话、缺少日程信息后的同一 Run 续跑，以及动作确认后的同一 Run 恢复。
+    场景覆盖普通多轮对话、缺少日程信息后的同一 Run 续跑、日程创建/改期确认以及动作确认后的同一 Run 恢复。
     脚本只创建自己使用的 Agent 线程；传入 -CreateInterview 时也只删除自己创建的临时面试。
     真实 Provider 调用会产生费用，建议只在候选环境执行。
 #>
