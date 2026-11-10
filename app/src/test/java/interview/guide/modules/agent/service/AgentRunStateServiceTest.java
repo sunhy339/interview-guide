@@ -144,6 +144,32 @@ class AgentRunStateServiceTest {
     }
 
     @Test
+    void recordsFailureAndCancellationAsDistinctModelTerminalEvents() {
+        when(repository.findByRunId("run-terminal")).thenReturn(Optional.empty());
+        when(repository.save(any(AgentRunStateEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        AgentRunEventService eventService = org.mockito.Mockito.mock(AgentRunEventService.class);
+        AgentRunStateService service = new AgentRunStateService(repository);
+        service.setEventService(eventService);
+        AgentMetrics.RunTracker tracker = tracker("run-terminal");
+
+        service.modelTurnStarted(tracker, "pixel", false, "turn-failed");
+        service.modelTurnFinished(tracker, "pixel", "failure");
+        service.modelTurnStarted(tracker, "pixel", false, "turn-cancelled");
+        service.modelTurnFinished(tracker, "pixel", "cancelled");
+
+        ArgumentCaptor<String> eventTypes = ArgumentCaptor.forClass(String.class);
+        verify(eventService, org.mockito.Mockito.times(4)).append(
+            org.mockito.Mockito.eq(tracker), eventTypes.capture(), org.mockito.Mockito.anyString(),
+            org.mockito.Mockito.isNull(), org.mockito.Mockito.isNull(), org.mockito.Mockito.isNull(),
+            org.mockito.Mockito.isNull(), org.mockito.Mockito.anyString()
+        );
+        assertThat(eventTypes.getAllValues())
+            .containsExactly("MODEL_TURN_STARTED", "MODEL_TURN_FAILED",
+                "MODEL_TURN_STARTED", "MODEL_TURN_CANCELLED");
+    }
+
+    @Test
     void correlatesToolResultWithTheRunLocalToolCallId() {
         AgentRunStateEntity state = AgentRunStateEntity.builder()
             .runId("run-1")
