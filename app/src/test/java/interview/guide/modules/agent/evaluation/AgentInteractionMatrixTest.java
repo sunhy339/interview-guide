@@ -28,10 +28,10 @@ class AgentInteractionMatrixTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
-    @DisplayName("覆盖普通多轮、缺信息续跑和确认恢复")
+    @DisplayName("覆盖普通多轮、缺信息续跑、日程改期和确认恢复")
     void validatesInteractionMatrix() throws IOException {
         List<Map<String, Object>> scenarios = loadScenarios();
-        assertThat(scenarios).hasSize(9);
+        assertThat(scenarios).hasSize(10);
         Set<String> ids = new HashSet<>();
         Set<String> stepTypes = new HashSet<>();
         for (Map<String, Object> scenario : scenarios) {
@@ -94,6 +94,19 @@ class AgentInteractionMatrixTest {
             .anyMatch(step -> "APPROVAL".equals(text(step, "expectedPendingType")));
         assertThat(scenarios.stream().flatMap(item -> steps(item).stream()))
             .anyMatch(step -> "SAME".equals(text(step, "expectedRunRelation")));
+
+        Map<String, Object> updateScenario = scenarios.stream()
+            .filter(scenario -> "schedule-create-update-confirm".equals(text(scenario, "id")))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("缺少日程创建后改期的多轮评测场景"));
+        List<Map<String, Object>> updateSteps = steps(updateScenario);
+        assertThat(updateSteps.stream().map(step -> text(step, "type")).toList())
+            .containsExactly("message", "confirm_latest_action", "message", "confirm_latest_action");
+        assertThat(traceResources(updateSteps.get(2))).contains("schedule_update_draft");
+        assertThat(text(updateSteps.get(3), "expectedActionResultCode"))
+            .isEqualTo("SCHEDULE_UPDATED");
+        assertThat(text(updateSteps.get(3), "expectedActionResultEffect"))
+            .isEqualTo("RESOURCE_UPDATED");
     }
 
     private List<Map<String, Object>> loadScenarios() throws IOException {
