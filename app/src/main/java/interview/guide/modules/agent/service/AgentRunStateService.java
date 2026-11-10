@@ -156,10 +156,22 @@ public class AgentRunStateService {
             heartbeat(state);
             repository.save(state);
             if (eventService != null) {
-                eventService.append(tracker, "MODEL_TURN_COMPLETED", state.getModelTurnId(), null,
+                eventService.append(tracker, terminalEventType(status), state.getModelTurnId(), null,
                     null, null, null, status);
             }
         });
+    }
+
+    /**
+     * 保留成功路径已有事件名，同时让失败和取消成为可直接筛选的终态事件。
+     * 仅依赖 status 字段会让监控和真实验收把失败误看成正常完成。
+     */
+    private String terminalEventType(String status) {
+        return switch (status) {
+            case "FAILED" -> "MODEL_TURN_FAILED";
+            case "CANCELLED" -> "MODEL_TURN_CANCELLED";
+            default -> "MODEL_TURN_COMPLETED";
+        };
     }
 
     /**

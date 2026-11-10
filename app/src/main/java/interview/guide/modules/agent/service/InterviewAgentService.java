@@ -1968,10 +1968,28 @@ public class InterviewAgentService {
         if (runStateService != null) {
             runStateService.modelTurnFinished(runTracker, providerId, result);
         }
-        recordRunTrace(runTracker, "MODEL_COMPLETED", "agent-model", providerId, result);
-        recordRunTrace(runTracker, "MODEL_TURN_COMPLETED", "agent-model-turn", modelTurnId, result);
+        recordRunTrace(
+            runTracker, modelTerminalTraceAction(result, "MODEL_COMPLETED"),
+            "agent-model", providerId, result
+        );
+        recordRunTrace(
+            runTracker, modelTerminalTraceAction(result, "MODEL_TURN_COMPLETED"),
+            "agent-model-turn", modelTurnId, result
+        );
         // 必须在外层 completeMessage/failMessage 之前写入，避免活动消息栅栏关闭后被忽略。
         persistRunUsage(assistantMessageId, runId, runTracker);
+    }
+
+    private String modelTerminalTraceAction(String result, String successAction) {
+        if ("failure".equalsIgnoreCase(result)) {
+            return successAction.startsWith("MODEL_TURN_")
+                ? "MODEL_TURN_FAILED" : "MODEL_FAILED";
+        }
+        if ("cancelled".equalsIgnoreCase(result)) {
+            return successAction.startsWith("MODEL_TURN_")
+                ? "MODEL_TURN_CANCELLED" : "MODEL_CANCELLED";
+        }
+        return successAction;
     }
 
     /**
