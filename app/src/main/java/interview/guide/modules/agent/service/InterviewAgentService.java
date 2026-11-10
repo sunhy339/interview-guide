@@ -287,6 +287,7 @@ public class InterviewAgentService {
                 agentMetrics.setAuditContext(
                     runTracker, dataOwnerKey, sessionId, resolvedAgentSessionId, preparedMessage.runId()
                 );
+                recordIntentClassifierTurn(runTracker, intentDecision);
                 auditPromptSecurity(
                     runTracker, userIntentMessage,
                     runRequest.goal(), dataOwnerKey, sessionId,
@@ -311,7 +312,7 @@ public class InterviewAgentService {
                     sessionId, resolvedAgentSessionId, runRequest, message, userIntentMessage,
                     toolIntentMessage,
                     historyMessages, context, preparedMessage, cancellationSignal, taskHandle, runTracker,
-                    intentDecision, null
+                    intentDecision, null, null
                 );
                 // SSE 断开后不缓存全部 token；最终答案由 AgentConversationService 持久化。
                 return Flux.create(emitter -> {
@@ -407,6 +408,7 @@ public class InterviewAgentService {
                 AgentIntentRouter.Decision intentDecision = agentIntentRouter.route(
                     request, userIntentMessage, historyMessages, request.providerId(), runTracker
                 );
+                recordIntentClassifierTurn(runTracker, intentDecision);
                 request = agentIntentRouter.applyMode(request, intentDecision);
                 AgentContextService.AgentContext context;
                 AuthUserContext.set(recoveredRun.ownerKey());
@@ -440,7 +442,7 @@ public class InterviewAgentService {
                         recoveredRun.loopNextStep(),
                         recoveredRun.loopCompletedStepIndices(),
                         recoveredRun.loopTrace()
-                    )
+                    ), null
                 );
                 taskHandle.subscription = workflow.subscribe(
                     ignored -> { },
@@ -515,6 +517,7 @@ public class InterviewAgentService {
                     originalRequest, originalUserContent, historyMessages,
                     originalRequest.providerId(), runTracker
                 );
+                recordIntentClassifierTurn(runTracker, originalDecision);
                 originalRequest = agentIntentRouter.applyMode(originalRequest, originalDecision);
                 AgentContextService.AgentContext context;
                 AuthUserContext.set(resume.ownerKey());
@@ -553,7 +556,7 @@ public class InterviewAgentService {
                     resume.interviewSessionId(), activeKey, modelRequest, approvalMessage, approvalMessage,
                     approvalMessage,
                     historyMessages, context, prepared, cancellationSignal, taskHandle, runTracker,
-                    resumeDecision, null
+                    resumeDecision, null, buildApprovalFallback(resume)
                 );
                 taskHandle.subscription = workflow.subscribe(
                     ignored -> { },
@@ -596,6 +599,69 @@ public class InterviewAgentService {
         return safe.length() > 2_000 ? safe.substring(0, 2_000) : safe;
     }
 
+    /**
+     * 审批动作已经成功提交后，模型只负责把结果讲给用户；如果结果说明模型不可用，
+     * 不能把已经完成的业务动作标记为 Agent 失败，也不能重新执行动作。这里使用动作
+     * 服务写入的结构化结果生成最小可用答复，避免依赖第二次模型调用。
+     */
+    String buildApprovalFallback(AgentConversationService.ApprovalResumeRequest resume) {
+        if (resume == null || resume.actionStatus() == null
+            || (!"SUCCEEDED".equalsIgnoreCase(resume.actionStatus())
+                && !"CANCELLED".equalsIgnoreCase(resume.actionStatus()))) {
+            return null;
+        }
+        String code = resume.resultCode() == null ? "" : resume.resultCode().trim();
+        String resource = formatApprovalResource(resume);
+        String summary = safeResumeText(resume.actionResultSummary());
+        if ("SCHEDULE_CREATED".equalsIgnoreCase(code)) {
+            return "## 面试日程已创建\n\n"
+                + "已成功创建面试日程。\n\n"
+                + resource + "\n\n"
+                + "- 结果：" + summary + "\n"
+                + "- 原始面试资料未被修改。";
+        }
+        if ("SCHEDULE_CANCELLED".equalsIgnoreCase(code)) {
+            return "## 面试日程已取消\n\n"
+                + "已成功取消面试日程。\n\n"
+                + resource + "\n\n"
+                + "- 结果：" + summary + "\n"
+                + "- 原始面试资料未被修改。";
+        }
+        if ("SCHEDULE_UPDATED".equalsIgnoreCase(code)) {
+            return "## 面试日程已更新\n\n"
+                + "已成功更新面试日程。\n\n"
+                + resource + "\n\n"
+                + "- 结果：" + summary + "\n"
+                + "- 原始面试资料未被修改。";
+        }
+        if ("ACTION_CANCELLED".equalsIgnoreCase(code)
+            || "CANCELLED".equalsIgnoreCase(resume.actionStatus())) {
+            return "## Agent 动作已取消\n\n"
+                + "已取消“" + safeResumeText(resume.actionTitle()) + "”，未对业务数据执行写入。\n\n"
+                + resource + "\n\n"
+                + "- 结果：" + summary;
+        }
+        if (!code.isBlank()) {
+            return "## 操作已完成\n\n"
+                + "已完成“" + safeResumeText(resume.actionTitle()) + "”。\n\n"
+                + resource + "\n\n"
+                + "- 结果码：`" + code + "`\n"
+                + "- 结果：" + summary;
+        }
+        return "## 操作已完成\n\n"
+            + "已完成“" + safeResumeText(resume.actionTitle()) + "”。\n\n"
+            + "- 结果：" + summary;
+    }
+
+    private String formatApprovalResource(AgentConversationService.ApprovalResumeRequest resume) {
+        String type = safeResumeText(resume.resultResourceType());
+        String id = safeResumeText(resume.resultResourceId());
+        if ("未提供".equals(type) && "未提供".equals(id)) {
+            return "- 资源：本次动作对应的业务记录";
+        }
+        return "- 资源：" + type + "#" + id;
+    }
+
     private Flux<AgentStreamEvent> buildWorkflow(
         String sessionId,
         String agentSessionId,
@@ -610,7 +676,8 @@ public class InterviewAgentService {
         AgentTaskHandle taskHandle,
         AgentMetrics.RunTracker runTracker,
         AgentIntentRouter.Decision intentDecision,
-        LoopResumeState resumeState
+        LoopResumeState resumeState,
+        String completionFallback
     ) {
         Flux<String> planFlux = resumeState != null && resumeState.hasPlan()
             ? Flux.just(resumeState.plan())
@@ -860,7 +927,8 @@ public class InterviewAgentService {
                         : streamModelWithRetry(
                             modelStreamFactory, request.providerId(), sessionId,
                             preparedMessage.assistantMessageId(), preparedMessage.runId(), context.sources(),
-                            ragExpected(context, request, intentDecision), runTracker, taskHandle
+                            ragExpected(context, request, intentDecision), runTracker, taskHandle,
+                            completionFallback
                         );
                     boolean generalRequest = "general".equalsIgnoreCase(request.goal());
                     boolean hasOptionalSource = context.sources().stream()
@@ -1389,10 +1457,52 @@ public class InterviewAgentService {
             return null;
         }
         java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
-            java.util.regex.Pattern.quote(label)
-                + "\\s*(?:是|为|叫|[:：])?\\s*([^，,。；;\\n]+)"
+            "(?:^|[，,。；;\\n])\\s*"
+                + java.util.regex.Pattern.quote(label)
+                + "\\s*(?:是|为|叫|[:：])\\s*([^，,。；;\\n]+)"
         ).matcher(message);
-        return matcher.find() ? matcher.group(1).trim() : null;
+        if (matcher.find()) {
+            return trimScheduleEntity(matcher.group(1));
+        }
+
+        // 兼容“明天12点浪速公司的 Agent 开发工程师面试”这类自然表达，
+        // 不要求用户把公司和职位写成固定的“公司是/职位是”字段。
+        if ("公司".equals(label)) {
+            java.util.regex.Matcher suffixMatcher = java.util.regex.Pattern.compile(
+                "(?:今天|明天|后天|大后天)?\\s*(?:上午|下午|晚上|早上)?\\s*"
+                    + "\\d{1,2}(?::|：|点)\\d{0,2}\\s*(?:的)?\\s*"
+                    + "([^，,。；;\\n]+?)公司(?=的|面试|会议|日程|预约|$)"
+            ).matcher(message);
+            if (suffixMatcher.find()) {
+                return trimScheduleEntity(suffixMatcher.group(1)) + "公司";
+            }
+        }
+        if ("职位".equals(label) || "岗位".equals(label)) {
+            java.util.regex.Matcher positionMatcher = java.util.regex.Pattern.compile(
+                "公司(?:是|为|叫)?[^，,。；;\\n]+?公司?\\s*(?:的)?\\s*"
+                    + "([^，,。；;\\n]+?)(?=面试|会议|日程|预约|$)"
+            ).matcher(message);
+            if (positionMatcher.find()) {
+                return trimScheduleEntity(positionMatcher.group(1));
+            }
+            java.util.regex.Matcher naturalPositionMatcher = java.util.regex.Pattern.compile(
+                "\\d{1,2}(?::|：|点)\\d{0,2}\\s*(?:的)?\\s*"
+                    + "[^，,。；;\\n]+?公司的?\\s*"
+                    + "([^，,。；;\\n]+?)(?=面试|会议|日程|预约|$)"
+            ).matcher(message);
+            if (naturalPositionMatcher.find()) {
+                return trimScheduleEntity(naturalPositionMatcher.group(1));
+            }
+        }
+        return null;
+    }
+
+    private String trimScheduleEntity(String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.trim().replaceFirst("^[的、：:]+", "").trim();
+        return normalized.isBlank() ? null : normalized;
     }
 
     private List<LocalDateTime> extractScheduleTimes(String message) {
@@ -1470,7 +1580,8 @@ public class InterviewAgentService {
         List<interview.guide.modules.agent.model.AgentSource> sources,
         boolean ragExpected,
         AgentMetrics.RunTracker runTracker,
-        AgentTaskHandle taskHandle
+        AgentTaskHandle taskHandle,
+        String completionFallback
     ) {
         AtomicBoolean modelOutputStarted = new AtomicBoolean();
         AtomicReference<StringBuilder> output = new AtomicReference<>(new StringBuilder());
@@ -1533,6 +1644,24 @@ public class InterviewAgentService {
                 AgentStreamEvent.step("action", "completed"),
                 AgentStreamEvent.done()
             ))
+            // 这里必须在统一的 failMessage 之前兜底。若在 buildWorkflow 外层处理，
+            // streamModelWithRetry 的 doOnError 会先把已成功的审批动作标记为失败。
+            .onErrorResume(error -> {
+                if (completionFallback == null || completionFallback.isBlank()) {
+                    return Flux.error(error);
+                }
+                recordRunTrace(
+                    runTracker, "MODEL_FALLBACK", "agent-model", "approval-result",
+                    "structured-result"
+                );
+                return Flux.just(
+                    AgentStreamEvent.waiting("insight", "模型暂时不可用，已根据已执行结果整理答复"),
+                    AgentStreamEvent.delta(appendOutputChunk(completionFallback, output)),
+                    AgentStreamEvent.step("insight", "completed"),
+                    AgentStreamEvent.step("action", "completed"),
+                    AgentStreamEvent.done()
+                );
+            })
             .doOnComplete(() -> {
                 agentProgressWriter.flush(assistantMessageId);
                 agentConversationService.completeMessage(
@@ -1843,6 +1972,38 @@ public class InterviewAgentService {
         recordRunTrace(runTracker, "MODEL_TURN_COMPLETED", "agent-model-turn", modelTurnId, result);
         // 必须在外层 completeMessage/failMessage 之前写入，避免活动消息栅栏关闭后被忽略。
         persistRunUsage(assistantMessageId, runId, runTracker);
+    }
+
+    /**
+     * 意图分类是一次真实模型轮次，即使分类后直接进入工具确认或等待补充信息，
+     * 也要写入同一套轮次轨迹和恢复检查点，避免用量统计存在但模型轨迹缺失。
+     * 分类结果在路由阶段已完成，这里在 Agent Run 具备 owner/session 上下文后补写
+     * 成对的开始/结束事件；不保存分类 Prompt 或模型原文。
+     */
+    private void recordIntentClassifierTurn(
+        AgentMetrics.RunTracker runTracker,
+        AgentIntentRouter.Decision decision
+    ) {
+        if (runTracker == null || decision == null || !decision.modelClassified()) {
+            return;
+        }
+        String providerId = decision.classifierProviderId();
+        if (providerId == null || providerId.isBlank()) {
+            providerId = "unknown";
+        }
+        String modelTurnId = "intent-classifier";
+        recordRunTrace(runTracker, "MODEL_STARTED", "agent-model", providerId, "classifier");
+        recordRunTrace(
+            runTracker, "MODEL_TURN_STARTED", "agent-model-turn", modelTurnId, "classifier"
+        );
+        if (runStateService != null) {
+            runStateService.modelTurnStarted(runTracker, providerId, false, modelTurnId);
+            runStateService.modelTurnFinished(runTracker, providerId, "success");
+        }
+        recordRunTrace(
+            runTracker, "MODEL_TURN_COMPLETED", "agent-model-turn", modelTurnId, "success"
+        );
+        recordRunTrace(runTracker, "MODEL_COMPLETED", "agent-model", providerId, "success");
     }
 
     private record ModelStream(

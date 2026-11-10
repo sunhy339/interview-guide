@@ -59,20 +59,20 @@ public class AgentIntentRouter {
         """ + PromptSecurityConstants.ANTI_INJECTION_INSTRUCTION;
 
     private static final Pattern SCHEDULE_ACTION = Pattern.compile(
-        "(?:安排|预约|创建|取消|撤销|删除|删掉|改期|改到|修改|调整|更换|更新).{0,20}(?:面试|会议|日程|预约)"
-            + "|(?:面试|会议|日程|预约).{0,20}(?:安排|预约|创建|取消|撤销|删除|删掉|改期|改到|修改|调整|更换|更新)"
+        "(?:安排|预约|创建|取消|撤销|删除|删掉|改期|改到|修改|调整|更换|更新).{0,80}(?:面试|会议|日程|预约)"
+            + "|(?:面试|会议|日程|预约).{0,80}(?:安排|预约|创建|取消|撤销|删除|删掉|改期|改到|修改|调整|更换|更新)"
     );
     private static final Pattern SCHEDULE_CREATE_ACTION = Pattern.compile(
-        "(?:安排|预约|创建|添加|新增|发起).{0,24}(?:面试|会议|日程|预约)"
-            + "|(?:面试|会议|日程|预约).{0,24}(?:安排|预约|创建|添加|新增|发起)"
+        "(?:安排|预约|创建|添加|新增|发起).{0,80}(?:面试|会议|日程|预约)"
+            + "|(?:面试|会议|日程|预约).{0,80}(?:安排|预约|创建|添加|新增|发起)"
     );
     private static final Pattern SCHEDULE_CANCEL_ACTION = Pattern.compile(
-        "(?:取消|撤销|删除|删掉).{0,24}(?:面试|会议|日程|预约)"
-            + "|(?:面试|会议|日程|预约).{0,24}(?:取消|撤销|删除|删掉)"
+        "(?:取消|撤销|删除|删掉).{0,80}(?:面试|会议|日程|预约)"
+            + "|(?:面试|会议|日程|预约).{0,80}(?:取消|撤销|删除|删掉)"
     );
     private static final Pattern SCHEDULE_UPDATE_ACTION = Pattern.compile(
-        "(?:改期|改到|修改|调整|更换|更新|换到).{0,24}(?:面试|会议|日程|预约|约定|安排)"
-            + "|(?:面试|会议|日程|预约|约定|安排).{0,24}(?:改期|改到|修改|调整|更换|更新|换到)"
+        "(?:改期|改到|修改|调整|更换|更新|换到).{0,80}(?:面试|会议|日程|预约|约定|安排)"
+            + "|(?:面试|会议|日程|预约|约定|安排).{0,80}(?:改期|改到|修改|调整|更换|更新|换到)"
     );
     private static final Pattern INTERVIEW_REVIEW = Pattern.compile(
         "(?:复盘|分析|评价|评估|评分|指出|总结).{0,16}"
@@ -212,6 +212,15 @@ public class AgentIntentRouter {
             try {
                 if (agentMetrics != null) {
                     modelCall = agentMetrics.startModelCall(candidate, runTracker);
+                    // 意图分类本身也是一次真实模型调用。即使后续直接进入
+                    // WAITING_USER（例如日程缺少日期/岗位），也必须把分类 Prompt
+                    // 的保守估算记入本次运行，否则用量页会出现 modelCalls>0 但
+                    // estimatedPromptTokens=0 的不一致。
+                    agentMetrics.recordEstimatedPromptTokens(
+                        runTracker,
+                        AgentPromptBudgetPolicy.estimateTokens(CLASSIFIER_SYSTEM)
+                            + AgentPromptBudgetPolicy.estimateTokens(classifierPrompt)
+                    );
                 }
                 ChatClient client = providerRegistry.getPlainChatClient(candidate);
                 var response = client.prompt()
@@ -221,6 +230,10 @@ public class AgentIntentRouter {
                 observeUsage(modelCall, response);
                 Decision modelDecision = parseModelDecision(response.content(), rawMessage);
                 if (modelDecision != null) {
+                    // 明确的“帮我安排/取消/改期”是业务动作安全边界：即使分类模型
+                    // 偶发返回 GENERAL，也不能让主模型绕过受控日程工具直接生成普通文本。
+                    modelDecision = enforceExplicitScheduleAction(modelDecision, rawMessage);
+                    modelDecision = modelDecision.withModelClassification(candidate);
                     if (agentMetrics != null) {
                         agentMetrics.finishModelCall(modelCall, "success");
                     }
@@ -241,6 +254,22 @@ public class AgentIntentRouter {
             }
         }
         return fallbackRoute(request, rawMessage);
+    }
+
+    private Decision enforceExplicitScheduleAction(Decision decision, String rawMessage) {
+        if (decision == null || requiredToolName(rawMessage) == null) {
+            return decision;
+        }
+        Set<Capability> capabilities = new HashSet<>(decision.capabilities());
+        capabilities.add(Capability.SCHEDULE);
+        return new Decision(
+            Route.SCHEDULE,
+            Set.copyOf(capabilities),
+            Math.max(decision.confidence(), MIN_MODEL_CONFIDENCE),
+            decision.reason() + "；安全规则确认明确日程动作",
+            decision.modelClassified(),
+            decision.classifierProviderId()
+        );
     }
 
     /** 根据分类结果归一化本轮模式，避免旧 goal 或路径中的报告 ID 重新加载报告。 */
@@ -560,8 +589,26 @@ public class AgentIntentRouter {
         Route route,
         Set<Capability> capabilities,
         double confidence,
-        String reason
+        String reason,
+        boolean modelClassified,
+        String classifierProviderId
     ) {
+        public Decision(
+            Route route,
+            Set<Capability> capabilities,
+            double confidence,
+            String reason
+        ) {
+            this(route, capabilities, confidence, reason, false, null);
+        }
+
+        private Decision withModelClassification(String providerId) {
+            return new Decision(
+                route, capabilities, confidence, reason, true,
+                providerId == null || providerId.isBlank() ? null : providerId.trim()
+            );
+        }
+
         private static Decision general(String reason) {
             return new Decision(Route.GENERAL, Set.of(), 0.0d, reason);
         }

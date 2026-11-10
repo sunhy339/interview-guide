@@ -103,7 +103,7 @@ public class LlmProviderRegistry {
 
     /** 工具注册中心在迁移期可选接入；未注入时保留原有回调目录。 */
     @Autowired(required = false)
-    void setAgentToolRegistry(AgentToolRegistry agentToolRegistry) {
+    void setAgentToolRegistry(@Lazy AgentToolRegistry agentToolRegistry) {
         this.agentToolRegistry = agentToolRegistry;
     }
 

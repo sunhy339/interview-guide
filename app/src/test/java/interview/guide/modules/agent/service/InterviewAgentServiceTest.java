@@ -1112,6 +1112,65 @@ class InterviewAgentServiceTest {
         );
     }
 
+    @Test
+    @DisplayName("自然表达的公司和职位可以被日程工具参数解析")
+    void parsesNaturalScheduleLabels() throws Exception {
+        when(resourceLoader.getResource(anyString())).thenReturn(
+            new ByteArrayResource("{context} {skill} {memory} {goal} {question} {rag} {plan} {summary}"
+                .getBytes(StandardCharsets.UTF_8))
+        );
+        InterviewAgentService service = new InterviewAgentService(
+            contextService, conversationService, providerRegistry,
+            new PromptSanitizer(new LlmProviderProperties()), resourceLoader,
+            agentMetrics, agentProgressWriter, retryProperties,
+            null, null, null, null, new tools.jackson.databind.ObjectMapper()
+        );
+        Method method = java.util.Arrays.stream(InterviewAgentService.class.getDeclaredMethods())
+            .filter(candidate -> candidate.getName().equals("buildScheduleToolInput"))
+            .findFirst()
+            .orElseThrow();
+        method.setAccessible(true);
+
+        String input = (String) method.invoke(
+            service,
+            AgentContextToolCallbackFactory.SCHEDULE_CANCEL_DRAFT,
+            "帮我取消明天12点浪速公司的 Agent 开发工程师面试"
+        );
+
+        assertThat(input).contains("浪速公司", "Agent 开发工程师");
+    }
+
+    @Test
+    @DisplayName("审批动作已成功但结果模型不可用时生成结构化兜底答复")
+    void buildsApprovalFallbackFromStructuredResult() throws Exception {
+        when(promptSanitizer.sanitizeForContext(anyString()))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+        when(resourceLoader.getResource(anyString())).thenReturn(
+            new ByteArrayResource("{context} {skill} {memory} {goal} {question} {rag} {plan} {summary}"
+                .getBytes(StandardCharsets.UTF_8))
+        );
+        InterviewAgentService service = new InterviewAgentService(
+            contextService, conversationService, providerRegistry,
+            promptSanitizer, resourceLoader, agentMetrics, agentProgressWriter,
+            retryProperties, null, null, null, null,
+            new tools.jackson.databind.ObjectMapper()
+        );
+
+        AgentConversationService.ApprovalResumeRequest resume =
+            new AgentConversationService.ApprovalResumeRequest(
+                "interview-1", "agent-1", "general", "pixel", "owner-1", null,
+                "帮我取消面试", 10L, "run-1", "已确认", "action-1", "取消面试",
+                "SUCCEEDED", "面试日程已取消", "v1", "SCHEDULE_CANCELLED",
+                "DELETE", "INTERVIEW_SCHEDULE", "schedule-1"
+            );
+
+        String fallback = service.buildApprovalFallback(resume);
+
+        assertThat(fallback)
+            .contains("面试日程已取消", "INTERVIEW_SCHEDULE#schedule-1")
+            .doesNotContain("请先登录", "无法完成本场面试复盘");
+    }
+
     private ChatClient mockStreamClient(Flux<String> content) {
         ChatClient client = mock(ChatClient.class);
         ChatClient.ChatClientRequestSpec requestSpec = mock(ChatClient.ChatClientRequestSpec.class);

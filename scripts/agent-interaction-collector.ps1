@@ -385,7 +385,15 @@ function Invoke-ScenarioConfirm(
     [string]$InterviewId,
     [string]$AgentSessionId
 ) {
-    $actions = Invoke-JsonApi "/api/agent/sessions/$AgentSessionId/actions"
+    # 面试绑定线程和通用 Agent 线程的动作查询入口不同；混用通用入口会被
+    # conversationService 正确拒绝为 403，导致验收脚本误报“没有动作草稿”。
+    $isGeneralSession = [string]$Scenario.sessionType -eq 'general'
+    $actionPath = if ($isGeneralSession) {
+        "/api/agent/sessions/$AgentSessionId/actions"
+    } else {
+        "/api/agent/interview-sessions/$InterviewId/actions?agentSessionId=$([Uri]::EscapeDataString($AgentSessionId))"
+    }
+    $actions = Invoke-JsonApi $actionPath
     $action = @($actions.data | Where-Object { [string]$_.status -eq 'PROPOSED' } | Select-Object -First 1)
     if ($action.Count -eq 0) { throw '没有找到可确认的 Agent 动作草稿' }
     $confirmed = Invoke-JsonApi "/api/agent/actions/$([Uri]::EscapeDataString([string]$action[0].actionId))/confirm" 'POST'
@@ -435,7 +443,13 @@ function Invoke-ScenarioCancel(
     [string]$InterviewId,
     [string]$AgentSessionId
 ) {
-    $actions = Invoke-JsonApi "/api/agent/sessions/$AgentSessionId/actions"
+    $isGeneralSession = [string]$Scenario.sessionType -eq 'general'
+    $actionPath = if ($isGeneralSession) {
+        "/api/agent/sessions/$AgentSessionId/actions"
+    } else {
+        "/api/agent/interview-sessions/$InterviewId/actions?agentSessionId=$([Uri]::EscapeDataString($AgentSessionId))"
+    }
+    $actions = Invoke-JsonApi $actionPath
     $action = @($actions.data | Where-Object { [string]$_.status -eq 'PROPOSED' } | Select-Object -First 1)
     if ($action.Count -eq 0) { throw '没有找到可取消的 Agent 动作草稿' }
     $cancelled = Invoke-JsonApi "/api/agent/actions/$([Uri]::EscapeDataString([string]$action[0].actionId))/cancel" 'POST'
