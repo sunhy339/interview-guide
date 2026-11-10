@@ -46,6 +46,10 @@ public class AgentRunStateEntity {
     @Column(name = "agent_session_id", nullable = false, length = 64)
     private String agentSessionId;
 
+    /** RunState 持久化契约版本；旧记录为空时按 v1 兼容读取。 */
+    @Column(name = "checkpoint_version")
+    private Integer checkpointVersion;
+
     @Column(name = "assistant_message_id")
     private Long assistantMessageId;
 
@@ -77,6 +81,14 @@ public class AgentRunStateEntity {
 
     @Column(name = "tool_result_reference", length = 128)
     private String toolResultReference;
+
+    /** 工具结果的版本化契约摘要；不保存工具结果正文。 */
+    @Column(name = "tool_result_contract_version", length = 64)
+    private String toolResultContractVersion;
+
+    /** 工具结果的有限状态摘要；不保存工具结果正文。 */
+    @Column(name = "tool_result_status", length = 64)
+    private String toolResultStatus;
 
     /** 当前或最近一次模型轮次的稳定摘要标识；不保存请求正文或模型隐藏推理。 */
     @Column(name = "model_turn_id", length = 64)
@@ -164,6 +176,9 @@ public class AgentRunStateEntity {
         }
         if (modelTurnIndex == null) {
             modelTurnIndex = 0;
+        }
+        if (checkpointVersion == null) {
+            checkpointVersion = 1;
         }
     }
 

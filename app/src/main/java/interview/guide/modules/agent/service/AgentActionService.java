@@ -967,9 +967,10 @@ public class AgentActionService {
             if (memoryService == null) {
                 throw new IllegalStateException("长期记忆服务未配置");
             }
-            var snapshot = memoryService.rememberItem(
+            var snapshot = memoryService.rememberItemWithProvenance(
                 entity.getOwnerKey(), entity.getMemoryCategory(), entity.getDraftContent(),
-                entity.getMemoryJobScope()
+                entity.getMemoryJobScope(), entity.getInterviewSessionId(),
+                "interview-session.v1", "user-confirmed", "explicit-confirmation"
             );
             if (snapshot == null) {
                 throw new IllegalStateException("长期记忆服务未返回保存结果");

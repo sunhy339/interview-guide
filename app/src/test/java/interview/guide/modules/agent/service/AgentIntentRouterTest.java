@@ -1,10 +1,12 @@
 package interview.guide.modules.agent.service;
 
 import interview.guide.modules.agent.model.AgentMessageRequest;
+import interview.guide.modules.agent.metrics.AgentMetrics;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.tool.ToolCallback;
 import tools.jackson.databind.ObjectMapper;
 
 import static org.mockito.ArgumentMatchers.anyString;
@@ -113,12 +115,56 @@ class AgentIntentRouterTest {
     }
 
     @Test
+    @DisplayName("模型误分类时，明确日程动作仍强制进入受控日程工具路径")
+    void enforcesExplicitScheduleActionWhenModelReturnsGeneral() {
+        interview.guide.common.ai.LlmProviderRegistry registry = mock(
+            interview.guide.common.ai.LlmProviderRegistry.class
+        );
+        interview.guide.common.ai.PromptSanitizer sanitizer = mock(
+            interview.guide.common.ai.PromptSanitizer.class
+        );
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec requestSpec = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.CallResponseSpec response = mock(ChatClient.CallResponseSpec.class);
+        when(registry.resolveChatProviderCandidates("primary")).thenReturn(List.of("primary"));
+        when(registry.getPlainChatClient("primary")).thenReturn(client);
+        when(sanitizer.wrapWithDelimiters(anyString(), anyString())).thenAnswer(invocation -> invocation.getArgument(1));
+        when(client.prompt()).thenReturn(requestSpec);
+        when(requestSpec.system(anyString())).thenReturn(requestSpec);
+        when(requestSpec.user(anyString())).thenReturn(requestSpec);
+        when(requestSpec.call()).thenReturn(response);
+        when(response.content()).thenReturn(
+            "{\"mode\":\"GENERAL\",\"capabilities\":[],"
+                + "\"confidence\":0.99,\"reason\":\"普通聊天\"}"
+        );
+
+        AgentIntentRouter modelRouter = new AgentIntentRouter(
+            registry, sanitizer, new ObjectMapper(), null
+        );
+        AgentIntentRouter.Decision decision = modelRouter.route(
+            request("general", "帮我安排明天12点的面试会议，公司是浪速公司，职位是 Agent 开发工程师"),
+            "帮我安排明天12点的面试会议，公司是浪速公司，职位是 Agent 开发工程师",
+            List.of(), "primary", null
+        );
+
+        assertThat(decision.route()).isEqualTo(AgentIntentRouter.Route.SCHEDULE);
+        assertThat(decision.capabilities())
+            .containsExactly(AgentIntentRouter.Capability.SCHEDULE);
+        assertThat(modelRouter.requiredToolName(
+            "帮我安排明天12点的面试会议，公司是浪速公司，职位是 Agent 开发工程师"
+        )).isEqualTo(AgentContextToolCallbackFactory.SCHEDULE_DRAFT);
+    }
+
+    @Test
     @DisplayName("明确日程动作选择对应草稿工具，概念问题不强制工具")
     void selectsRequiredScheduleToolOnlyForExplicitActions() {
         assertThat(router.requiredToolName("帮我安排明天12点的面试会议"))
             .isEqualTo(AgentContextToolCallbackFactory.SCHEDULE_DRAFT);
         assertThat(router.requiredToolName("帮我取消明天12点的面试"))
             .isEqualTo(AgentContextToolCallbackFactory.SCHEDULE_CANCEL_DRAFT);
+        assertThat(router.requiredToolName(
+            "帮我取消明天12点浪速公司的 Agent 开发工程师面试"
+        )).isEqualTo(AgentContextToolCallbackFactory.SCHEDULE_CANCEL_DRAFT);
         assertThat(router.requiredToolName("把明天12点的面试改到下午3点"))
             .isEqualTo(AgentContextToolCallbackFactory.SCHEDULE_UPDATE_DRAFT);
         assertThat(router.requiredToolName("什么是 Tool Calling，怎么安排面试"))
@@ -164,18 +210,22 @@ class AgentIntentRouterTest {
             "{\"route\":\"SCHEDULE\",\"confidence\":0.94,\"reason\":\"用户要求调整已有安排\"}"
         );
 
+        AgentMetrics metrics = new AgentMetrics(null, false);
+        AgentMetrics.RunTracker run = metrics.startRun();
         AgentIntentRouter modelRouter = new AgentIntentRouter(
-            registry, sanitizer, new ObjectMapper(), null
+            registry, sanitizer, new ObjectMapper(), metrics
         );
         AgentIntentRouter.Decision decision = modelRouter.route(
             request("general", "把下午的那个约定换到三点，帮我处理"),
             "把下午的那个约定换到三点，帮我处理",
-            List.of(), "primary", null
+            List.of(), "primary", run
         );
 
         assertThat(decision.route()).isEqualTo(AgentIntentRouter.Route.SCHEDULE);
         assertThat(decision.confidence()).isEqualTo(0.94d);
         assertThat(decision.reason()).startsWith("模型分类");
+        assertThat(metrics.snapshot(run).modelCalls()).isEqualTo(1);
+        assertThat(metrics.snapshot(run).estimatedPromptTokens()).isPositive();
     }
 
     @Test
@@ -212,6 +262,8 @@ class AgentIntentRouterTest {
 
         assertThat(decision.route()).isEqualTo(AgentIntentRouter.Route.GENERAL);
         assertThat(decision.capabilities()).isEmpty();
+        assertThat(decision.modelClassified()).isTrue();
+        assertThat(decision.classifierProviderId()).isEqualTo("primary");
     }
 
     @Test
@@ -348,7 +400,8 @@ class AgentIntentRouterTest {
             AgentContextToolCallbackFactory.INTERVIEW_CLEAR,
             AgentContextToolCallbackFactory.CONTEXT_LIST,
             AgentContextToolCallbackFactory.CONTEXT_ASSET_ACTION,
-            AgentContextToolCallbackFactory.CONTEXT_ASSET_STATUS
+            AgentContextToolCallbackFactory.CONTEXT_ASSET_STATUS,
+            AgentContextToolCallbackFactory.KNOWLEDGE_BASE_SEARCH
         );
         assertThat(policy.allowedToolNames())
             .doesNotContain(AgentContextToolCallbackFactory.SCHEDULE_DRAFT);
@@ -369,6 +422,41 @@ class AgentIntentRouterTest {
             AgentContextToolCallbackFactory.SCHEDULE_CANCEL_DRAFT,
             AgentContextToolCallbackFactory.SCHEDULE_UPDATE_DRAFT
         );
+    }
+
+    @Test
+    @DisplayName("生产工具注册中心按能力生成白名单，新增工具不会绕过路由")
+    void derivesToolPolicyFromToolRegistryWhenAvailable() {
+        AgentContextToolCallbackFactory factory = mock(AgentContextToolCallbackFactory.class);
+        ToolCallback context = callback(AgentContextToolCallbackFactory.INTERVIEW_SEARCH);
+        ToolCallback rag = callback(AgentContextToolCallbackFactory.KNOWLEDGE_BASE_SEARCH);
+        ToolCallback schedule = callback(AgentContextToolCallbackFactory.SCHEDULE_LIST);
+        when(factory.callbacks()).thenReturn(List.of(context, rag, schedule));
+
+        AgentIntentRouter registryBackedRouter = new AgentIntentRouter(
+            null, null, new ObjectMapper(), null, new AgentToolRegistry(factory)
+        );
+        AgentIntentRouter.Decision decision = registryBackedRouter.parseModelDecision(
+            "{\"mode\":\"GENERAL\",\"capabilities\":[\"CONTEXT\",\"RAG\"],"
+                + "\"confidence\":0.94,\"reason\":\"需要资料和检索\"}",
+            "请根据面试报告并结合知识库资料回答"
+        );
+
+        assertThat(registryBackedRouter.toolPolicy(decision).allowedToolNames())
+            .containsExactlyInAnyOrder(
+                AgentContextToolCallbackFactory.INTERVIEW_SEARCH,
+                AgentContextToolCallbackFactory.KNOWLEDGE_BASE_SEARCH
+            )
+            .doesNotContain(AgentContextToolCallbackFactory.SCHEDULE_LIST);
+    }
+
+    private ToolCallback callback(String name) {
+        ToolCallback callback = mock(ToolCallback.class);
+        when(callback.getToolDefinition()).thenReturn(
+            org.springframework.ai.tool.definition.ToolDefinition.builder()
+                .name(name).description("test").inputSchema("{\"type\":\"object\"}").build()
+        );
+        return callback;
     }
 
     @Test

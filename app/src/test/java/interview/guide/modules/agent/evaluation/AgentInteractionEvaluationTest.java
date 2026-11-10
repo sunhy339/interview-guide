@@ -110,6 +110,7 @@ class AgentInteractionEvaluationTest {
             compareRequiredTraceActions(violations, index, expected, actual);
             compareRequiredTraceResources(violations, index, expected, actual);
             compareRequiredRunEventTypes(violations, index, expected, actual);
+            compareRequiredRunToolNames(violations, index, expected, actual);
             compareForbiddenRunEventTypes(violations, index, expected, actual);
             compareRequiredSourceKinds(violations, index, expected, actual);
             compareForbiddenSourceKinds(violations, index, expected, actual);
@@ -241,6 +242,37 @@ class AgentInteractionEvaluationTest {
         for (String eventType : forbidden) {
             if (actualEvents.contains(eventType)) {
                 violations.add(prefix + " Run 事件不应出现: " + eventType);
+            }
+        }
+    }
+
+    private void compareRequiredRunToolNames(
+        List<String> violations,
+        int index,
+        Map<String, Object> expected,
+        Map<String, Object> actual
+    ) {
+        List<String> required = strings(expected.get("expectedRunToolNames"));
+        if (required.isEmpty()) {
+            return;
+        }
+        Object value = actual.get("runEvents");
+        List<String> actualTools = new ArrayList<>();
+        if (value instanceof List<?> events) {
+            for (Object item : events) {
+                if (item instanceof Map<?, ?> event) {
+                    String toolName = eventText(event, "toolName");
+                    if (!toolName.isBlank() && !actualTools.contains(toolName)) {
+                        actualTools.add(toolName);
+                    }
+                }
+            }
+        }
+        String prefix = index < 0 ? "最终" : "第 " + (index + 1) + " 步";
+        for (String toolName : required) {
+            if (!actualTools.contains(toolName)) {
+                violations.add(prefix + " Run 缺少工具调用: " + toolName
+                    + "，实际工具: " + String.join(",", actualTools));
             }
         }
     }

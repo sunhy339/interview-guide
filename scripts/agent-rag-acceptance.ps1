@@ -64,6 +64,20 @@ function Invoke-JsonApi(
     return [pscustomobject]@{ Response = $response; Json = $json }
 }
 
+function Get-RunEvents([string]$AgentSessionId, [string]$RunId) {
+    if ([string]::IsNullOrWhiteSpace($RunId)) { return @() }
+    $events = Invoke-JsonApi "/api/agent/sessions/$AgentSessionId/run-events?runId=$([Uri]::EscapeDataString($RunId))&limit=200"
+    Assert-Pass ($events.Response.StatusCode -eq 200 -and $events.Json.code -eq 200) '读取 RAG Agent Run 事件'
+    return @($events.Json.data)
+}
+
+function Get-Trace([string]$AgentSessionId, [string]$RunId) {
+    if ([string]::IsNullOrWhiteSpace($RunId)) { return @() }
+    $trace = Invoke-JsonApi "/api/agent/sessions/$AgentSessionId/trace?runId=$([Uri]::EscapeDataString($RunId))&limit=100"
+    Assert-Pass ($trace.Response.StatusCode -eq 200 -and $trace.Json.code -eq 200) '读取 RAG Agent Trace'
+    return @($trace.Json.data)
+}
+
 try {
     if ([string]::IsNullOrWhiteSpace($Email)) {
         $Email = "agent-rag-$([guid]::NewGuid().ToString('N').Substring(0, 12))@example.com"
@@ -131,7 +145,28 @@ try {
     Assert-Pass ($conversation.Response.StatusCode -eq 200 -and $conversation.Json.code -eq 200) '读取 RAG Agent 会话终态'
     Assert-Pass ([string]$conversation.Json.data.runStatus -eq 'COMPLETED') "RAG Agent 运行完成（状态=$($conversation.Json.data.runStatus)）"
     Assert-Pass (@($conversation.Json.data.messages | Where-Object { $_.role -eq 'assistant' -and -not [string]::IsNullOrWhiteSpace([string]$_.content) }).Count -ge 1) 'RAG Agent 持久化了助手回答'
-    Assert-Pass (@($conversation.Json.data.runSources | Where-Object { $_.kind -eq 'rag' }).Count -ge 1) 'RAG 来源已持久化到运行记录'
+    $ragSources = @($conversation.Json.data.runSources | Where-Object { $_.kind -eq 'rag' })
+    Assert-Pass ($ragSources.Count -ge 1) 'RAG 来源已持久化到运行记录'
+    Assert-Pass (@($ragSources | Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string]$_.sourceId) -and
+        [string]$_.version -eq 'rag-tool-v1'
+    }).Count -ge 1) 'RAG 来源包含工具版本和稳定 sourceId'
+
+    $runId = [string]$conversation.Json.data.runId
+    Assert-Pass (-not [string]::IsNullOrWhiteSpace($runId)) 'RAG Agent 运行返回稳定 runId'
+    $runEvents = @(Get-RunEvents $agentSessionId $runId)
+    $eventTypes = @($runEvents | ForEach-Object { [string]$_.eventType } | Where-Object { $_ } | Select-Object -Unique)
+    foreach ($requiredEvent in @('MODEL_TURN_STARTED', 'MODEL_TURN_COMPLETED', 'TOOL_STARTED', 'TOOL_COMPLETED')) {
+        Assert-Pass ($eventTypes -contains $requiredEvent) "RAG Run 事件包含 $requiredEvent"
+    }
+    Assert-Pass (@($runEvents | Where-Object { $_.toolName -eq 'knowledge_base_search' -and $_.eventType -eq 'TOOL_STARTED' }).Count -ge 1) 'Run 事件确认实际启动 knowledge_base_search'
+    Assert-Pass (@($runEvents | Where-Object { $_.toolName -eq 'knowledge_base_search' -and $_.eventType -eq 'TOOL_COMPLETED' -and $_.status -eq 'completed' }).Count -ge 1) 'Run 事件确认 knowledge_base_search 成功完成'
+
+    $trace = @(Get-Trace $agentSessionId $runId)
+    $traceActions = @($trace | ForEach-Object { [string]$_.action } | Where-Object { $_ } | Select-Object -Unique)
+    foreach ($requiredTraceAction in @('GROUNDING_CHECK', 'SOURCE_INTEGRITY_CHECK', 'EVIDENCE_ASSESSMENT')) {
+        Assert-Pass ($traceActions -contains $requiredTraceAction) "RAG Trace 包含 $requiredTraceAction"
+    }
     Write-Host "Agent RAG acceptance: PASS (knowledgeBase=$KnowledgeBaseId, agentSession=$agentSessionId)" -ForegroundColor Cyan
 } finally {
     # The temporary account/session are intentionally retained for auditability

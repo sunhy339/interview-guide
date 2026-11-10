@@ -1,5 +1,6 @@
 package interview.guide.modules.agent.service;
 
+import interview.guide.common.ai.AgentToolResultContractValidator;
 import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.model.AgentChatSessionEntity;
 import interview.guide.modules.agent.model.AgentProviderResponseTrace;
@@ -25,6 +26,7 @@ import org.springframework.stereotype.Service;
 @Service
 @Slf4j
 public class AgentRunStateService {
+    private static final int CURRENT_CHECKPOINT_VERSION = 1;
     private static final int LEASE_MINUTES = 5;
     private static final int MAX_PHASE = 32;
     private static final int MAX_TOOL_NAME = 128;
@@ -53,6 +55,7 @@ public class AgentRunStateService {
             state.setOwnerKey(clean(session.getOwnerKey(), 64));
             state.setInterviewSessionId(clean(session.getInterviewSessionId(), 64));
             state.setAgentSessionId(clean(session.getAgentSessionId(), 64));
+            ensureLegacyCheckpointVersion(state);
             state.setAssistantMessageId(session.getActiveMessageId());
             state.setStatus(session.getRunStatus() == null ? AgentRunStatus.RUNNING : session.getRunStatus());
             state.setPhase(clean("context", MAX_PHASE));
@@ -101,6 +104,7 @@ public class AgentRunStateService {
                 return;
             }
             AgentRunStateEntity state = findOrCreate(runId);
+            ensureLegacyCheckpointVersion(state);
             int index = value(state.getModelTurnIndex()) + 1;
             state.setModelTurnIndex(index);
             String safeTurnId = clean(requestedTurnId, 64);
@@ -133,6 +137,7 @@ public class AgentRunStateService {
                 return;
             }
             AgentRunStateEntity state = findOrCreate(runId);
+            ensureLegacyCheckpointVersion(state);
             String status = normalizeModelTurnStatus(result);
             state.setModelProvider(clean(providerId, MAX_MODEL_PROVIDER));
             if (blank(state.getModelTurnId())) {
@@ -171,6 +176,7 @@ public class AgentRunStateService {
                 return;
             }
             AgentRunStateEntity state = findOrCreate(runId);
+            ensureLegacyCheckpointVersion(state);
             state.setProviderResponseId(clean(trace.responseId(), 128));
             state.setProviderResponseIdsHash(clean(trace.responseIdsHash(), 64));
             state.setProviderToolCallIdsHash(clean(trace.toolCallIdsHash(), 64));
@@ -230,6 +236,7 @@ public class AgentRunStateService {
                 return;
             }
             AgentRunStateEntity state = findOrCreate(session.getRunId());
+            ensureLegacyCheckpointVersion(state);
             state.setOwnerKey(clean(session.getOwnerKey(), 64));
             state.setInterviewSessionId(clean(session.getInterviewSessionId(), 64));
             state.setAgentSessionId(clean(session.getAgentSessionId(), 64));
@@ -298,6 +305,7 @@ public class AgentRunStateService {
                 return;
             }
             AgentRunStateEntity state = findOrCreate(session.getRunId());
+            ensureLegacyCheckpointVersion(state);
             state.setOwnerKey(clean(session.getOwnerKey(), 64));
             state.setInterviewSessionId(clean(session.getInterviewSessionId(), 64));
             state.setAgentSessionId(clean(session.getAgentSessionId(), 64));
@@ -345,6 +353,7 @@ public class AgentRunStateService {
                 return;
             }
             AgentRunStateEntity state = findOrCreate(runId);
+            ensureLegacyCheckpointVersion(state);
             if (!"resume_pending".equals(state.getPhase())) {
                 return;
             }
@@ -361,6 +370,7 @@ public class AgentRunStateService {
                 return;
             }
             AgentRunStateEntity state = findOrCreate(session.getRunId());
+            ensureLegacyCheckpointVersion(state);
             state.setStatus(session.getRunStatus() == null ? AgentRunStatus.FAILED : session.getRunStatus());
             state.setPhase(clean(session.getRunStep(), MAX_PHASE));
             state.setStepIndex(Math.max(0, session.getLoopNextStep()));
@@ -402,10 +412,13 @@ public class AgentRunStateService {
                 return;
             }
             AgentRunStateEntity state = findOrCreate(audit.runId());
+            ensureLegacyCheckpointVersion(state);
             state.setToolCallId(clean(toolCallId, MAX_TOOL_NAME));
             state.setToolName(clean(toolName, MAX_TOOL_NAME));
             state.setToolArgumentsHash(hash(toolInput));
             state.setToolResultReference(null);
+            state.setToolResultContractVersion(null);
+            state.setToolResultStatus(null);
             state.setPendingApproval(false);
             state.setAttempt(value(state.getAttempt()) + 1);
             state.setPhase("tool");
@@ -444,11 +457,16 @@ public class AgentRunStateService {
                 return;
             }
             AgentRunStateEntity state = findOrCreate(audit.runId());
+            ensureLegacyCheckpointVersion(state);
             if (!blank(toolCallId)) {
                 state.setToolCallId(clean(toolCallId, MAX_TOOL_NAME));
             }
             state.setToolName(clean(toolName, MAX_TOOL_NAME));
             state.setToolResultReference("sha256:" + hash(result));
+            AgentToolResultContractValidator.ResultMetadata metadata =
+                AgentToolResultContractValidator.metadata(result);
+            state.setToolResultContractVersion(clean(metadata.contractVersion(), 64));
+            state.setToolResultStatus(clean(metadata.status(), 64));
             state.setPendingApproval(pendingApproval);
             state.setPhase(pendingApproval ? "waiting_user" : "tool");
             state.setRecoveryBoundary(pendingApproval
@@ -494,6 +512,12 @@ public class AgentRunStateService {
                 return RecoveryDecision.SAFE_RETRY;
             }
             AgentRunStateEntity state = found.get();
+            if (state.getCheckpointVersion() != null
+                && state.getCheckpointVersion() != CURRENT_CHECKPOINT_VERSION) {
+                log.warn("Agent RunState 版本未知，延迟自动恢复: runId={}, version={}",
+                    runId, state.getCheckpointVersion());
+                return RecoveryDecision.DEFER;
+            }
             if (state.getStatus() == AgentRunStatus.COMPLETED
                 || state.getStatus() == AgentRunStatus.FAILED
                 || state.getStatus() == AgentRunStatus.CANCELLED) {
@@ -540,6 +564,13 @@ public class AgentRunStateService {
                 .status(AgentRunStatus.RUNNING)
                 .agentSessionId("unknown")
                 .build());
+    }
+
+    /** 迁移期把没有版本字段的旧检查点按当前 v1 兼容，不覆盖未来未知版本。 */
+    private void ensureLegacyCheckpointVersion(AgentRunStateEntity state) {
+        if (state != null && state.getCheckpointVersion() == null) {
+            state.setCheckpointVersion(CURRENT_CHECKPOINT_VERSION);
+        }
     }
 
     private void heartbeat(AgentRunStateEntity state) {

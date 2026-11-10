@@ -44,10 +44,13 @@ import { detectAgentActionIntent, extractScheduleDetails, isScheduleDetailsMessa
 import { isExternalMarkdownHref, sanitizeMarkdownHref } from './markdownSecurity';
 import {
   getStoredAgentThreadId,
+  getStoredAgentSessionId,
   clearStoredAgentSession,
+  getStoredInterviewAgentThreadId,
   isExplicitInterviewAgentMode,
   rememberAgentSessionId,
   rememberAgentThreadId,
+  rememberInterviewAgentThreadId,
   resolveAgentThreadId,
 } from './agentSession';
 import { isAgentReportExportAction, isAgentResumeEditAction, isAgentResumeImportAction, isAgentScheduleAction } from '../types/agent';
@@ -76,6 +79,7 @@ import AgentManagementOverview from '../components/AgentManagementOverview';
 import AgentContextPicker from '../components/AgentContextPicker';
 import { ROUTES } from '../constants/routes';
 import { createRequestId } from '../utils/requestId';
+import { clearAgentDraft, readAgentDraft, writeAgentDraft } from '../utils/agentDraft';
 type RunStatus = 'idle' | 'running' | 'waiting' | 'completed' | 'error' | 'cancelled';
 type StepStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
 
@@ -426,7 +430,14 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const routeAgentSessionId = searchParams.get('agentSessionId');
   const explicitInterviewMode = isExplicitInterviewAgentMode(searchParams.get('mode'));
   const storedGeneralAgentSessionId = useMemo(() => getStoredAgentThreadId('general'), []);
-  const storedInterviewAgentSessionId = useMemo(() => getStoredAgentThreadId('interview'), []);
+  const storedInterviewReportId = useMemo(() => getStoredAgentSessionId(), []);
+  const storedInterviewAgentSessionId = useMemo(
+    () => getStoredInterviewAgentThreadId(routeSessionId)
+      || (routeSessionId && routeSessionId === storedInterviewReportId
+        ? getStoredAgentThreadId('interview')
+        : null),
+    [routeSessionId, storedInterviewReportId],
+  );
   // /agent 默认是通用 Agent；只有链接显式带 sessionId 时才读取面试报告。
   // 只有明确选择“面试复盘”时才读取报告；/agent 默认永远是通用对话。
   const sessionId = explicitInterviewMode ? routeSessionId : null;
@@ -434,7 +445,9 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const isGeneralWorkspace = isWorkspaceView && !sessionId;
   // 地址带有报告 ID 时不使用上一次报告的线程；通用 Agent 使用独立的会话线程。
   const agentSessionId = explicitInterviewMode
-    ? resolveAgentThreadId(routeSessionId, routeAgentSessionId, null, storedInterviewAgentSessionId)
+    ? resolveAgentThreadId(
+      routeSessionId, routeAgentSessionId, storedInterviewReportId, storedInterviewAgentSessionId,
+    )
     : (routeSessionId ? storedGeneralAgentSessionId : routeAgentSessionId || storedGeneralAgentSessionId);
   const isGeneralAgentSession = !sessionId && Boolean(agentSessionId);
   const [goal, setGoal] = useState<AgentGoal>(isGeneralWorkspace ? 'general' : 'review');
@@ -507,6 +520,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const [trainingTaskBusyId, setTrainingTaskBusyId] = useState<string | null>(null);
   const [messages, setMessages] = useState<AgentMessage[]>([createWelcomeMessage()]);
   const [input, setInput] = useState('');
+  const inputRef = useRef('');
   const draftInputsRef = useRef<Record<string, string>>({});
   const inputDraftKey = agentSessionId
     || (isGeneralWorkspace ? 'general:new' : `interview:new:${sessionId || 'none'}`);
@@ -524,6 +538,10 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     promise?: Promise<AgentConversationSummary>;
   } | null>(null);
   const activeAgentSessionIdRef = useRef<string | null>(agentSessionId);
+
+  useEffect(() => () => {
+    writeAgentDraft(draftKeyRef.current, inputRef.current);
+  }, []);
 
   useEffect(() => {
     if (routeSessionId && explicitInterviewMode) {
@@ -676,6 +694,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       return;
     }
     draftInputsRef.current[draftKeyRef.current] = input;
+    writeAgentDraft(draftKeyRef.current, input);
     draftKeyRef.current = inputDraftKey;
     activeAgentSessionIdRef.current = agentSessionId;
     abortRef.current?.abort();
@@ -698,7 +717,11 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     setEditingActionContent('');
     setSteps(createInitialSteps(isGeneralWorkspace));
     setMessages([createWelcomeMessage()]);
-    setInput(draftInputsRef.current[inputDraftKey] || '');
+    const restoredDraft = draftInputsRef.current[inputDraftKey]
+      ?? readAgentDraft(inputDraftKey);
+    draftInputsRef.current[inputDraftKey] = restoredDraft;
+    inputRef.current = restoredDraft;
+    setInput(restoredDraft);
     if (createConversationRequestRef.current?.sessionId !== sessionId) {
       createConversationRequestRef.current = null;
     }
@@ -744,6 +767,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                 if (fallback && fallback.sessionId !== sessionId) {
                   rememberAgentSessionId(fallback.sessionId);
                   rememberAgentThreadId(null, 'interview');
+                  rememberInterviewAgentThreadId(fallback.sessionId, null);
                   setContextError('当前链接来自其他环境或已失效，已切换到当前账号最近的面试记录。');
                   setSearchParams({ mode: 'interview', sessionId: fallback.sessionId }, { replace: true });
                   return;
@@ -826,6 +850,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         if (resolvedAgentSessionId
           && (!routeAgentSessionId || resolvedAgentSessionId !== routeAgentSessionId)) {
           rememberAgentThreadId(resolvedAgentSessionId, 'interview');
+          rememberInterviewAgentThreadId(sessionId, resolvedAgentSessionId);
           setSearchParams((current) => {
             current.set('sessionId', sessionId);
             current.set('agentSessionId', resolvedAgentSessionId);
@@ -1061,9 +1086,13 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     abortRef.current = controller;
 
     delete draftInputsRef.current[draftKeyAtStart];
+    clearAgentDraft(draftKeyAtStart);
     delete draftInputsRef.current[draftKeyRef.current];
+    clearAgentDraft(draftKeyRef.current);
     draftKeyRef.current = targetAgentSessionId;
     delete draftInputsRef.current[targetAgentSessionId];
+    clearAgentDraft(targetAgentSessionId);
+    inputRef.current = '';
     setInput('');
     setRunError('');
     setRunNotice('');
@@ -1897,13 +1926,21 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
 
   const selectAgentSession = (nextSessionId: string) => {
     if (nextSessionId === sessionId) return;
-    rememberAgentThreadId(null, 'interview');
-    setSearchParams({ mode: 'interview', sessionId: nextSessionId });
+    const nextAgentSessionId = getStoredInterviewAgentThreadId(nextSessionId);
+    rememberAgentThreadId(nextAgentSessionId, 'interview');
+    rememberAgentSessionId(nextSessionId);
+    rememberInterviewAgentThreadId(nextSessionId, nextAgentSessionId);
+    setSearchParams({
+      mode: 'interview',
+      sessionId: nextSessionId,
+      ...(nextAgentSessionId ? { agentSessionId: nextAgentSessionId } : {}),
+    });
   };
 
   const selectAgentConversation = (nextAgentSessionId: string) => {
     if (nextAgentSessionId === agentSessionId) return;
     rememberAgentThreadId(nextAgentSessionId, sessionId ? 'interview' : 'general');
+    if (sessionId) rememberInterviewAgentThreadId(sessionId, nextAgentSessionId);
     setSearchParams(sessionId
       ? { mode: 'interview', sessionId, agentSessionId: nextAgentSessionId }
       : { agentSessionId: nextAgentSessionId });
@@ -1911,6 +1948,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
 
   const clearAgentConversation = () => {
     rememberAgentThreadId(null, sessionId ? 'interview' : 'general');
+    if (sessionId) rememberInterviewAgentThreadId(sessionId, null);
     setSearchParams(sessionId ? { mode: 'interview', sessionId } : {});
   };
 
@@ -1933,6 +1971,9 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
           createConversationRequestRef.current = null;
         }
         rememberAgentThreadId(conversation.agentSessionId, isGeneralWorkspace ? 'general' : 'interview');
+        if (!isGeneralWorkspace && sessionId) {
+          rememberInterviewAgentThreadId(sessionId, conversation.agentSessionId);
+        }
         setSearchParams(sessionId
           ? { mode: 'interview', sessionId, agentSessionId: conversation.agentSessionId }
           : { agentSessionId: conversation.agentSessionId });
@@ -2777,7 +2818,9 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                 onChange={(event) => {
                   const value = event.target.value;
                   setInput(value);
+                  inputRef.current = value;
                   draftInputsRef.current[draftKeyRef.current] = value;
+                  writeAgentDraft(draftKeyRef.current, value);
                 }}
                 onKeyDown={handleKeyDown}
                 maxLength={MAX_AGENT_MESSAGE_CHARS}

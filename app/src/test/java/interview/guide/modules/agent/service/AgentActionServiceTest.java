@@ -606,8 +606,9 @@ class AgentActionServiceTest {
         );
         when(repository.save(any(AgentActionRequestEntity.class)))
             .thenAnswer(invocation -> invocation.getArgument(0));
-        when(memoryService.rememberItem(
-            "user-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend"
+        when(memoryService.rememberItemWithProvenance(
+            "user-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend",
+            "interview-1", "interview-session.v1", "user-confirmed", "explicit-confirmation"
         )).thenReturn(new interview.guide.modules.agent.model.AgentMemorySnapshot(
             "user-1", null, List.of(), List.of(), LocalDateTime.now(), List.of(
                 new interview.guide.modules.agent.model.AgentMemoryItem(
@@ -630,8 +631,9 @@ class AgentActionServiceTest {
         assertThat(confirmed.resultEffect()).isEqualTo("MEMORY_WRITE");
         assertThat(confirmed.resultResourceType()).isEqualTo("MEMORY_ITEM");
         assertThat(confirmed.resultResourceId()).isEqualTo("memory-item-1");
-        verify(memoryService).rememberItem(
-            "user-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend"
+        verify(memoryService).rememberItemWithProvenance(
+            "user-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend",
+            "interview-1", "interview-session.v1", "user-confirmed", "explicit-confirmation"
         );
         verify(interviewPersistenceService, never()).renameSessionForOwner(any(), any(), any());
     }
@@ -695,8 +697,9 @@ class AgentActionServiceTest {
             .thenReturn(Optional.of(action));
         when(repository.save(any(AgentActionRequestEntity.class)))
             .thenAnswer(invocation -> invocation.getArgument(0));
-        when(memoryService.rememberItem(
-            "user-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend"
+        when(memoryService.rememberItemWithProvenance(
+            "user-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend",
+            "interview-1", "interview-session.v1", "user-confirmed", "explicit-confirmation"
         ))
             .thenThrow(new IllegalStateException("temporary failure"))
             .thenReturn(new interview.guide.modules.agent.model.AgentMemorySnapshot(
@@ -722,8 +725,9 @@ class AgentActionServiceTest {
         assertThat(failed.resultResourceType()).isEqualTo("AGENT_ACTION");
         assertThat(failed.resultResourceId()).isEqualTo("memory-action-1");
         assertThat(retried.status()).isEqualTo(AgentActionStatus.SUCCEEDED);
-        verify(memoryService, times(2)).rememberItem(
-            "user-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend"
+        verify(memoryService, times(2)).rememberItemWithProvenance(
+            "user-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend",
+            "interview-1", "interview-session.v1", "user-confirmed", "explicit-confirmation"
         );
         verify(auditService).recordQuietly(
             "user-1", "interview-1", "agent-1", null,
@@ -744,8 +748,9 @@ class AgentActionServiceTest {
             .thenReturn(Optional.of(action));
         when(repository.save(any(AgentActionRequestEntity.class)))
             .thenAnswer(invocation -> invocation.getArgument(0));
-        when(memoryService.rememberItem(
-            "user-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend"
+        when(memoryService.rememberItemWithProvenance(
+            "user-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend",
+            "interview-1", "interview-session.v1", "user-confirmed", "explicit-confirmation"
         )).thenThrow(new IllegalStateException("persistent failure"));
 
         var proposed = service.proposeMemoryDraft(
@@ -761,8 +766,9 @@ class AgentActionServiceTest {
         assertThatThrownBy(() -> service.retry(failed.actionId(), "user-1"))
             .isInstanceOf(BusinessException.class)
             .hasMessageContaining("最大重试次数");
-        verify(memoryService, times(3)).rememberItem(
-            "user-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend"
+        verify(memoryService, times(3)).rememberItemWithProvenance(
+            "user-1", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend",
+            "interview-1", "interview-session.v1", "user-confirmed", "explicit-confirmation"
         );
     }
 

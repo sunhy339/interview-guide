@@ -2,11 +2,13 @@ package interview.guide.modules.agent.metrics;
 
 import interview.guide.common.ai.PromptFingerprint;
 import interview.guide.modules.agent.model.AgentRunUsage;
+import interview.guide.modules.agent.model.AgentSource;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -409,6 +411,9 @@ public class AgentMetrics {
         /** 当前运行最近一次面试搜索的候选 ID；只用于服务端消歧，不进入模型指标。 */
         private final AtomicReference<List<InterviewSearchCandidate>> interviewSearchCandidates =
             new AtomicReference<>(List.of());
+        /** 本轮模型工具动态检索到的低敏来源；正文不进入运行指标。 */
+        private final AtomicReference<List<AgentSource>> dynamicSources =
+            new AtomicReference<>(List.of());
         private volatile AuditContext auditContext = AuditContext.empty();
 
         private RunTracker(
@@ -479,6 +484,39 @@ public class AgentMetrics {
 
         public List<InterviewSearchCandidate> interviewSearchCandidates() {
             return interviewSearchCandidates.get();
+        }
+
+        /** 记录工具运行期间新增的来源，并按稳定来源键去重。 */
+        public void rememberDynamicSources(List<AgentSource> sources) {
+            if (sources == null || sources.isEmpty()) {
+                return;
+            }
+            dynamicSources.updateAndGet(previous -> {
+                LinkedHashMap<String, AgentSource> merged = new LinkedHashMap<>();
+                for (AgentSource source : previous) {
+                    if (source != null) {
+                        merged.put(sourceKey(source), source);
+                    }
+                }
+                for (AgentSource source : sources) {
+                    if (source != null) {
+                        merged.put(sourceKey(source), source);
+                    }
+                }
+                return List.copyOf(merged.values());
+            });
+        }
+
+        public List<AgentSource> dynamicSources() {
+            return dynamicSources.get();
+        }
+
+        private static String sourceKey(AgentSource source) {
+            String sourceId = source.sourceId();
+            if (sourceId != null && !sourceId.isBlank()) {
+                return source.kind() + ":" + sourceId;
+            }
+            return String.valueOf(source.kind()) + ":" + source.reference() + ":" + source.title();
         }
 
         private void record(

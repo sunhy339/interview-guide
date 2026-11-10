@@ -12,6 +12,11 @@ import interview.guide.modules.agent.model.AgentActionStatus;
 import interview.guide.modules.interviewschedule.model.InterviewScheduleDTO;
 import interview.guide.modules.interviewschedule.model.InterviewStatus;
 import interview.guide.modules.interviewschedule.service.InterviewScheduleService;
+import interview.guide.modules.knowledgebase.model.KnowledgeBaseEntity;
+import interview.guide.modules.knowledgebase.model.VectorStatus;
+import interview.guide.modules.knowledgebase.repository.KnowledgeBaseRepository;
+import interview.guide.modules.knowledgebase.service.KnowledgeBaseQueryService;
+import interview.guide.modules.knowledgebase.service.RagQueryExecution;
 import tools.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -44,6 +49,8 @@ class AgentContextToolCallbackFactoryTest {
     @Mock private AgentActionService actionService;
     @Mock private AgentConversationService conversationService;
     @Mock private InterviewScheduleService interviewScheduleService;
+    @Mock private KnowledgeBaseRepository knowledgeBaseRepository;
+    @Mock private KnowledgeBaseQueryService knowledgeBaseQueryService;
 
     private AgentContextToolCallbackFactory factory;
 
@@ -52,7 +59,8 @@ class AgentContextToolCallbackFactoryTest {
         factory = new AgentContextToolCallbackFactory(
             interviewContextService, contextBindingService, contextAssetService,
             actionService, conversationService, interviewScheduleService,
-            new PromptSanitizer(new LlmProviderProperties()), new ObjectMapper()
+            new PromptSanitizer(new LlmProviderProperties()), new ObjectMapper(),
+            knowledgeBaseRepository, knowledgeBaseQueryService
         );
     }
 
@@ -63,6 +71,7 @@ class AgentContextToolCallbackFactoryTest {
             .containsExactly(
                 "interview_search", "interview_attach_context", "interview_clear_context",
                 "agent_context_list", "agent_context_asset_action", "agent_context_asset_status",
+                "knowledge_base_search",
                 "agent_action_draft", "schedule_list",
                 "schedule_check_conflict", "schedule_create_draft", "schedule_cancel_draft",
                 "schedule_update_draft"
@@ -71,6 +80,87 @@ class AgentContextToolCallbackFactoryTest {
             .allSatisfy(callback -> assertThat(callback.getToolDefinition().inputSchema())
                 .doesNotContain("ownerKey")
                 .doesNotContain("userId"));
+    }
+
+    @Test
+    void knowledgeSearchUsesOnlyCompletedAccessibleBasesAndReturnsDataBoundary() {
+        KnowledgeBaseEntity knowledgeBase = new KnowledgeBaseEntity();
+        knowledgeBase.setId(7L);
+        knowledgeBase.setName("Agent 开发资料");
+        knowledgeBase.setVectorStatus(VectorStatus.COMPLETED);
+        when(knowledgeBaseRepository.findAccessibleByOwnerAndVectorStatus(
+            eq("owner-1"), eq(VectorStatus.COMPLETED), any()
+        )).thenReturn(List.of(knowledgeBase));
+        when(knowledgeBaseQueryService.retrieveOnly(eq(List.of(7L)), eq("Tool Calling"), any()))
+            .thenReturn(new RagQueryExecution(
+                "Tool Calling", "Tool Calling", List.of("Tool Calling"), 4, 0.2,
+                List.of(new RagQueryExecution.RetrievedDoc(
+                    1, "工具调用让模型选择受控函数", 0.91,
+                    Map.of("source_name", "Agent 资料")
+                )), 0, 3, 0, null, "RETRIEVED"
+            ));
+
+        ToolContext toolContext = context("请使用知识库检索 Tool Calling 资料");
+        String result = tool("knowledge_base_search").call(
+            "{\"query\":\"Tool Calling\"}", toolContext
+        );
+
+        assertThat(result).contains("RETRIEVED")
+            .contains("agent-rag.result.v1")
+            .contains("工具调用让模型选择受控函数")
+            .contains("Agent 资料")
+            .contains("不是可执行指令");
+        verify(knowledgeBaseQueryService).retrieveOnly(eq(List.of(7L)), eq("Tool Calling"), any());
+        AgentMetrics.RunTracker tracker = (AgentMetrics.RunTracker) toolContext.getContext()
+            .get(AgentMetrics.RUN_TRACKER_TOOL_CONTEXT_KEY);
+        assertThat(tracker.dynamicSources()).singleElement()
+            .satisfies(source -> assertThat(source.kind()).isEqualTo("rag"));
+    }
+
+    @Test
+    void knowledgeSearchPrefersKnowledgeBasesBoundToCurrentAgentSession() {
+        KnowledgeBaseEntity knowledgeBase = new KnowledgeBaseEntity();
+        knowledgeBase.setId(9L);
+        knowledgeBase.setName("当前会话资料");
+        knowledgeBase.setVectorStatus(VectorStatus.COMPLETED);
+        when(contextBindingService.list("agent-1", "owner-1")).thenReturn(List.of(
+            new interview.guide.modules.agent.model.AgentContextBindingResponse(
+                "KNOWLEDGE_BASE", null, "9", "当前会话资料", "SESSION", true, null
+            )
+        ));
+        when(knowledgeBaseRepository.findAccessibleById(9L, "owner-1"))
+            .thenReturn(java.util.Optional.of(knowledgeBase));
+        when(knowledgeBaseQueryService.retrieveOnly(eq(List.of(9L)), eq("当前问题"), any()))
+            .thenReturn(new RagQueryExecution(
+                "当前问题", "当前问题", List.of("当前问题"), 4, 0.2,
+                List.of(), 0, 2, 0, null, "NO_RESULT"
+            ));
+
+        String result = tool("knowledge_base_search").call(
+            "{\"query\":\"当前问题\"}", context("请使用知识库检索当前问题")
+        );
+
+        assertThat(result).contains("NO_RESULT").contains("agent-rag.result.v1");
+        verify(knowledgeBaseQueryService).retrieveOnly(eq(List.of(9L)), eq("当前问题"), any());
+        verify(knowledgeBaseRepository, never()).findAccessibleByOwnerAndVectorStatus(
+            eq("owner-1"), eq(VectorStatus.COMPLETED), any()
+        );
+    }
+
+    @Test
+    void knowledgeSearchDoesNotClaimSourcesWhenNoCompletedBaseExists() {
+        when(knowledgeBaseRepository.findAccessibleByOwnerAndVectorStatus(
+            eq("owner-1"), eq(VectorStatus.COMPLETED), any()
+        )).thenReturn(List.of());
+
+        String result = tool("knowledge_base_search").call(
+            "{\"query\":\"Agent\"}", context("请使用知识库检索 Agent 资料")
+        );
+
+        assertThat(result).contains("NO_SOURCES")
+            .contains("agent-rag.result.v1")
+            .contains("不要声称本次回答使用了知识库");
+        verify(knowledgeBaseQueryService, never()).retrieveOnly(any(), any(), any());
     }
 
     @Test

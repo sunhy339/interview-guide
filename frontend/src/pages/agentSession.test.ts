@@ -3,8 +3,10 @@ import test from 'node:test';
 
 import {
   clearStoredAgentSession,
+  getStoredInterviewAgentThreadId,
   getStoredAgentThreadId,
   isExplicitInterviewAgentMode,
+  rememberInterviewAgentThreadId,
   rememberAgentThreadId,
   resolveAgentSessionId,
   resolveAgentThreadId,
@@ -74,6 +76,38 @@ test('通用 Agent 和面试报告线程使用独立的恢复位置', () => {
     clearStoredAgentSession();
     assert.equal(getStoredAgentThreadId('general'), null);
     assert.equal(getStoredAgentThreadId('interview'), null);
+  } finally {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: originalWindow,
+    });
+  }
+});
+
+test('不同面试报告分别恢复各自最近使用的 Agent 线程', () => {
+  const values = new Map<string, string>();
+  const originalWindow = (globalThis as { window?: unknown }).window;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      sessionStorage: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => values.set(key, value),
+        removeItem: (key: string) => values.delete(key),
+      },
+    },
+  });
+
+  try {
+    rememberInterviewAgentThreadId('report-a', 'thread-a');
+    rememberInterviewAgentThreadId('report-b', 'thread-b');
+
+    assert.equal(getStoredInterviewAgentThreadId('report-a'), 'thread-a');
+    assert.equal(getStoredInterviewAgentThreadId('report-b'), 'thread-b');
+
+    rememberInterviewAgentThreadId('report-a', null);
+    assert.equal(getStoredInterviewAgentThreadId('report-a'), null);
+    assert.equal(getStoredInterviewAgentThreadId('report-b'), 'thread-b');
   } finally {
     Object.defineProperty(globalThis, 'window', {
       configurable: true,

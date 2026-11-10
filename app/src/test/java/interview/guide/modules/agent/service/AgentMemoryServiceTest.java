@@ -41,6 +41,58 @@ class AgentMemoryServiceTest {
     }
 
     @Test
+    void keepsBoundedMemoryProvenanceWithoutPuttingItIntoPrompt() throws Exception {
+        AgentUserMemoryRepository repository = mock(AgentUserMemoryRepository.class);
+        ObjectMapper objectMapper = new ObjectMapper();
+        when(repository.findByMemoryKey("browser-key")).thenReturn(Optional.empty());
+        when(repository.save(any(AgentUserMemoryEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+
+        AgentMemoryService service = new AgentMemoryService(repository, objectMapper);
+
+        var snapshot = service.rememberItemWithProvenance(
+            "browser-key", "weakness", "Redis 缓存击穿需要互斥锁保护", "java-backend",
+            "interview-42", "interview-session.v1", "user-confirmed", "explicit-confirmation"
+        );
+
+        var item = snapshot.items().getFirst();
+        assertThat(item.sourceId()).isEqualTo("interview-42");
+        assertThat(item.version()).isEqualTo("interview-session.v1");
+        assertThat(item.authority()).isEqualTo("user-confirmed");
+        assertThat(item.selectedReason()).isEqualTo("explicit-confirmation");
+        assertThat(snapshot.toPrompt())
+            .doesNotContain("interview-42", "interview-session.v1", "explicit-confirmation");
+
+        var saved = org.mockito.ArgumentCaptor.forClass(AgentUserMemoryEntity.class);
+        verify(repository).save(saved.capture());
+        var persisted = objectMapper.readTree(saved.getValue().getMemoryJson()).path("items").get(0);
+        assertThat(persisted.path("sourceId").asText()).isEqualTo("interview-42");
+        assertThat(persisted.path("version").asText()).isEqualTo("interview-session.v1");
+        assertThat(persisted.path("authority").asText()).isEqualTo("user-confirmed");
+    }
+
+    @Test
+    void keepsLegacyMemoryReadableWhenProvenanceFieldsAreAbsent() throws Exception {
+        AgentUserMemoryRepository repository = mock(AgentUserMemoryRepository.class);
+        ObjectMapper objectMapper = new ObjectMapper();
+        AgentUserMemoryEntity entity = AgentUserMemoryEntity.builder()
+            .memoryKey("browser-key")
+            .memoryJson(objectMapper.writeValueAsString(java.util.Map.of(
+                "items", List.of(new AgentMemoryItem(
+                    "legacy-1", "weakness", "Redis 缓存", "interview-report", "java-backend", null
+                ))
+            )))
+            .build();
+        when(repository.findByMemoryKey("browser-key")).thenReturn(Optional.of(entity));
+
+        var loaded = new AgentMemoryService(repository, objectMapper).load("browser-key");
+
+        assertThat(loaded.items()).hasSize(1);
+        assertThat(loaded.items().getFirst().sourceId()).isNull();
+        assertThat(loaded.items().getFirst().version()).isNull();
+    }
+
+    @Test
     void sanitizesPromptInjectionBeforeLongTermMemoryIsPersisted() throws Exception {
         AgentUserMemoryRepository repository = mock(AgentUserMemoryRepository.class);
         ObjectMapper objectMapper = new ObjectMapper();
