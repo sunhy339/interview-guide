@@ -71,6 +71,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\agent-quality-collector.
 - 确认/取消不能新增一条用户消息，避免把系统动作结果伪装成用户输入或造成上下文重复。
 - 日程动作步骤还会校验 Trace 中出现了正确的工具资源，例如创建必须命中
   `schedule_create_draft`；这只验证工具选择，不把工具结果文本当作成功依据。
+- 真实 Run 事件中的模型终态也必须匹配事件名：完成对应 `SUCCEEDED`，失败对应 `FAILED`，取消对应 `CANCELLED`。
 
 其中 `general-without-explicit-context` 和 `general-with-explicit-interview-context`
 使用真正的通用会话接口，分别验证“无绑定不读取”和“显式绑定后读取”。
