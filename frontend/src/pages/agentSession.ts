@@ -1,6 +1,7 @@
 const ACTIVE_SESSION_STORAGE_KEY = 'agent-active-interview-session';
 const ACTIVE_GENERAL_AGENT_THREAD_STORAGE_KEY = 'agent-active-general-thread-session';
 const ACTIVE_INTERVIEW_AGENT_THREAD_STORAGE_KEY = 'agent-active-interview-thread-session';
+const INTERVIEW_AGENT_THREAD_MAP_STORAGE_KEY = 'agent-interview-thread-by-report:v1';
 
 export type AgentThreadScope = 'general' | 'interview';
 
@@ -44,8 +45,47 @@ export function clearStoredAgentSession(): void {
     window.sessionStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
     window.sessionStorage.removeItem(ACTIVE_GENERAL_AGENT_THREAD_STORAGE_KEY);
     window.sessionStorage.removeItem(ACTIVE_INTERVIEW_AGENT_THREAD_STORAGE_KEY);
+    window.sessionStorage.removeItem(INTERVIEW_AGENT_THREAD_MAP_STORAGE_KEY);
   } catch {
     // 当前 URL 仍然可以作为最终状态来源。
+  }
+}
+
+function readInterviewThreadMap(): Record<string, string> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.sessionStorage.getItem(INTERVIEW_AGENT_THREAD_MAP_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.entries(parsed).reduce<Record<string, string>>((result, [key, value]) => {
+      if (typeof value === 'string' && value.trim()) result[key] = value;
+      return result;
+    }, {});
+  } catch {
+    return {};
+  }
+}
+
+/** 读取指定面试报告最近使用的 Agent 线程，避免不同报告共用一个恢复位置。 */
+export function getStoredInterviewAgentThreadId(interviewSessionId: string | null): string | null {
+  if (!interviewSessionId) return null;
+  return readInterviewThreadMap()[interviewSessionId] || null;
+}
+
+/** 保存或清除指定面试报告的 Agent 线程映射。 */
+export function rememberInterviewAgentThreadId(
+  interviewSessionId: string | null,
+  agentSessionId: string | null,
+): void {
+  if (!interviewSessionId || typeof window === 'undefined') return;
+  try {
+    const map = readInterviewThreadMap();
+    if (agentSessionId) map[interviewSessionId] = agentSessionId;
+    else delete map[interviewSessionId];
+    window.sessionStorage.setItem(INTERVIEW_AGENT_THREAD_MAP_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // 当前 URL 和服务端会话仍然可以作为最终状态来源。
   }
 }
 
