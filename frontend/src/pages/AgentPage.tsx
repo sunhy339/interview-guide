@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -40,7 +40,13 @@ import CodeBlock from '../components/CodeBlock';
 import { getRetryableRequest, removeLastRunMessages, resolveRetryProviderId, type AgentRunMessageIds, type AgentRunRequest } from './agentRun';
 import { normalizeAgentMarkdown } from './agentMarkdown';
 import { isNearChatBottom } from './agentChatScroll';
-import { detectAgentActionIntent, extractScheduleDetails, isScheduleDetailsMessage, type AgentActionIntent } from './agentIntent';
+import {
+  detectAgentActionIntent,
+  detectQuickInterviewIntent,
+  extractScheduleDetails,
+  isScheduleDetailsMessage,
+  type AgentActionIntent,
+} from './agentIntent';
 import { isExternalMarkdownHref, sanitizeMarkdownHref } from './markdownSecurity';
 import {
   getStoredAgentThreadId,
@@ -149,6 +155,11 @@ interface ScheduleDraftForm {
   timeZone?: string;
   notes: string;
 }
+
+type QuickInterviewDraft = Extract<AgentActionIntent, { type: 'mockInterview' }> & {
+  requestId: string;
+  sourceMessage: string;
+};
 
 const MAX_HISTORY_MESSAGES = 32;
 const MAX_AGENT_MESSAGE_CHARS = 4000;
@@ -424,6 +435,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       : view === 'usage'
         ? '用量与活动'
         : 'AI 面试教练';
+  const location = useLocation();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const routeSessionId = searchParams.get('sessionId');
@@ -508,6 +520,9 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
   const [actionFeedback, setActionFeedback] = useState<Record<string, string>>({});
   const [scheduleDraftForm, setScheduleDraftForm] = useState<ScheduleDraftForm | null>(null);
+  const [quickInterviewDraft, setQuickInterviewDraft] = useState<QuickInterviewDraft | null>(null);
+  const [quickInterviewStarting, setQuickInterviewStarting] = useState(false);
+  const [quickInterviewError, setQuickInterviewError] = useState('');
   const scheduleDraftFormRef = useRef<ScheduleDraftForm | null>(null);
   const scheduleDraftTimeRef = useRef<string | null>(null);
   const [editingActionId, setEditingActionId] = useState<string | null>(null);
@@ -713,6 +728,9 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     setActionNotice('');
     setActionBusyId(null);
     setActionFeedback({});
+    setQuickInterviewDraft(null);
+    setQuickInterviewStarting(false);
+    setQuickInterviewError('');
     setEditingActionId(null);
     setEditingActionContent('');
     setSteps(createInitialSteps(isGeneralWorkspace));
@@ -1492,7 +1510,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
 
   const autoProposeActionIntent = (conversation: AgentConversationResponse, actionIntent: AgentActionIntent | null) => {
     if (!actionIntent || actionIntent.type === 'schedule' || actionIntent.type === 'scheduleCancel'
-      || actionIntent.type === 'scheduleUpdate'
+      || actionIntent.type === 'scheduleUpdate' || actionIntent.type === 'mockInterview'
       || !conversation.agentSessionId || !sessionId) return;
     const assistantMessage = [...conversation.messages]
       .reverse()
@@ -1907,10 +1925,87 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       });
   };
 
+  const queueQuickInterview = (
+    content: string,
+    intent: Extract<AgentActionIntent, { type: 'mockInterview' }>,
+  ) => {
+    const messageId = Date.now();
+    setMessages((current) => [
+      ...current,
+      { id: messageId, role: 'user', content },
+      {
+        id: messageId + 1,
+        role: 'assistant',
+        content: `已识别为快速模拟面试：${intent.skillLabel} · ${intent.difficulty === 'junior' ? '初级' : intent.difficulty === 'senior' ? '高级' : '中级'} · ${intent.questionCount} 道题 · ${intent.useResume ? '使用当前简历' : '不使用简历'}。请确认后开始。`,
+      },
+    ]);
+    setQuickInterviewDraft({
+      ...intent,
+      requestId: createRequestId(),
+      sourceMessage: content,
+    });
+    setQuickInterviewError('');
+    setActionNotice('快速模拟面试参数已识别，请确认后开始');
+  };
+
+  const startQuickInterview = async () => {
+    const draft = quickInterviewDraft;
+    if (!draft || quickInterviewStarting) return;
+    const resumeId = draft.useResume ? interview?.resumeId ?? undefined : undefined;
+    if (draft.useResume && !resumeId) {
+      setQuickInterviewError('当前没有可用的关联简历，请改为不使用简历，或先在输入区添加简历后再开始。');
+      return;
+    }
+
+    setQuickInterviewStarting(true);
+    setQuickInterviewError('');
+    try {
+      let resumeText = '';
+      if (resumeId) {
+        const resume = await historyApi.getResumeDetail(resumeId);
+        resumeText = resume.resumeText || '';
+      }
+      const created = await interviewApi.createSession({
+        resumeText,
+        questionCount: draft.questionCount,
+        ...(resumeId ? { resumeId } : {}),
+        forceCreate: true,
+        llmProvider: providerId || undefined,
+        skillId: draft.skillId,
+        difficulty: draft.difficulty,
+        requestId: draft.requestId,
+      });
+      navigate(ROUTES.interviewSession(created.sessionId), {
+        state: {
+          returnTo: `${location.pathname}${location.search}`,
+          interviewConfig: {
+            skillId: draft.skillId,
+            difficulty: draft.difficulty,
+            questionCount: draft.questionCount,
+            llmProvider: providerId || undefined,
+          },
+        },
+      });
+    } catch (error: unknown) {
+      setQuickInterviewError(getErrorMessage(error) || '模拟面试创建失败，请确认参数后重试');
+    } finally {
+      setQuickInterviewStarting(false);
+    }
+  };
+
   const sendMessage = () => {
     const content = input.trim();
     if (content.length > MAX_AGENT_MESSAGE_CHARS) {
       setRunError(`单条消息不能超过 ${MAX_AGENT_MESSAGE_CHARS} 个字符，请分多次发送`);
+      return;
+    }
+    const quickInterviewIntent = detectQuickInterviewIntent(content);
+    if (quickInterviewIntent) {
+      inputRef.current = '';
+      setInput('');
+      draftInputsRef.current[draftKeyRef.current] = '';
+      clearAgentDraft(draftKeyRef.current);
+      queueQuickInterview(content, quickInterviewIntent);
       return;
     }
     const actionIntent = detectAgentActionIntent(content);
@@ -2846,6 +2941,82 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                 return created?.agentSessionId || null;
               }}
             />
+            {quickInterviewDraft ? (
+              <div
+                className="mt-4 rounded-xl border border-primary-200 bg-primary-50/70 p-4 dark:border-primary-800 dark:bg-primary-900/20"
+                aria-label="快速模拟面试确认"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-primary-900 dark:text-primary-100">开始文字模拟面试</p>
+                    <p className="mt-1 text-xs leading-5 text-primary-700/80 dark:text-primary-300/80">
+                      已按你的描述整理参数，确认后才会创建面试并生成题目。
+                    </p>
+                    <p className="mt-1 max-w-xl truncate text-[11px] text-slate-500 dark:text-slate-400" title={quickInterviewDraft.sourceMessage}>
+                      原始请求：{quickInterviewDraft.sourceMessage}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuickInterviewDraft(null);
+                      setQuickInterviewError('');
+                    }}
+                    className="rounded-lg p-1 text-slate-400 hover:bg-white/70 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                    aria-label="取消快速模拟面试"
+                  >
+                    <XCircle className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                  <div className="rounded-lg bg-white/70 px-3 py-2 dark:bg-slate-800/70">
+                    <span className="text-slate-500 dark:text-slate-400">面试方向</span>
+                    <p className="mt-1 font-medium text-slate-700 dark:text-slate-200">{quickInterviewDraft.skillLabel}</p>
+                  </div>
+                  <div className="rounded-lg bg-white/70 px-3 py-2 dark:bg-slate-800/70">
+                    <span className="text-slate-500 dark:text-slate-400">难度</span>
+                    <p className="mt-1 font-medium text-slate-700 dark:text-slate-200">
+                      {quickInterviewDraft.difficulty === 'junior' ? '初级' : quickInterviewDraft.difficulty === 'senior' ? '高级' : '中级'}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-white/70 px-3 py-2 dark:bg-slate-800/70">
+                    <span className="text-slate-500 dark:text-slate-400">题目数量</span>
+                    <p className="mt-1 font-medium text-slate-700 dark:text-slate-200">{quickInterviewDraft.questionCount} 道</p>
+                  </div>
+                  <div className="rounded-lg bg-white/70 px-3 py-2 dark:bg-slate-800/70">
+                    <span className="text-slate-500 dark:text-slate-400">简历</span>
+                    <p className="mt-1 font-medium text-slate-700 dark:text-slate-200">
+                      {quickInterviewDraft.useResume ? '使用当前简历' : '不使用简历'}
+                    </p>
+                  </div>
+                </div>
+                {quickInterviewError ? (
+                  <p className="mt-3 text-xs text-rose-600 dark:text-rose-300">{quickInterviewError}</p>
+                ) : null}
+                <div className="mt-3 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuickInterviewDraft(null);
+                      setQuickInterviewError('');
+                    }}
+                    className="btn-secondary rounded-lg px-3 py-2 text-xs"
+                    disabled={quickInterviewStarting}
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void startQuickInterview()}
+                    className="btn-primary inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={quickInterviewStarting}
+                  >
+                    {quickInterviewStarting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                    {quickInterviewStarting ? '正在创建...' : '确认并开始面试'}
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-2">
               Enter 发送，Shift + Enter 换行 · 单条最多 {MAX_AGENT_MESSAGE_CHARS} 字符 · 已输入 {input.length}/{MAX_AGENT_MESSAGE_CHARS}
             </p>

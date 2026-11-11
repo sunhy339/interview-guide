@@ -128,6 +128,7 @@ interface InterviewEntryState {
   resumeId?: number;
   resumeText?: string;
   sessionIdToResume?: string;
+  returnTo?: string;
   interviewConfig?: {
     skillId?: string;
     difficulty?: Difficulty;
@@ -176,6 +177,10 @@ function InterviewWrapper() {
   }, [effectiveResumeId, entryState.resumeText]);
 
   const handleBack = () => {
+    if (entryState.returnTo) {
+      navigate(entryState.returnTo, { replace: false });
+      return;
+    }
     if (effectiveResumeId) {
       navigate(`/history/${effectiveResumeId}`, { replace: false });
       return;
