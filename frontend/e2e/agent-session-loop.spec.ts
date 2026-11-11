@@ -396,6 +396,67 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
     await expect(page).toHaveURL(/\/interview\/session\/quick-interview-1$/);
   });
 
+  test('快速模拟面试创建失败后保留确认卡并使用同一请求标识重试', async ({ page }) => {
+    await page.addInitScript(() => {
+      sessionStorage.removeItem('agent-active-general-thread-session');
+      sessionStorage.removeItem('agent-active-interview-session');
+      sessionStorage.removeItem('agent-active-thread-session');
+    });
+
+    await page.route('**/api/agent/sessions', async route => {
+      await route.fulfill({ contentType: 'application/json', body: envelope([]) });
+    });
+
+    let createAttempts = 0;
+    const requestIds: string[] = [];
+    await page.unroute('**/api/interview/sessions');
+    await page.route('**/api/interview/sessions', async route => {
+      if (route.request().method() !== 'POST') {
+        await route.fulfill({ contentType: 'application/json', body: envelope([]) });
+        return;
+      }
+      createAttempts += 1;
+      const payload = route.request().postDataJSON() as { requestId?: string };
+      requestIds.push(payload.requestId || '');
+      if (createAttempts === 1) {
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ code: 503, message: '模型服务暂时不可用', data: null }),
+        });
+        return;
+      }
+      await route.fulfill({
+        contentType: 'application/json',
+        body: envelope({
+          sessionId: 'quick-interview-retry-1',
+          resumeText: '',
+          totalQuestions: 6,
+          currentQuestionIndex: 0,
+          questions: [],
+          status: 'CREATED',
+        }),
+      });
+    });
+
+    await page.goto('/agent');
+    const input = page.getByPlaceholder('输入你的问题，按需添加上下文...');
+    await input.fill('帮我进行模拟面试，方向是后端开发，中等等级，不使用简历，题目给6道题');
+    await input.press('Enter');
+
+    const draft = page.getByLabel('快速模拟面试确认');
+    await expect(draft).toBeVisible();
+    await draft.getByRole('button', { name: '确认并开始面试' }).click();
+    await expect(draft).toContainText('模型服务暂时不可用');
+    await expect(draft.getByRole('button', { name: '确认并开始面试' })).toBeEnabled();
+
+    await draft.getByRole('button', { name: '确认并开始面试' }).click();
+    await expect(page).toHaveURL(/\/interview\/session\/quick-interview-retry-1$/);
+    expect(createAttempts).toBe(2);
+    expect(requestIds[0]).toBeTruthy();
+    expect(requestIds[1]).toBe(requestIds[0]);
+  });
+
   test('切换页面、刷新和多线程都保持会话隔离', async ({ page }) => {
     const trainingTaskRequests: string[] = [];
     page.on('request', request => {
