@@ -2092,10 +2092,46 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     }
   };
 
+  const enqueueSteeringMessage = async (content: string) => {
+    const activeSessionId = agentSessionId || activeAgentSessionIdRef.current;
+    if (!activeSessionId) {
+      setRunError('当前 Agent 会话还未准备好，请稍后重试');
+      return;
+    }
+    try {
+      const queued = isGeneralWorkspace
+        ? await agentApi.enqueueGeneralSteeringMessage(activeSessionId, content)
+        : sessionId
+          ? await agentApi.enqueueSteeringMessage(sessionId, activeSessionId, content)
+          : null;
+      if (!queued) {
+        setRunError('当前 Agent 会话还未准备好，请稍后重试');
+        return;
+      }
+      const draftKey = draftKeyRef.current;
+      inputRef.current = '';
+      setInput('');
+      draftInputsRef.current[draftKey] = '';
+      clearAgentDraft(draftKey);
+      setRunError('');
+      setRunNotice('消息已加入当前会话，Agent 会在下一次工具回合中处理');
+      setMessages((current) => current.some((message) => message.id === queued.messageId)
+        ? current
+        : [...current, { id: queued.messageId, role: 'user', content: queued.content }]);
+    } catch (error: unknown) {
+      setRunError(getErrorMessage(error) || '补充消息发送失败，请稍后重试');
+    }
+  };
+
   const sendMessage = () => {
     const content = input.trim();
     if (content.length > MAX_AGENT_MESSAGE_CHARS) {
       setRunError(`单条消息不能超过 ${MAX_AGENT_MESSAGE_CHARS} 个字符，请分多次发送`);
+      return;
+    }
+    // 当前运行只接受 steering input，不再发起第二个 SSE/Agent 任务。
+    if (runStatus === 'running') {
+      void enqueueSteeringMessage(content);
       return;
     }
     const quickInterviewIntent = detectQuickInterviewIntent(content);
@@ -3025,7 +3061,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
               />
               <button
                 onClick={sendMessage}
-                disabled={!input.trim() || ((!isGeneralWorkspace && (!sessionId || !interview))) || runStatus === 'running'}
+                disabled={!input.trim() || ((!isGeneralWorkspace && (!sessionId || !interview)))}
                 className="absolute right-3 bottom-3 p-2 rounded-lg text-primary-600 dark:text-primary-300 hover:bg-primary-50 dark:hover:bg-primary-900/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 aria-label="发送消息"
               >

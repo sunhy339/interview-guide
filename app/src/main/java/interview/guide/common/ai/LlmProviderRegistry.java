@@ -10,6 +10,7 @@ import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.service.AgentAuditService;
 import interview.guide.modules.agent.service.AgentContextToolCallbackFactory;
 import interview.guide.modules.agent.service.AgentRunStateService;
+import interview.guide.modules.agent.service.AgentSteeringService;
 import interview.guide.modules.agent.service.AgentToolDescriptor;
 import interview.guide.modules.agent.service.AgentToolRegistry;
 import interview.guide.modules.llmprovider.model.LlmGlobalSettingEntity;
@@ -76,6 +77,7 @@ public class LlmProviderRegistry {
     private final AgentContextToolCallbackFactory agentContextToolCallbackFactory;
     private AgentToolRegistry agentToolRegistry;
     private AgentRunStateService agentRunStateService;
+    private AgentSteeringService agentSteeringService;
 
     @Autowired
     public LlmProviderRegistry(
@@ -111,6 +113,12 @@ public class LlmProviderRegistry {
     @Autowired(required = false)
     void setAgentRunStateService(AgentRunStateService agentRunStateService) {
         this.agentRunStateService = agentRunStateService;
+    }
+
+    /** Agent 运行期间的 steering input 通过工具结果进入下一模型回合。 */
+    @Autowired(required = false)
+    void setAgentSteeringService(@Lazy AgentSteeringService agentSteeringService) {
+        this.agentSteeringService = agentSteeringService;
     }
 
     public LlmProviderRegistry(
@@ -443,7 +451,8 @@ public class LlmProviderRegistry {
                 ? null : agentToolRegistry.descriptorForSkill(interviewSkillsToolCallback);
             agentTools.add(new AgentObservedToolCallback(
                 interviewSkillsToolCallback, agentMetrics, agentAuditService,
-                new PromptSanitizer(properties), skillContract, agentRunStateService
+                new PromptSanitizer(properties), skillContract, agentRunStateService,
+                agentSteeringService
             ));
         }
         if (agentContextToolCallbackFactory != null) {
@@ -461,7 +470,8 @@ public class LlmProviderRegistry {
                     new PromptSanitizer(properties),
                     agentToolRegistry == null
                         ? null : agentToolRegistry.descriptor(callback.getToolDefinition().name()),
-                    agentRunStateService))
+                    agentRunStateService,
+                    agentSteeringService))
                 .forEach(agentTools::add);
         }
         if (!agentTools.isEmpty()) {

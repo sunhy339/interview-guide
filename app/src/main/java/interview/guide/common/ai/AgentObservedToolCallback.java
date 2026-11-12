@@ -4,6 +4,7 @@ import interview.guide.modules.agent.metrics.AgentMetrics;
 import interview.guide.modules.agent.service.AgentAuditService;
 import interview.guide.modules.agent.service.AgentIntentRouter;
 import interview.guide.modules.agent.service.AgentRunStateService;
+import interview.guide.modules.agent.service.AgentSteeringService;
 import interview.guide.modules.agent.service.AgentToolDescriptor;
 import java.time.Duration;
 import java.util.concurrent.ExecutionException;
@@ -12,6 +13,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
@@ -24,6 +27,8 @@ import org.springframework.ai.tool.metadata.ToolMetadata;
  * 或 Skill 内容写入日志和指标系统。</p>
  */
 final class AgentObservedToolCallback implements ToolCallback {
+
+    private static final Logger log = LoggerFactory.getLogger(AgentObservedToolCallback.class);
 
     private static final int MAX_RESULT_CHARS = 12_000;
     private static final String RESULT_TRUNCATION_NOTICE = "\n[工具资料已截断]";
@@ -42,6 +47,7 @@ final class AgentObservedToolCallback implements ToolCallback {
     private final PromptSanitizer promptSanitizer;
     private final AgentToolDescriptor contract;
     private final AgentRunStateService runStateService;
+    private final AgentSteeringService steeringService;
 
     AgentObservedToolCallback(ToolCallback delegate, AgentMetrics metrics) {
         this(delegate, metrics, null);
@@ -80,12 +86,25 @@ final class AgentObservedToolCallback implements ToolCallback {
         AgentToolDescriptor contract,
         AgentRunStateService runStateService
     ) {
+        this(delegate, metrics, auditService, promptSanitizer, contract, runStateService, null);
+    }
+
+    AgentObservedToolCallback(
+        ToolCallback delegate,
+        AgentMetrics metrics,
+        AgentAuditService auditService,
+        PromptSanitizer promptSanitizer,
+        AgentToolDescriptor contract,
+        AgentRunStateService runStateService,
+        AgentSteeringService steeringService
+    ) {
         this.delegate = delegate;
         this.metrics = metrics;
         this.auditService = auditService;
         this.promptSanitizer = promptSanitizer;
         this.contract = contract;
         this.runStateService = runStateService;
+        this.steeringService = steeringService;
     }
 
     @Override
@@ -138,20 +157,22 @@ final class AgentObservedToolCallback implements ToolCallback {
             reserveToolCall(runTracker);
             String toolCallId = recordSkillToolStart(runTracker, toolInput);
             if (isOversizedInput(toolInput)) {
-                String result = sanitizeResult(rejectOversizedInput());
+                String rawResult = rejectOversizedInput();
+                String result = observedResultWithSteering(rawResult, runTracker);
                 record("rejected", startedNanos);
                 audit(runTracker, "rejected");
                 auditSecurityRejection(runTracker);
-                recordSkillToolResult(runTracker, toolCallId, result, false);
+                recordSkillToolResult(runTracker, toolCallId, sanitizeResult(rawResult), false);
                 return result;
             }
             String contractError = validateContract(toolInput);
             if (contractError != null) {
-                String result = sanitizeResult(rejectContractInput(contractError));
+                String rawResult = rejectContractInput(contractError);
+                String result = observedResultWithSteering(rawResult, runTracker);
                 record("rejected", startedNanos);
                 audit(runTracker, "rejected");
                 auditSecurityRejection(runTracker);
-                recordSkillToolResult(runTracker, toolCallId, result, false);
+                recordSkillToolResult(runTracker, toolCallId, sanitizeResult(rawResult), false);
                 return result;
             }
             auditStarted(runTracker);
@@ -163,14 +184,16 @@ final class AgentObservedToolCallback implements ToolCallback {
                 rawResult = rejectResultContract(resultContractError);
                 rejected = true;
             }
-            String result = sanitizeResult(rawResult);
+            // 运行态补充消息只给当前模型回合使用，不写入 Skill 工具结果轨迹。
+            String observedToolResult = sanitizeResult(rawResult);
+            String result = observedResultWithSteering(rawResult, runTracker);
             String outcome = rejected ? "rejected" : "success";
             record(outcome, startedNanos);
             audit(runTracker, outcome);
             if (rejected) {
                 auditSecurityRejection(runTracker);
             }
-            recordSkillToolResult(runTracker, toolCallId, result, false);
+            recordSkillToolResult(runTracker, toolCallId, observedToolResult, false);
             return result;
         } catch (RuntimeException error) {
             String outcome = error instanceof ToolExecutionTimeoutException ? "timeout" : "failure";
@@ -386,6 +409,38 @@ final class AgentObservedToolCallback implements ToolCallback {
             safe = safe.substring(0, contentChars) + RESULT_TRUNCATION_NOTICE;
         }
         return promptSanitizer.wrapWithDelimiters("agent-observed-tool-result", safe);
+    }
+
+    /**
+     * 工具回合完成后把运行期间收到的消息交给下一次模型回合。
+     *
+     * <p>这里追加的是工具结果中的受信边界数据，模型会在同一个 ToolCallingAdvisor
+     * 循环中继续处理；不会启动第二个 Agent 任务，也不会改变稳定系统提示词。</p>
+     */
+    private String appendSteeringInput(String result, AgentMetrics.RunTracker runTracker) {
+        if (steeringService == null || runTracker == null) {
+            return result;
+        }
+        AgentMetrics.AuditContext context = runTracker.auditContext();
+        AgentSteeringService.SteeringBatch batch;
+        try {
+            batch = steeringService.drainForToolTurn(context.agentSessionId(), context.runId());
+        } catch (RuntimeException error) {
+            // Steering 是增强输入。数据库瞬时故障不能把已经完成的业务工具判成失败；
+            // 消息仍保持未消费状态，下一次工具回合可以再次尝试注入。
+            log.warn("Agent steering input drain failed for session {}", context.agentSessionId(), error);
+            return result;
+        }
+        if (batch.isEmpty()) {
+            return result;
+        }
+        return (result == null ? "" : result) + batch.asModelInput();
+    }
+
+    private String observedResultWithSteering(
+        String rawResult, AgentMetrics.RunTracker runTracker
+    ) {
+        return sanitizeResult(appendSteeringInput(rawResult, runTracker));
     }
 }
 

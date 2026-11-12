@@ -27,6 +27,8 @@ import interview.guide.modules.agent.model.AttachAgentContextRequest;
 import interview.guide.modules.agent.model.AgentInterviewSearchResult;
 import interview.guide.modules.agent.model.AgentContextAssetResponse;
 import interview.guide.modules.agent.model.AgentKnowledgeBaseOption;
+import interview.guide.modules.agent.model.AgentSteeringMessageRequest;
+import interview.guide.modules.agent.model.AgentSteeringMessageResponse;
 import interview.guide.modules.agent.model.AttachAgentResourceRequest;
 import interview.guide.modules.agent.model.UpdateAgentTrainingTaskRequest;
 import interview.guide.modules.agent.service.AgentConversationService;
@@ -39,6 +41,7 @@ import interview.guide.modules.agent.service.AgentTrainingTaskService;
 import interview.guide.modules.agent.service.AgentUsageService;
 import interview.guide.modules.agent.service.AgentContextAssetService;
 import interview.guide.modules.agent.service.AgentContextBindingService;
+import interview.guide.modules.agent.service.AgentSteeringService;
 import interview.guide.modules.interview.service.InterviewHistoryService;
 import interview.guide.modules.auth.AuthIdentityService;
 import interview.guide.common.result.Result;
@@ -94,6 +97,7 @@ public class AgentController {
     private final interview.guide.modules.agent.service.AgentInterviewContextService interviewContextService;
     private final AgentContextAssetService contextAssetService;
     private final AgentContextBindingService contextBindingService;
+    private final AgentSteeringService steeringService;
 
     /** 创建不绑定面试报告的通用 Agent 会话。 */
     @PostMapping("/api/agent/sessions")
@@ -342,6 +346,19 @@ public class AgentController {
             agentSessionId, contextType, resourceId, authIdentityService.requireIdentity(ownerKey)
         );
         return Result.success(null);
+    }
+
+    /** 通用 Agent 运行期间追加输入；不会创建第二个 Agent 任务。 */
+    @PostMapping("/api/agent/sessions/{agentSessionId}/steering-messages")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 20)
+    public Result<AgentSteeringMessageResponse> enqueueGeneralSteeringMessage(
+        @PathVariable String agentSessionId,
+        @Valid @RequestBody AgentSteeringMessageRequest request,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        return Result.success(steeringService.enqueue(
+            null, agentSessionId, request.message(), authIdentityService.requireIdentity(ownerKey)
+        ));
     }
 
     /** 通用 Agent 会话流式消息入口；路径中的线程 ID优先于请求体。 */
@@ -840,6 +857,20 @@ public class AgentController {
                 .event("agent-" + event.type())
                 .data(event)
                 .build());
+    }
+
+    /** 绑定面试的 Agent 运行期间追加输入；不会创建第二个 Agent 任务。 */
+    @PostMapping("/api/agent/interview-sessions/{sessionId}/conversations/{agentSessionId}/steering-messages")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 20)
+    public Result<AgentSteeringMessageResponse> enqueueSteeringMessage(
+        @PathVariable String sessionId,
+        @PathVariable String agentSessionId,
+        @Valid @RequestBody AgentSteeringMessageRequest request,
+        @RequestHeader(value = "X-User-Id", required = false) String ownerKey
+    ) {
+        return Result.success(steeringService.enqueue(
+            sessionId, agentSessionId, request.message(), authIdentityService.requireIdentity(ownerKey)
+        ));
     }
 
     /**

@@ -190,7 +190,11 @@ services:
   #   - 反向代理 API 请求（通常在 Nginx 配置中处理）
   # =========================================
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        # 正式环境固定访问正式 API，不能与测试环境共用 app DNS 别名。
+        NGINX_CONFIG: nginx.formal.conf
     container_name: interview-frontend
     depends_on:
       - app

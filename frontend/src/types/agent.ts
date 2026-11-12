@@ -204,6 +204,14 @@ export interface AgentConversationSummary {
   updatedAt?: string | null;
 }
 
+export interface AgentSteeringMessageResponse {
+  messageId: number;
+  content: string;
+  runId: string;
+  status: 'PENDING' | string;
+  createdAt?: string | null;
+}
+
 export type AgentContextSourceType = 'RESUME' | 'INTERVIEW_REPORT' | 'FILE' | 'KNOWLEDGE_BASE';
 
 export interface AgentContextBinding {

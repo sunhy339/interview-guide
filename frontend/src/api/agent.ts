@@ -15,6 +15,7 @@ import type {
   AgentContextBinding,
   AgentContextAsset,
   AgentKnowledgeBaseOption,
+  AgentSteeringMessageResponse,
 } from '../types/agent.ts';
 import { getAgentMemoryKey } from '../utils/clientIdentity.ts';
 
@@ -487,6 +488,29 @@ export const agentApi = {
     return request.post<AgentConversationResponse>(
       `/api/agent/interview-sessions/${encodeURIComponent(sessionId)}/cancel${query}`,
       undefined,
+      { headers: agentHeaders() },
+    );
+  },
+
+  enqueueSteeringMessage(
+    sessionId: string,
+    agentSessionId: string,
+    message: string,
+  ): Promise<AgentSteeringMessageResponse> {
+    return request.post<AgentSteeringMessageResponse>(
+      `/api/agent/interview-sessions/${encodeURIComponent(sessionId)}/conversations/${encodeURIComponent(agentSessionId)}/steering-messages`,
+      { message },
+      { headers: agentHeaders() },
+    );
+  },
+
+  enqueueGeneralSteeringMessage(
+    agentSessionId: string,
+    message: string,
+  ): Promise<AgentSteeringMessageResponse> {
+    return request.post<AgentSteeringMessageResponse>(
+      `/api/agent/sessions/${encodeURIComponent(agentSessionId)}/steering-messages`,
+      { message },
       { headers: agentHeaders() },
     );
   },
