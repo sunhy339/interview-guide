@@ -157,6 +157,7 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
         failedRunCount: 1,
         cancelledRunCount: 0,
         promptTokens: 1200,
+        estimatedPromptTokens: 1200,
         completionTokens: 800,
         totalTokens: 2000,
         modelCalls: 4,
@@ -174,6 +175,7 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
         agentSessionTitle: '第一轮复盘',
         runStatus: 'COMPLETED',
         promptTokens: 1200,
+        estimatedPromptTokens: 1200,
         completionTokens: 800,
         totalTokens: 2000,
         modelCalls: 4,
@@ -335,6 +337,129 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
     await expect(page.getByLabel('面试岗位')).toHaveValue('agent开发工程师');
     await page.getByRole('button', { name: '生成待确认日程' }).click();
     await expect(page.getByText('面试日程草稿已生成，请先检查时间和内容再确认')).toBeVisible();
+  });
+
+  test('自然语言快速发起无简历模拟面试并进入答题页', async ({ page }) => {
+    await page.addInitScript(() => {
+      sessionStorage.removeItem('agent-active-general-thread-session');
+      sessionStorage.removeItem('agent-active-interview-session');
+      sessionStorage.removeItem('agent-active-thread-session');
+    });
+
+    await page.route('**/api/agent/sessions', async route => {
+      await route.fulfill({ contentType: 'application/json', body: envelope([]) });
+    });
+
+    let createPayload: Record<string, unknown> | null = null;
+    await page.unroute('**/api/interview/sessions');
+    await page.route('**/api/interview/sessions', async route => {
+      if (route.request().method() !== 'POST') {
+        await route.fulfill({ contentType: 'application/json', body: envelope([]) });
+        return;
+      }
+      createPayload = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({
+        contentType: 'application/json',
+        body: envelope({
+          sessionId: 'quick-interview-1',
+          resumeText: '',
+          totalQuestions: 6,
+          currentQuestionIndex: 0,
+          questions: [],
+          status: 'CREATED',
+        }),
+      });
+    });
+
+    await page.goto('/agent');
+    const input = page.getByPlaceholder('输入你的问题，按需添加上下文...');
+    await input.fill('帮我进行模拟面试，方向是后端开发，中等等级，不使用简历，题目给6道题');
+    await input.press('Enter');
+
+    const draft = page.getByLabel('快速模拟面试确认');
+    await expect(draft).toBeVisible();
+    await expect(draft.getByText('后端开发', { exact: true })).toBeVisible();
+    await expect(draft.getByText('中级', { exact: true })).toBeVisible();
+    await expect(draft.getByText('6 道', { exact: true })).toBeVisible();
+    await expect(draft.getByText('不使用简历', { exact: true })).toBeVisible();
+
+    await draft.getByRole('button', { name: '确认并开始面试' }).click();
+    await expect.poll(() => createPayload).toMatchObject({
+      skillId: 'java-backend',
+      difficulty: 'mid',
+      questionCount: 6,
+      resumeText: '',
+      forceCreate: true,
+    });
+    expect(createPayload?.resumeId).toBeUndefined();
+    expect(typeof createPayload?.requestId).toBe('string');
+    await expect(page).toHaveURL(/\/interview\/session\/quick-interview-1$/);
+
+    await page.goto('/agent');
+    await expect(page.getByText('帮我进行模拟面试，方向是后端开发，中等等级，不使用简历，题目给6道题', { exact: true })).toBeVisible();
+    await expect(page.getByText('已创建快速模拟面试：后端开发', { exact: false })).toBeVisible();
+    await expect(page.getByLabel('快速模拟面试确认')).not.toBeVisible();
+  });
+
+  test('快速模拟面试创建失败后保留确认卡并使用同一请求标识重试', async ({ page }) => {
+    await page.addInitScript(() => {
+      sessionStorage.removeItem('agent-active-general-thread-session');
+      sessionStorage.removeItem('agent-active-interview-session');
+      sessionStorage.removeItem('agent-active-thread-session');
+    });
+
+    await page.route('**/api/agent/sessions', async route => {
+      await route.fulfill({ contentType: 'application/json', body: envelope([]) });
+    });
+
+    let createAttempts = 0;
+    const requestIds: string[] = [];
+    await page.unroute('**/api/interview/sessions');
+    await page.route('**/api/interview/sessions', async route => {
+      if (route.request().method() !== 'POST') {
+        await route.fulfill({ contentType: 'application/json', body: envelope([]) });
+        return;
+      }
+      createAttempts += 1;
+      const payload = route.request().postDataJSON() as { requestId?: string };
+      requestIds.push(payload.requestId || '');
+      if (createAttempts === 1) {
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ code: 503, message: '模型服务暂时不可用', data: null }),
+        });
+        return;
+      }
+      await route.fulfill({
+        contentType: 'application/json',
+        body: envelope({
+          sessionId: 'quick-interview-retry-1',
+          resumeText: '',
+          totalQuestions: 6,
+          currentQuestionIndex: 0,
+          questions: [],
+          status: 'CREATED',
+        }),
+      });
+    });
+
+    await page.goto('/agent');
+    const input = page.getByPlaceholder('输入你的问题，按需添加上下文...');
+    await input.fill('帮我进行模拟面试，方向是后端开发，中等等级，不使用简历，题目给6道题');
+    await input.press('Enter');
+
+    const draft = page.getByLabel('快速模拟面试确认');
+    await expect(draft).toBeVisible();
+    await draft.getByRole('button', { name: '确认并开始面试' }).click();
+    await expect(draft).toContainText('模型服务暂时不可用');
+    await expect(draft.getByRole('button', { name: '确认并开始面试' })).toBeEnabled();
+
+    await draft.getByRole('button', { name: '确认并开始面试' }).click();
+    await expect(page).toHaveURL(/\/interview\/session\/quick-interview-retry-1$/);
+    expect(createAttempts).toBe(2);
+    expect(requestIds[0]).toBeTruthy();
+    expect(requestIds[1]).toBe(requestIds[0]);
   });
 
   test('切换页面、刷新和多线程都保持会话隔离', async ({ page }) => {
@@ -968,7 +1093,7 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
         {
           runId: 'run-a', interviewSessionId: 'interview-1', interviewTitle: 'Java 后端高并发面试',
           skillId: 'java-backend', agentSessionId: 'thread-a', agentSessionTitle: '第一轮复盘',
-          runStatus: 'COMPLETED', promptTokens: 100, completionTokens: 50, totalTokens: 150,
+          runStatus: 'COMPLETED', promptTokens: 100, estimatedPromptTokens: 100, completionTokens: 50, totalTokens: 150,
           modelCalls: 1, durationMillis: 1000, cost: null, currency: null, provider: 'pixel',
           model: 'gpt-5.6-luna', runStartedAt: '2026-10-24T09:05:00', runFinishedAt: '2026-10-24T09:06:00',
           createdAt: '2026-10-24T09:05:00',
@@ -976,7 +1101,7 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
         {
           runId: 'run-b', interviewSessionId: 'interview-1', interviewTitle: 'Java 后端高并发面试',
           skillId: 'java-backend', agentSessionId: 'thread-b', agentSessionTitle: '第二轮训练',
-          runStatus: 'FAILED', promptTokens: 80, completionTokens: 0, totalTokens: 80,
+          runStatus: 'FAILED', promptTokens: 80, estimatedPromptTokens: 80, completionTokens: 0, totalTokens: 80,
           modelCalls: 1, durationMillis: 800, cost: null, currency: null, provider: 'pixel',
           model: 'gpt-5.6-luna', runStartedAt: '2026-10-24T09:07:00', runFinishedAt: '2026-10-24T09:08:00',
           createdAt: '2026-10-24T09:07:00',

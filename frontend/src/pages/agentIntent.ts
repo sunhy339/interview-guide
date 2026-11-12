@@ -2,11 +2,21 @@ export type AgentActionIntent =
   | { type: 'schedule'; suggestedTime?: string; companyName?: string; position?: string; timeZone?: string }
   | { type: 'scheduleCancel' }
   | { type: 'scheduleUpdate' }
+  | {
+    type: 'mockInterview';
+    skillId: string;
+    skillLabel: string;
+    difficulty: 'junior' | 'mid' | 'senior';
+    questionCount: number;
+    useResume: boolean;
+  }
   | { type: 'trainingTask' }
   | { type: 'memory' }
   | { type: 'title' }
   | { type: 'reportExport' }
   | { type: 'resumeEdit' };
+
+export type QuickInterviewIntent = Extract<AgentActionIntent, { type: 'mockInterview' }>;
 
 function pad(value: number) {
   return String(value).padStart(2, '0');
@@ -24,6 +34,71 @@ function atTime(value: Date, hour: number, minute = 0) {
 
 function cleanDetail(value: string | undefined) {
   return value?.replace(/[，。,；;。\s]+$/g, '').trim() || undefined;
+}
+
+const QUICK_INTERVIEW_SKILLS: Array<{
+  id: string;
+  label: string;
+  pattern: RegExp;
+}> = [
+  { id: 'ai-agent-dev', label: 'AI Agent 开发', pattern: /(ai\s*agent|agent\s*开发|智能体)/i },
+  { id: 'python-backend', label: 'Python 后端开发', pattern: /(python\s*后端|python\s*开发)/i },
+  { id: 'system-design', label: '系统设计', pattern: /(系统设计|架构设计)/ },
+  { id: 'frontend', label: '前端工程', pattern: /(前端|frontend)/i },
+  { id: 'java-backend', label: 'Java 后端开发', pattern: /(java\s*后端|java\s*开发)/i },
+  { id: 'java-backend', label: '后端开发', pattern: /(后端|backend)/i },
+];
+
+function extractQuickInterviewSkill(message: string) {
+  const matched = QUICK_INTERVIEW_SKILLS.find((item) => item.pattern.test(message));
+  return matched ? { skillId: matched.id, skillLabel: matched.label } : undefined;
+}
+
+function extractQuickInterviewDifficulty(message: string): 'junior' | 'mid' | 'senior' {
+  if (/(高级|资深|senior)/i.test(message)) return 'senior';
+  if (/(初级|初阶|校招|junior)/i.test(message)) return 'junior';
+  return 'mid';
+}
+
+function extractQuickInterviewQuestionCount(message: string) {
+  const matched = message.match(/(\d{1,2})\s*(?:道|题|个(?:问题|题目))/);
+  if (!matched) return 6;
+  const count = Number(matched[1]);
+  return Number.isInteger(count) && count >= 3 && count <= 20 ? count : null;
+}
+
+/**
+ * 识别明确的“直接开始一场模拟面试”命令。
+ *
+ * <p>这是前端快捷入口，不替代 Agent 的通用意图分类：只有用户明确表达
+ * 开始/创建模拟面试，并给出可映射的方向时才返回，避免“如何进行模拟面试”
+ * 或“复盘面试报告”被误判成创建动作。</p>
+ */
+export function detectQuickInterviewIntent(message: string): QuickInterviewIntent | null {
+  const normalized = message.replace(/\s+/g, ' ').trim();
+  if (!normalized
+    || /(怎么|如何|什么是|介绍|了解).{0,8}(模拟面试|文字面试)/.test(normalized)
+    || /(复盘|报告|会议|日程|预约|取消|改期).{0,10}(面试|模拟)/.test(normalized)) {
+    return null;
+  }
+  const startsInterview = /(帮我|请|开始|进行|创建|新建|来一场|安排).{0,40}(模拟面试|文字面试|面试)/.test(normalized)
+    || /(模拟面试|文字面试).{0,40}(开始|进行|创建|来一场)/.test(normalized);
+  if (!startsInterview) return null;
+
+  const skill = extractQuickInterviewSkill(normalized);
+  if (!skill) return null;
+  const questionCount = extractQuickInterviewQuestionCount(normalized);
+  if (questionCount == null) return null;
+
+  const explicitlyWithoutResume = /(不使用|不用|无需|不要|不带|无).{0,4}简历/.test(normalized);
+  const explicitlyWithResume = /(使用|带上|根据|参考).{0,4}简历/.test(normalized);
+  return {
+    type: 'mockInterview',
+    ...skill,
+    difficulty: extractQuickInterviewDifficulty(normalized),
+    questionCount,
+    useResume: explicitlyWithResume && !explicitlyWithoutResume,
+  };
 }
 
 /** 从补充信息中提取日程字段，避免把“公司是...职位是...”再次交给复盘模型。 */
@@ -99,6 +174,8 @@ export function detectAgentActionIntent(message: string, now = new Date()): Agen
     return { type: 'scheduleUpdate' };
   }
   if (!normalized || /(不要|不用|无需|取消).{0,6}(安排|预约|日程|导出|下载|保存|创建|修改|重命名|任务|简历|记忆)/.test(normalized)) return null;
+  const quickInterview = detectQuickInterviewIntent(normalized);
+  if (quickInterview) return quickInterview;
   if (/(导出|下载).{0,8}(报告|面试报告|pdf)/i.test(normalized)
     || /(报告|面试报告).{0,8}(导出|下载)/i.test(normalized)) {
     return { type: 'reportExport' };

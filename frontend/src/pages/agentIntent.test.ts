@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { detectAgentActionIntent, extractScheduleDetails, suggestScheduleTime } from './agentIntent.ts';
+import {
+  detectAgentActionIntent,
+  detectQuickInterviewIntent,
+  extractScheduleDetails,
+  suggestScheduleTime,
+} from './agentIntent.ts';
 
 const now = new Date(2026, 9, 27, 10, 15);
 
@@ -62,4 +67,45 @@ test('识别训练任务、记忆、标题、报告和简历动作', () => {
   assert.deepEqual(detectAgentActionIntent('给这场面试起个名字'), { type: 'title' });
   assert.deepEqual(detectAgentActionIntent('请导出这场面试报告 PDF'), { type: 'reportExport' });
   assert.deepEqual(detectAgentActionIntent('帮我优化简历'), { type: 'resumeEdit' });
+});
+
+test('识别自然语言快速发起无简历中级后端文字面试', () => {
+  assert.deepEqual(detectQuickInterviewIntent(
+    '帮我进行模拟面试，方向是后端开发，中等等级，不使用简历，题目给6道题',
+  ), {
+    type: 'mockInterview',
+    skillId: 'java-backend',
+    skillLabel: '后端开发',
+    difficulty: 'mid',
+    questionCount: 6,
+    useResume: false,
+  });
+  assert.deepEqual(detectAgentActionIntent(
+    '帮我进行模拟面试，方向是后端开发，中等等级，不使用简历，题目给6道题',
+  ), {
+    type: 'mockInterview',
+    skillId: 'java-backend',
+    skillLabel: '后端开发',
+    difficulty: 'mid',
+    questionCount: 6,
+    useResume: false,
+  });
+});
+
+test('快速面试只在明确创建命令和方向时触发', () => {
+  assert.equal(detectQuickInterviewIntent('如何进行模拟面试，后端开发需要准备什么'), null);
+  assert.equal(detectQuickInterviewIntent('请复盘这场后端模拟面试，题目给6道题'), null);
+  assert.equal(detectQuickInterviewIntent('帮我进行模拟面试，题目给6道题'), null);
+});
+
+test('快速面试支持高级、Python和自定义题量', () => {
+  assert.deepEqual(detectQuickInterviewIntent('开始一场 Python 后端高级模拟面试，使用简历，题目给10道题'), {
+    type: 'mockInterview',
+    skillId: 'python-backend',
+    skillLabel: 'Python 后端开发',
+    difficulty: 'senior',
+    questionCount: 10,
+    useResume: true,
+  });
+  assert.equal(detectQuickInterviewIntent('开始一场后端模拟面试，题目给25道题'), null);
 });
