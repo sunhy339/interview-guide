@@ -561,6 +561,8 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     [auditEvents, usageSourceFilter],
   );
   const [actions, setActions] = useState<AgentAction[]>([]);
+  const [documentExporting, setDocumentExporting] = useState<number | null>(null);
+  const [documentExportNotice, setDocumentExportNotice] = useState<Record<number, string>>({});
   const [actionsLoading, setActionsLoading] = useState(false);
   const [actionNotice, setActionNotice] = useState('');
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
@@ -1890,6 +1892,29 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       })));
   };
 
+  const exportAssistantDocument = (message: AgentMessage, format: 'pdf' | 'docx') => {
+    if (message.role !== 'assistant' || !message.content.trim() || documentExporting !== null) return;
+    setDocumentExporting(message.id);
+    setDocumentExportNotice((current) => ({ ...current, [message.id]: '正在生成文件...' }));
+    const title = isGeneralWorkspace
+      ? 'Agent 输出'
+      : `${interview?.title || '面试复盘'} Agent 输出`;
+    void agentApi.exportDocument(format, title, message.content)
+      .then((blob) => {
+        const safeTitle = title.replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '') || 'agent-output';
+        downloadBlob(blob, `${safeTitle}.${format}`);
+        setDocumentExportNotice((current) => ({
+          ...current,
+          [message.id]: format === 'pdf' ? 'PDF 已下载' : 'Word 已下载',
+        }));
+      })
+      .catch((error: unknown) => setDocumentExportNotice((current) => ({
+        ...current,
+        [message.id]: getErrorMessage(error) || '文件生成失败，请稍后重试',
+      })))
+      .finally(() => setDocumentExporting(null));
+  };
+
   const openResumeEditor = () => {
     if (!interview?.resumeId) return;
     navigate(`/history/${interview.resumeId}`, { state: { initialTab: 'editor' } });
@@ -3001,6 +3026,32 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                     ) : (
                       <p className="whitespace-pre-wrap">{message.content}</p>
                     )}
+                    {message.role === 'assistant' && message.content.trim().length >= 80 ? (
+                      <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-slate-200/80 pt-2 dark:border-slate-600/80">
+                        <span className="mr-1 text-[11px] text-slate-400 dark:text-slate-500">输出文件</span>
+                        <button
+                          type="button"
+                          onClick={() => exportAssistantDocument(message, 'docx')}
+                          disabled={documentExporting !== null}
+                          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-slate-500 hover:bg-white hover:text-primary-600 disabled:opacity-50 dark:text-slate-300 dark:hover:bg-slate-600"
+                        >
+                          {documentExporting === message.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <FileText className="h-3 w-3" />}
+                          Word
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => exportAssistantDocument(message, 'pdf')}
+                          disabled={documentExporting !== null}
+                          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-slate-500 hover:bg-white hover:text-primary-600 disabled:opacity-50 dark:text-slate-300 dark:hover:bg-slate-600"
+                        >
+                          {documentExporting === message.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                          PDF
+                        </button>
+                        {documentExportNotice[message.id] ? (
+                          <span className="text-[11px] text-emerald-600 dark:text-emerald-300">{documentExportNotice[message.id]}</span>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                   {message.role === 'user' && (
                     <div className="w-8 h-8 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-300 flex items-center justify-center shrink-0">

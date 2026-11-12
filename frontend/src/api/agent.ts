@@ -149,6 +149,14 @@ export const agentApi = {
     });
   },
 
+  exportDocument(format: 'pdf' | 'docx', title: string, content: string): Promise<Blob> {
+    return request.downloadPost(
+      `/api/agent/documents/${format}`,
+      { title, content },
+      { headers: agentHeaders() },
+    );
+  },
+
   listContextAssets(): Promise<AgentContextAsset[]> {
     return request.get<AgentContextAsset[]>('/api/agent/context-assets', { headers: agentHeaders() });
   },

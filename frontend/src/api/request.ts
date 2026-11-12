@@ -258,6 +258,16 @@ export const request = {
     return resolveBlobDownload(response.data);
   },
 
+  /** POST JSON 后下载 Blob，适用于 Agent 根据当前回答生成文件。 */
+  async downloadPost(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<Blob> {
+    const response = await instance.post<Blob>(url, data, {
+      ...config,
+      responseType: 'blob',
+      skipResultTransform: true,
+    });
+    return resolveBlobDownload(response.data);
+  },
+
   /**
    * 获取原始实例（用于特殊场景如下载 Blob）
    */

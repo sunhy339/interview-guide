@@ -50,6 +50,61 @@ public class ResumeFileExportService {
         }
     }
 
+    /**
+     * 导出 Agent 当前生成的文档，不写入简历表，也不覆盖用户上传的原始文件。
+     *
+     * <p>Agent 输出通常是 Markdown 或纯文本。先放入 rawText，再复用现有简历
+     * PDF/DOCX 排版器，可以让对话输出直接变成可下载文件，同时保持导出逻辑只有一份。</p>
+     */
+    public ExportResult exportAgentPdf(String title, String rawText) {
+        String safeTitle = normalizeTitle(title);
+        String safeText = normalizeContent(rawText);
+        ResumeEditorContent content = rawTextContent(safeText);
+        byte[] bytes = pdfExportService.exportResume(content, safeTitle);
+        return new ExportResult(bytes, filename(safeTitle, "pdf"), "application/pdf");
+    }
+
+    public ExportResult exportAgentDocx(String title, String rawText) {
+        String safeTitle = normalizeTitle(title);
+        String safeText = normalizeContent(rawText);
+        try {
+            byte[] bytes = createDocx(rawTextContent(safeText), safeTitle);
+            return new ExportResult(bytes, filename(safeTitle, "docx"), DOCX_CONTENT_TYPE);
+        } catch (IOException e) {
+            log.error("导出 Agent 文档 Word 失败: title={}", safeTitle, e);
+            throw new BusinessException(ErrorCode.EXPORT_DOCUMENT_FAILED, "导出 Word 文档失败");
+        }
+    }
+
+    private ResumeEditorContent rawTextContent(String rawText) {
+        return new ResumeEditorContent(null, null, null, null, null, null, null, null,
+            null, null, rawText);
+    }
+
+    private String normalizeContent(String rawText) {
+        if (rawText == null || rawText.isBlank()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "没有可导出的内容");
+        }
+        String normalized = rawText.trim();
+        if (normalized.length() > 60_000) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "导出内容不能超过60000个字符");
+        }
+        return normalized;
+    }
+
+    private String normalizeTitle(String title) {
+        String normalized = title == null || title.isBlank() ? "Agent文档" : title.trim();
+        if (normalized.length() > 120) {
+            normalized = normalized.substring(0, 120);
+        }
+        normalized = normalized.replaceAll("[\\\\/:*?\"<>|\\r\\n]+", "_").trim();
+        return normalized.isBlank() ? "Agent文档" : normalized;
+    }
+
+    private String filename(String title, String extension) {
+        return title + "." + extension;
+    }
+
     private ExportContent loadContent(Long resumeId) {
         ResumeEntity resume = AuthUserContext.currentUserId()
             .map(ownerId -> resumeRepository.findByIdAndOwnerId(resumeId, ownerId))
