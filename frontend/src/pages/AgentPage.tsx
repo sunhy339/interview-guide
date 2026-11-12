@@ -37,7 +37,14 @@ import { getErrorMessage } from '../api/request';
 import { StreamHttpError } from '../api/stream';
 import { downloadBlob } from '../utils/download';
 import CodeBlock from '../components/CodeBlock';
-import { getRetryableRequest, removeLastRunMessages, resolveRetryProviderId, type AgentRunMessageIds, type AgentRunRequest } from './agentRun';
+import {
+  getRetryableRequest,
+  mergeTransientAgentMessages,
+  removeLastRunMessages,
+  resolveRetryProviderId,
+  type AgentRunMessageIds,
+  type AgentRunRequest,
+} from './agentRun';
 import { normalizeAgentMarkdown } from './agentMarkdown';
 import { isNearChatBottom } from './agentChatScroll';
 import {
@@ -573,6 +580,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const [trainingTasksLoading, setTrainingTasksLoading] = useState(false);
   const [trainingTaskBusyId, setTrainingTaskBusyId] = useState<string | null>(null);
   const [messages, setMessages] = useState<AgentMessage[]>([createWelcomeMessage()]);
+  const messagesRef = useRef<AgentMessage[]>(messages);
   const [input, setInput] = useState('');
   const inputRef = useRef('');
   const draftInputsRef = useRef<Record<string, string>>({});
@@ -592,6 +600,10 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     promise?: Promise<AgentConversationSummary>;
   } | null>(null);
   const activeAgentSessionIdRef = useRef<string | null>(agentSessionId);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   useEffect(() => () => {
     writeAgentDraft(draftKeyRef.current, inputRef.current);
@@ -613,10 +625,15 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     }
   }, []);
 
-  const restoreConversationMessages = useCallback((conversation: AgentConversationResponse, fallbackAssistant?: AgentMessage) => {
+  const restoreConversationMessages = useCallback((
+    conversation: AgentConversationResponse,
+    fallbackAssistant?: AgentMessage,
+    transientMessages: AgentMessage[] = [],
+  ) => {
     const quickHandoff = readQuickInterviewHandoff(inputDraftKey);
-    if (conversation.messages.length === 0 && !fallbackAssistant && !conversation.runPartialAnswer && !quickHandoff) return;
-    const restoredMessages: AgentMessage[] = [
+    if (conversation.messages.length === 0 && !fallbackAssistant && !conversation.runPartialAnswer
+      && !quickHandoff && transientMessages.length === 0) return;
+    const persistedMessages: AgentMessage[] = [
       {
         id: 1,
         role: 'assistant',
@@ -628,6 +645,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         content: message.content,
       })),
     ];
+    const restoredMessages: AgentMessage[] = mergeTransientAgentMessages(persistedMessages, transientMessages);
     if (conversation.runPartialAnswer?.trim()) {
       restoredMessages.push({
         id: restoredMessages.length + 1,
@@ -642,6 +660,14 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     }
     setMessages(appendQuickInterviewMessages(restoredMessages, quickHandoff));
   }, [inputDraftKey]);
+
+  const getTransientRunMessages = useCallback((): AgentMessage[] => {
+    const ids = lastRunMessageIdsRef.current;
+    if (!ids) return [];
+    return [ids.userMessageId, ids.assistantMessageId]
+      .map((id) => messagesRef.current.find((message) => message.id === id))
+      .filter((message): message is AgentMessage => Boolean(message));
+  }, []);
 
   const restoreRunProgress = useCallback((conversation: AgentConversationResponse) => {
     setSources(conversation.runSources ?? []);
@@ -701,8 +727,11 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
           }
 
           clearReconciliationTimer();
+          // 先保存当前页面仍未持久化的消息，再记录可重试请求。
+          // rememberRetryableRequest 会清空临时消息 ID，顺序反过来会丢掉刚收到的回答。
+          const transientMessages = getTransientRunMessages();
           rememberRetryableRequest(conversation);
-          restoreConversationMessages(conversation, fallbackAssistant);
+          restoreConversationMessages(conversation, fallbackAssistant, transientMessages);
           if (conversation.runStatus === 'WAITING_USER') {
             setRunError('');
             setRunNotice(waitingRunNotice(conversation.runStep, conversation.runNotice));
@@ -737,7 +766,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     };
 
     poll();
-  }, [agentSessionId, clearReconciliationTimer, rememberRetryableRequest, restoreConversationMessages, restoreRunProgress]);
+  }, [agentSessionId, clearReconciliationTimer, getTransientRunMessages, rememberRetryableRequest, restoreConversationMessages, restoreRunProgress]);
 
   useEffect(() => {
     // 同一个页面内切换会话时，先清掉上一份报告的本地状态，避免旧消息和步骤闪现到新会话。

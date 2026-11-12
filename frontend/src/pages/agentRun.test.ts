@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { getRetryableRequest, removeLastRunMessages, resolveRetryProviderId, type AgentRunRequest } from './agentRun.ts';
+import {
+  getRetryableRequest,
+  mergeTransientAgentMessages,
+  removeLastRunMessages,
+  resolveRetryProviderId,
+  type AgentRunRequest,
+} from './agentRun.ts';
 
 const request: AgentRunRequest = {
   goal: 'review',
@@ -93,4 +99,36 @@ test('没有失败状态或没有用户消息时不生成重试请求', () => {
 test('重试时优先使用用户刚选择的模型', () => {
   assert.equal(resolveRetryProviderId('backup', 'primary'), 'backup');
   assert.equal(resolveRetryProviderId('  ', 'primary'), 'primary');
+});
+
+test('恢复旧快照时保留尚未持久化的当前回答', () => {
+  assert.deepEqual(mergeTransientAgentMessages([
+    { id: 1, role: 'assistant', content: '欢迎' },
+    { id: 2, role: 'user', content: '旧问题' },
+    { id: 3, role: 'assistant', content: '旧回答' },
+  ], [
+    { id: 10, role: 'user', content: '新问题' },
+    { id: 11, role: 'assistant', content: '新回答' },
+  ]), [
+    { id: 1, role: 'assistant', content: '欢迎' },
+    { id: 2, role: 'user', content: '旧问题' },
+    { id: 3, role: 'assistant', content: '旧回答' },
+    { id: 10, role: 'user', content: '新问题' },
+    { id: 11, role: 'assistant', content: '新回答' },
+  ]);
+});
+
+test('服务端已有当前回答时不重复追加流中的回答', () => {
+  assert.deepEqual(mergeTransientAgentMessages([
+    { id: 1, role: 'assistant', content: '欢迎' },
+    { id: 2, role: 'user', content: '新问题' },
+    { id: 3, role: 'assistant', content: '服务端最终回答' },
+  ], [
+    { id: 10, role: 'user', content: '新问题' },
+    { id: 11, role: 'assistant', content: '流中回答' },
+  ]), [
+    { id: 1, role: 'assistant', content: '欢迎' },
+    { id: 2, role: 'user', content: '新问题' },
+    { id: 3, role: 'assistant', content: '服务端最终回答' },
+  ]);
 });

@@ -18,6 +18,36 @@ export interface AgentRunMessage {
   content: string;
 }
 
+/** 合并恢复快照和当前流中的临时消息，避免旧快照覆盖刚显示的回答。 */
+export function mergeTransientAgentMessages(
+  persisted: AgentRunMessage[],
+  transient: AgentRunMessage[],
+): AgentRunMessage[] {
+  const merged = [...persisted];
+  const transientUser = transient.find((message) => message.role === 'user' && message.content.trim());
+  if (transientUser) {
+    const userIndex = merged.map((message) => message.role === 'user' && message.content === transientUser.content)
+      .lastIndexOf(true);
+    if (userIndex < 0) merged.push(transientUser);
+
+    const resolvedUserIndex = merged.map((message) => message.role === 'user' && message.content === transientUser.content)
+      .lastIndexOf(true);
+    const assistantAfterUser = resolvedUserIndex >= 0
+      && merged.slice(resolvedUserIndex + 1).some((message) => message.role === 'assistant' && message.content.trim());
+    const transientAssistant = transient.find((message) => message.role === 'assistant' && message.content.trim());
+    if (transientAssistant && !assistantAfterUser) merged.push(transientAssistant);
+    return merged;
+  }
+
+  for (const message of transient) {
+    if (!message.content.trim()) continue;
+    if (!merged.some((existing) => existing.role === message.role && existing.content === message.content)) {
+      merged.push(message);
+    }
+  }
+  return merged;
+}
+
 /** 重试时优先使用用户当前选择的模型；没有选择时才沿用失败任务的模型。 */
 export function resolveRetryProviderId(currentProviderId: string, previousProviderId?: string) {
   const current = currentProviderId.trim();
