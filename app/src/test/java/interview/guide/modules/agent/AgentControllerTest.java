@@ -10,11 +10,14 @@ import interview.guide.modules.agent.model.CreateAgentMemoryDraftRequest;
 import interview.guide.modules.agent.model.CreateAgentTitleDraftRequest;
 import interview.guide.modules.agent.model.UpdateAgentMemoryItemRequest;
 import interview.guide.modules.agent.model.AgentUsageSummaryResponse;
+import interview.guide.modules.agent.model.AgentSteeringMessageRequest;
+import interview.guide.modules.agent.model.AgentSteeringMessageResponse;
 import interview.guide.modules.agent.service.AgentActionService;
 import interview.guide.modules.agent.service.AgentConversationService;
 import interview.guide.modules.agent.service.AgentMemoryService;
 import interview.guide.modules.agent.service.InterviewAgentService;
 import interview.guide.modules.agent.service.AgentUsageService;
+import interview.guide.modules.agent.service.AgentSteeringService;
 import interview.guide.modules.auth.AuthIdentityService;
 import interview.guide.modules.interview.service.InterviewHistoryService;
 import java.time.LocalDateTime;
@@ -41,6 +44,7 @@ class AgentControllerTest {
     @Mock private AgentActionService actionService;
     @Mock private InterviewHistoryService interviewHistoryService;
     @Mock private AgentUsageService usageService;
+    @Mock private AgentSteeringService steeringService;
     @Mock private AuthIdentityService authIdentityService;
     @Mock private ObjectMapper objectMapper;
     @InjectMocks private AgentController controller;
@@ -172,5 +176,24 @@ class AgentControllerTest {
         assertThat(response.getBody()).containsExactly(1, 2, 3);
         verify(actionService).loadConfirmedReportSessionId("action-1", "user-1");
         verify(interviewHistoryService).exportInterviewPdfForOwner("interview-1", "user-1");
+    }
+
+    @Test
+    @DisplayName("运行中补充消息通过 steering 接口落到当前 Agent 会话")
+    void enqueuesSteeringMessageWithoutStartingAnotherRun() {
+        when(authIdentityService.requireIdentity("user-1")).thenReturn("user-1");
+        AgentSteeringMessageResponse response = new AgentSteeringMessageResponse(
+            19L, "请继续处理", "run-1", "PENDING", LocalDateTime.of(2026, 11, 12, 12, 0)
+        );
+        when(steeringService.enqueue(null, "agent-1", "请继续处理", "user-1"))
+            .thenReturn(response);
+
+        Result<AgentSteeringMessageResponse> result = controller.enqueueGeneralSteeringMessage(
+            "agent-1", new AgentSteeringMessageRequest("请继续处理"), "user-1"
+        );
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getData().messageId()).isEqualTo(19L);
+        verify(steeringService).enqueue(null, "agent-1", "请继续处理", "user-1");
     }
 }

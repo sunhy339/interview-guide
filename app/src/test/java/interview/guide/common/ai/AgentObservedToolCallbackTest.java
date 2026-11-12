@@ -5,10 +5,12 @@ import interview.guide.modules.agent.metrics.AgentRunBudgetExceededException;
 import interview.guide.modules.agent.service.AgentAuditService;
 import interview.guide.modules.agent.service.AgentIntentRouter;
 import interview.guide.modules.agent.service.AgentRunStateService;
+import interview.guide.modules.agent.service.AgentSteeringService;
 import interview.guide.modules.agent.service.AgentToolDescriptor;
 import interview.guide.common.config.LlmProviderProperties;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -26,6 +28,76 @@ import static org.mockito.Mockito.when;
 
 @DisplayName("Agent 工具调用观测")
 class AgentObservedToolCallbackTest {
+
+    @Test
+    @DisplayName("工具回合完成后把 steering input 放入下一模型回合，但不改系统前缀")
+    void appendsSteeringInputToObservedToolResult() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AgentMetrics metrics = metrics(registry);
+        AgentMetrics.RunTracker run = metrics.startRun(4, 2);
+        metrics.setAuditContext(run, "user-1", null, "agent-1", "run-1");
+        AgentSteeringService steeringService = org.mockito.Mockito.mock(AgentSteeringService.class);
+        when(steeringService.drainForToolTurn("agent-1", "run-1"))
+            .thenReturn(new AgentSteeringService.SteeringBatch(List.of("请继续处理取消请求")));
+        ToolCallback delegate = mockTool("load_skill", "工具结果");
+        org.springframework.ai.chat.model.ToolContext context =
+            new org.springframework.ai.chat.model.ToolContext(Map.of(
+                AgentMetrics.RUN_TRACKER_TOOL_CONTEXT_KEY, run
+            ));
+        when(delegate.call("{}", context)).thenReturn("工具结果");
+
+        AgentObservedToolCallback observed = new AgentObservedToolCallback(
+            delegate,
+            metrics,
+            null,
+            new PromptSanitizer(new LlmProviderProperties()),
+            null,
+            null,
+            steeringService
+        );
+
+        String result = observed.call("{}", context);
+
+        assertThat(result).contains("请继续处理取消请求");
+        assertThat(result).contains("agent-observed-tool-result");
+        verify(steeringService).drainForToolTurn("agent-1", "run-1");
+    }
+
+    @Test
+    @DisplayName("工具参数被拒绝后仍检查当前回合的 steering input")
+    void drainsSteeringInputAfterContractRejection() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AgentMetrics metrics = metrics(registry);
+        AgentMetrics.RunTracker run = metrics.startRun(4, 2);
+        metrics.setAuditContext(run, "user-1", null, "agent-1", "run-1");
+        AgentSteeringService steeringService = org.mockito.Mockito.mock(AgentSteeringService.class);
+        when(steeringService.drainForToolTurn("agent-1", "run-1"))
+            .thenReturn(new AgentSteeringService.SteeringBatch(List.of("请继续处理")));
+        ToolCallback delegate = mockTool("schedule.create_draft", "不应执行");
+        AgentToolDescriptor contract = new AgentToolDescriptor(
+            "schedule.create_draft", "v1", AgentIntentRouter.Capability.SCHEDULE,
+            AgentToolDescriptor.RiskLevel.DRAFT_WRITE, true, true,
+            "agent:schedule:draft", 500, 1, AgentToolDescriptor.RetryPolicy.NONE,
+            AgentToolDescriptor.Idempotency.IDEMPOTENCY_KEYED,
+            AgentToolDescriptor.ResultContract.ACTION_OR_CONFIRMATION,
+            "{\"type\":\"object\",\"properties\":{\"companyName\":{\"type\":\"string\"}},\"required\":[\"companyName\"],\"additionalProperties\":false}",
+            delegate
+        );
+        AgentObservedToolCallback observed = new AgentObservedToolCallback(
+            delegate, metrics, null, new PromptSanitizer(new LlmProviderProperties()),
+            contract, null, steeringService
+        );
+        org.springframework.ai.chat.model.ToolContext context =
+            new org.springframework.ai.chat.model.ToolContext(Map.of(
+                AgentMetrics.RUN_TRACKER_TOOL_CONTEXT_KEY, run
+            ));
+
+        String result = observed.call("{}", context);
+
+        assertThat(result).contains("请继续处理");
+        verify(steeringService).drainForToolTurn("agent-1", "run-1");
+        verify(delegate, never()).call("{}", context);
+    }
 
     @Test
     @DisplayName("工具成功返回时保留结果并记录成功指标")

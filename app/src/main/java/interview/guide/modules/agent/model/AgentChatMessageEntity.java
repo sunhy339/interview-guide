@@ -53,6 +53,20 @@ public class AgentChatMessageEntity {
     @Builder.Default
     private Boolean completed = true;
 
+    /** 用户在当前 Agent 运行期间发送、等待下一次工具回合处理的补充输入。 */
+    @Column(nullable = false)
+    @Builder.Default
+    private Boolean steering = false;
+
+    /** 补充输入已经注入当前运行的工具结果后，不能再次注入。 */
+    @Column(name = "steering_consumed", nullable = false)
+    @Builder.Default
+    private Boolean steeringConsumed = false;
+
+    /** 只允许注入接收该消息时的运行代次，避免跨运行串入。 */
+    @Column(name = "steering_run_id", length = 36)
+    private String steeringRunId;
+
     @Column(name = "error_message", length = 500)
     private String errorMessage;
 
