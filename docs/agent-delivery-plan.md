@@ -24,6 +24,7 @@
 | A2 | 内部模型轮次与恢复检查点 | `feature/agent-durable-turn-checkpoint` | A0、现有 RunState | 先只读记录；精确续跑由开关控制，默认安全重生成 | Provider 轮次、工具批次、等待状态、重启和不重复副作用 |
 | A1.5 | 会话输入草稿隔离 | `feature/agent-draft-persistence` | 现有会话切换 | 仅浏览器当前标签页缓存，不写服务端、不进模型上下文 | 切换、刷新、发送清理、通用/面试会话隔离、存储异常回退 |
 | A1.6 | 自然语言快速发起文字面试 | `feature/agent-quick-interview-isolated` | 现有面试创建协议 | 只在明确表达“开始模拟面试”且能解析方向时显示确认卡片；确认后复用现有创建接口，不改变普通 Agent、复盘和面试中心入口 | 方向、难度、题数、简历选项、幂等、失败重试、旧 Agent 会话回归 |
+| A1.7 | 快速面试操作状态恢复 | `feature/agent-quick-interview-state` | A1.6 | 只在当前标签页按 Agent 会话缓存快捷操作消息；不写服务端、不进入模型 history；创建成功后恢复结果，取消或新建会话时清理 | 返回 Agent、刷新、会话隔离、创建失败重试、取消清理、模型 history 不污染 |
 | A3 | 全领域工具结果契约 | `feature/agent-domain-result-contracts` | A2 | 只在工具边界校验和包装，不改变领域 API | 简历、记忆、训练、文件和日程的结果码/资源 ID/状态 |
 | A4 | 证据冲突和事实支持度 | `feature/agent-evidence-verifier` | A0、A2 | 先记录评估状态，不阻断回答；后续按评测结果决定是否提示 | 引用缺失、来源冲突、无命中、事实支持度分层 |
 | A5 | 精确预算和缓存指标 | `feature/agent-token-budget-metrics` | A0、A2 | 字符预算继续作为安全兜底，Provider 不支持时保持现状 | 实际 Token、估算 Token、裁剪原因、缓存命中和费用 |

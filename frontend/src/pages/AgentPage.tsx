@@ -46,6 +46,7 @@ import {
   extractScheduleDetails,
   isScheduleDetailsMessage,
   type AgentActionIntent,
+  type QuickInterviewIntent,
 } from './agentIntent';
 import { isExternalMarkdownHref, sanitizeMarkdownHref } from './markdownSecurity';
 import {
@@ -86,6 +87,13 @@ import AgentContextPicker from '../components/AgentContextPicker';
 import { ROUTES } from '../constants/routes';
 import { createRequestId } from '../utils/requestId';
 import { clearAgentDraft, readAgentDraft, writeAgentDraft } from '../utils/agentDraft';
+import {
+  clearQuickInterviewHandoff,
+  markQuickInterviewStarted,
+  readQuickInterviewHandoff,
+  writeQuickInterviewHandoff,
+  type QuickInterviewHandoff,
+} from '../utils/agentQuickInterview';
 type RunStatus = 'idle' | 'running' | 'waiting' | 'completed' | 'error' | 'cancelled';
 type StepStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
 
@@ -145,6 +153,7 @@ interface AgentMessage {
   id: number;
   role: 'assistant' | 'user';
   content: string;
+  localOnly?: boolean;
 }
 
 interface ScheduleDraftForm {
@@ -156,7 +165,7 @@ interface ScheduleDraftForm {
   notes: string;
 }
 
-type QuickInterviewDraft = Extract<AgentActionIntent, { type: 'mockInterview' }> & {
+type QuickInterviewDraft = QuickInterviewIntent & {
   requestId: string;
   sourceMessage: string;
 };
@@ -361,9 +370,39 @@ function getScoreTone(score: number | null | undefined) {
 
 function buildAgentHistory(messages: AgentMessage[]): AgentHistoryMessage[] {
   return messages
+    .filter((message) => !message.localOnly)
     .filter((message) => message.content.trim().length > 0)
     .slice(-MAX_HISTORY_MESSAGES)
     .map(({ role, content }) => ({ role, content }));
+}
+
+function quickInterviewSummary(handoff: QuickInterviewHandoff) {
+  const difficulty = handoff.difficulty === 'junior'
+    ? '初级'
+    : handoff.difficulty === 'senior' ? '高级' : '中级';
+  return `已识别为快速模拟面试：${handoff.skillLabel} · ${difficulty} · ${handoff.questionCount} 道题 · ${handoff.useResume ? '使用当前简历' : '不使用简历'}。请确认后开始。`;
+}
+
+function quickInterviewStartedSummary(handoff: QuickInterviewHandoff) {
+  const difficulty = handoff.difficulty === 'junior'
+    ? '初级'
+    : handoff.difficulty === 'senior' ? '高级' : '中级';
+  return `已创建快速模拟面试：${handoff.skillLabel} · ${difficulty} · ${handoff.questionCount} 道题 · ${handoff.useResume ? '使用当前简历' : '不使用简历'}，已进入面试流程。`;
+}
+
+function appendQuickInterviewMessages(messages: AgentMessage[], handoff: QuickInterviewHandoff | null) {
+  if (!handoff || messages.some((message) => message.localOnly && message.content === handoff.sourceMessage)) {
+    return messages;
+  }
+  const assistantContent = handoff.state === 'started'
+    ? quickInterviewStartedSummary(handoff)
+    : quickInterviewSummary(handoff);
+  const lastId = messages.reduce((max, message) => Math.max(max, message.id), 0);
+  return [
+    ...messages,
+    { id: lastId + 1, role: 'user' as const, content: handoff.sourceMessage, localOnly: true },
+    { id: lastId + 2, role: 'assistant' as const, content: assistantContent, localOnly: true },
+  ];
 }
 
 function AgentMarkdown({ content }: { content: string }) {
@@ -575,7 +614,8 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   }, []);
 
   const restoreConversationMessages = useCallback((conversation: AgentConversationResponse, fallbackAssistant?: AgentMessage) => {
-    if (conversation.messages.length === 0 && !fallbackAssistant && !conversation.runPartialAnswer) return;
+    const quickHandoff = readQuickInterviewHandoff(inputDraftKey);
+    if (conversation.messages.length === 0 && !fallbackAssistant && !conversation.runPartialAnswer && !quickHandoff) return;
     const restoredMessages: AgentMessage[] = [
       {
         id: 1,
@@ -600,8 +640,8 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       && !conversation.runPartialAnswer?.trim()) {
       restoredMessages.push(fallbackAssistant);
     }
-    setMessages(restoredMessages);
-  }, []);
+    setMessages(appendQuickInterviewMessages(restoredMessages, quickHandoff));
+  }, [inputDraftKey]);
 
   const restoreRunProgress = useCallback((conversation: AgentConversationResponse) => {
     setSources(conversation.runSources ?? []);
@@ -744,6 +784,25 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       createConversationRequestRef.current = null;
     }
   }, [agentSessionId, clearReconciliationTimer, inputDraftKey, isGeneralWorkspace, sessionId]);
+
+  useEffect(() => {
+    const handoff = readQuickInterviewHandoff(inputDraftKey);
+    if (!handoff) return;
+    setMessages((current) => appendQuickInterviewMessages(current, handoff));
+    if (handoff.state === 'pending') {
+      setQuickInterviewDraft({
+        type: handoff.type,
+        skillId: handoff.skillId,
+        skillLabel: handoff.skillLabel,
+        difficulty: handoff.difficulty,
+        questionCount: handoff.questionCount,
+        useResume: handoff.useResume,
+        requestId: handoff.requestId,
+        sourceMessage: handoff.sourceMessage,
+      });
+      setQuickInterviewError('');
+    }
+  }, [inputDraftKey]);
 
   useEffect(() => {
     // 面试上下文属于报告，不属于 Agent 线程；同一份报告切换线程时必须保留它。
@@ -1930,18 +1989,27 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     intent: Extract<AgentActionIntent, { type: 'mockInterview' }>,
   ) => {
     const messageId = Date.now();
+    const handoff: QuickInterviewHandoff = {
+      ...intent,
+      requestId: createRequestId(),
+      sourceMessage: content,
+      state: 'pending',
+      updatedAt: Date.now(),
+    };
+    writeQuickInterviewHandoff(inputDraftKey, handoff);
     setMessages((current) => [
       ...current,
-      { id: messageId, role: 'user', content },
+      { id: messageId, role: 'user', content, localOnly: true },
       {
         id: messageId + 1,
         role: 'assistant',
-        content: `已识别为快速模拟面试：${intent.skillLabel} · ${intent.difficulty === 'junior' ? '初级' : intent.difficulty === 'senior' ? '高级' : '中级'} · ${intent.questionCount} 道题 · ${intent.useResume ? '使用当前简历' : '不使用简历'}。请确认后开始。`,
+        content: quickInterviewSummary(handoff),
+        localOnly: true,
       },
     ]);
     setQuickInterviewDraft({
       ...intent,
-      requestId: createRequestId(),
+      requestId: handoff.requestId,
       sourceMessage: content,
     });
     setQuickInterviewError('');
@@ -1951,6 +2019,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const startQuickInterview = async () => {
     const draft = quickInterviewDraft;
     if (!draft || quickInterviewStarting) return;
+    const handoffScope = inputDraftKey;
     const resumeId = draft.useResume ? interview?.resumeId ?? undefined : undefined;
     if (draft.useResume && !resumeId) {
       setQuickInterviewError('当前没有可用的关联简历，请改为不使用简历，或先在输入区添加简历后再开始。');
@@ -1975,6 +2044,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         difficulty: draft.difficulty,
         requestId: draft.requestId,
       });
+      markQuickInterviewStarted(handoffScope, created.sessionId);
       navigate(ROUTES.interviewSession(created.sessionId), {
         state: {
           returnTo: `${location.pathname}${location.search}`,
@@ -2042,6 +2112,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   };
 
   const clearAgentConversation = () => {
+    clearQuickInterviewHandoff(inputDraftKey);
     rememberAgentThreadId(null, sessionId ? 'interview' : 'general');
     if (sessionId) rememberInterviewAgentThreadId(sessionId, null);
     setSearchParams(sessionId ? { mode: 'interview', sessionId } : {});
@@ -2959,6 +3030,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                   <button
                     type="button"
                     onClick={() => {
+                      clearQuickInterviewHandoff(inputDraftKey);
                       setQuickInterviewDraft(null);
                       setQuickInterviewError('');
                     }}
@@ -2997,6 +3069,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                   <button
                     type="button"
                     onClick={() => {
+                      clearQuickInterviewHandoff(inputDraftKey);
                       setQuickInterviewDraft(null);
                       setQuickInterviewError('');
                     }}

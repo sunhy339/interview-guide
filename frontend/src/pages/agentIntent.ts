@@ -16,6 +16,8 @@ export type AgentActionIntent =
   | { type: 'reportExport' }
   | { type: 'resumeEdit' };
 
+export type QuickInterviewIntent = Extract<AgentActionIntent, { type: 'mockInterview' }>;
+
 function pad(value: number) {
   return String(value).padStart(2, '0');
 }
@@ -72,7 +74,7 @@ function extractQuickInterviewQuestionCount(message: string) {
  * 开始/创建模拟面试，并给出可映射的方向时才返回，避免“如何进行模拟面试”
  * 或“复盘面试报告”被误判成创建动作。</p>
  */
-export function detectQuickInterviewIntent(message: string): Extract<AgentActionIntent, { type: 'mockInterview' }> | null {
+export function detectQuickInterviewIntent(message: string): QuickInterviewIntent | null {
   const normalized = message.replace(/\s+/g, ' ').trim();
   if (!normalized
     || /(怎么|如何|什么是|介绍|了解).{0,8}(模拟面试|文字面试)/.test(normalized)

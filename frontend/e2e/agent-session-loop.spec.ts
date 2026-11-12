@@ -394,6 +394,11 @@ test.describe('AI 面试教练 Agent 会话与 Loop', () => {
     expect(createPayload?.resumeId).toBeUndefined();
     expect(typeof createPayload?.requestId).toBe('string');
     await expect(page).toHaveURL(/\/interview\/session\/quick-interview-1$/);
+
+    await page.goto('/agent');
+    await expect(page.getByText('帮我进行模拟面试，方向是后端开发，中等等级，不使用简历，题目给6道题', { exact: true })).toBeVisible();
+    await expect(page.getByText('已创建快速模拟面试：后端开发', { exact: false })).toBeVisible();
+    await expect(page.getByLabel('快速模拟面试确认')).not.toBeVisible();
   });
 
   test('快速模拟面试创建失败后保留确认卡并使用同一请求标识重试', async ({ page }) => {
