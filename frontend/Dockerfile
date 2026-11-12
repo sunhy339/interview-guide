@@ -32,8 +32,10 @@ FROM nginx:alpine
 COPY --from=builder /app/dist /usr/share/nginx/html
 
 # 复制自定义的 Nginx 配置文件
-# 用于处理路由转发（解决 React/Vue 单页应用刷新 404 问题）和 API 反向代理
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# 用于处理路由转发（解决 React/Vue 单页应用刷新 404 问题）和 API 反向代理。
+# 正式环境通过 NGINX_CONFIG 固定到正式 API 容器，避免与测试 API 共享 app 别名。
+ARG NGINX_CONFIG=nginx.conf
+COPY ${NGINX_CONFIG} /etc/nginx/conf.d/default.conf
 
 # 暴露 80 端口
 EXPOSE 80
