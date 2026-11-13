@@ -48,6 +48,7 @@ public class AgentIntentRouter {
         - INTERVIEW_REPORT：需要读取明确指定的面试报告。
         - SKILL：需要加载或参考 Skill、技能资料或参考资料；简历优化、简历成稿、简历排版等明确任务也应包含 SKILL，便于按需使用对应的任务方法。
         - RAG：需要使用知识库检索；如果当前会话没有绑定知识库，应说明需要先绑定或选择。
+        - 用户说“输出/生成/导出 Word、PDF 或文档”时，如果当前对话正在处理简历、文件或其他资料，应保留历史消息和已绑定资料，并包含 SKILL；不能把它当成“无法生成文件”的普通问答。
         capabilities 可以是 CONTEXT、INTERVIEW_REPORT、SKILL、RAG、SCHEDULE、ACTION 的任意组合，不能因为选择了某一个能力就删除其他真实需要的能力。
 
         “什么是取消面试”“如何理解 Tool Calling”“怎么学习 Agent”属于 GENERAL，
@@ -97,6 +98,16 @@ public class AgentIntentRouter {
     private static final Pattern RESUME_SKILL_ACTION = Pattern.compile(
         "(?:简历|简历内容|项目经历).{0,24}(?:优化|改写|润色|成稿|排版|关键词|ATS|导出)"
             + "|(?:优化|改写|润色|整理|排版|生成).{0,24}(?:简历|项目经历)",
+        Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern DOCUMENT_EXPORT_ACTION = Pattern.compile(
+        "(?:输出|生成|导出|下载|制作|整理|转换).{0,24}(?:word|docx|pdf|文档|文件)"
+            + "|(?:word|docx|pdf|文档|文件).{0,24}(?:输出|生成|导出|下载|制作|整理|转换)",
+        Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern INTERVIEW_REPORT_EXPORT = Pattern.compile(
+        "(?:导出|下载|生成).{0,16}(?:面试报告|报告)"
+            + "|(?:面试报告|报告).{0,16}(?:导出|下载|生成)",
         Pattern.CASE_INSENSITIVE
     );
     private static final Pattern RAG_ACTION = Pattern.compile(
@@ -238,6 +249,7 @@ public class AgentIntentRouter {
                     // 明确的“帮我安排/取消/改期”是业务动作安全边界：即使分类模型
                     // 偶发返回 GENERAL，也不能让主模型绕过受控日程工具直接生成普通文本。
                     modelDecision = enforceExplicitScheduleAction(modelDecision, rawMessage);
+                    modelDecision = enforceExplicitDocumentExport(modelDecision, rawMessage);
                     modelDecision = modelDecision.withModelClassification(candidate);
                     if (agentMetrics != null) {
                         agentMetrics.finishModelCall(modelCall, "success");
@@ -275,6 +287,32 @@ public class AgentIntentRouter {
             decision.modelClassified(),
             decision.classifierProviderId()
         );
+    }
+
+    /**
+     * 文档输出是当前轮的明确工作目标。即使分类模型返回 GENERAL，也要允许模型按需
+     * 加载简历成稿 Skill；资料正文仍然只能来自当前会话已绑定的资源和历史对话。
+     */
+    private Decision enforceExplicitDocumentExport(Decision decision, String rawMessage) {
+        if (decision == null || !isDocumentOutputRequest(rawMessage)) {
+            return decision;
+        }
+        Set<Capability> capabilities = new HashSet<>(decision.capabilities());
+        capabilities.add(Capability.SKILL);
+        Route route = decision.route() == Route.INTERVIEW_REVIEW ? Route.GENERAL : decision.route();
+        return new Decision(
+            route, Set.copyOf(capabilities), Math.max(decision.confidence(), MIN_MODEL_CONFIDENCE),
+            decision.reason() + "；安全规则确认文档输出请求", decision.modelClassified(), decision.classifierProviderId()
+        );
+    }
+
+    /** 对外保留给主流程和测试使用，统一文档输出请求的识别边界。 */
+    public boolean isDocumentOutputRequest(String rawMessage) {
+        String message = normalize(rawMessage);
+        return !message.isBlank()
+            && !isInformationalOnly(message)
+            && !INTERVIEW_REPORT_EXPORT.matcher(message).find()
+            && DOCUMENT_EXPORT_ACTION.matcher(message).find();
     }
 
     /** 根据分类结果归一化本轮模式，避免旧 goal 或路径中的报告 ID 重新加载报告。 */
@@ -424,6 +462,8 @@ public class AgentIntentRouter {
         boolean skillRequested = !informational && SKILL_ACTION.matcher(message).find();
         skillRequested = skillRequested
             || !informational && RESUME_SKILL_ACTION.matcher(message).find();
+        skillRequested = skillRequested
+            || isDocumentOutputRequest(message);
         if (skillRequested) {
             capabilities.add(Capability.SKILL);
         }

@@ -178,14 +178,24 @@ public class AgentConversationService {
     ) {
         String ownerKey = normalizeOwnerKey(memoryKey, false);
         assertAccess(interviewSessionId, agentSessionId, ownerKey);
+        boolean requestedExistingSession = agentSessionId != null && !agentSessionId.isBlank();
         AgentChatSessionEntity session = findSessionForUpdate(interviewSessionId, agentSessionId)
             .filter(candidate -> ownerKey == null || isOwnedBy(candidate, ownerKey))
-            .orElseGet(() -> AgentChatSessionEntity.builder()
-                .interviewSessionId(interviewSessionId)
-                .agentSessionId(UUID.randomUUID().toString())
-                .title("新 Agent 对话")
-                .ownerKey(ownerKey)
-                .build());
+            .orElseGet(() -> {
+                if (requestedExistingSession) {
+                    // 显式线程 ID 是会话边界。不能因为线程不存在就静默创建另一个线程，
+                    // 否则前端仍持有旧 ID，下一轮会继续产生新的孤立会话。
+                    throw new BusinessException(
+                        ErrorCode.NOT_FOUND, "Agent 会话不存在，请重新打开或新建会话"
+                    );
+                }
+                return AgentChatSessionEntity.builder()
+                    .interviewSessionId(interviewSessionId)
+                    .agentSessionId(UUID.randomUUID().toString())
+                    .title("新 Agent 对话")
+                    .ownerKey(ownerKey)
+                    .build();
+            });
         ensureSessionIdentity(session, interviewSessionId);
         if (ownerKey != null) {
             session.setOwnerKey(ownerKey);
@@ -583,7 +593,11 @@ public class AgentConversationService {
         assertInterviewAccess(interviewSessionId, normalizedOwnerKey);
         Optional<AgentChatSessionEntity> session = findRawSession(interviewSessionId, agentSessionId);
         if (agentSessionId != null && !agentSessionId.isBlank() && session.isEmpty()) {
-            throw accessDenied();
+            // 显式线程 ID 已经失效时返回可恢复的 404。否则前端无法清理旧指针，
+            // 下一轮会继续带着同一个失效 ID 重试，表现为会话一直加载或消息丢失。
+            throw new BusinessException(
+                ErrorCode.NOT_FOUND, "Agent 会话不存在，请重新打开或新建会话"
+            );
         }
         if (interviewSessionId == null && session.isPresent()
             && session.get().getInterviewSessionId() != null) {
@@ -1311,11 +1325,39 @@ public class AgentConversationService {
     ) {
         AgentConversationResponse conversation = getConversation(interviewSessionId, agentSessionId, ownerKey);
         List<AgentHistoryMessage> messages = conversation.messages();
+        AgentChatSessionEntity session = findSession(interviewSessionId, agentSessionId)
+            .filter(candidate -> ownerKey == null || isOwnedBy(candidate, normalizeOwnerKey(ownerKey, false)))
+            .orElse(null);
+        if (session != null && session.getContextSummaryUntilSequence() > 0) {
+            // 这一步只改变送给模型的窗口，不删除数据库中的原始消息。
+            // 会话摘要已经覆盖边界以前的消息时，下一轮只需读取边界之后的增量。
+            List<AgentChatMessageEntity> delta = messageRepository
+                .findBySessionIdAndCompletedTrueAndSequenceNumGreaterThanOrderBySequenceNumAsc(
+                    session.getId(), session.getContextSummaryUntilSequence()
+                );
+            messages = toHistoryMessages(delta);
+        }
         if (conversation.runStatus() != AgentRunStatus.FAILED
             && conversation.runStatus() != AgentRunStatus.CANCELLED) {
             return messages;
         }
         return removeDanglingUserMessage(messages);
+    }
+
+    private List<AgentHistoryMessage> toHistoryMessages(List<AgentChatMessageEntity> source) {
+        if (source == null || source.isEmpty()) {
+            return List.of();
+        }
+        List<AgentHistoryMessage> messages = new ArrayList<>();
+        for (AgentChatMessageEntity message : source) {
+            if (message == null || message.getContent() == null || message.getContent().isBlank()) {
+                continue;
+            }
+            messages.add(new AgentHistoryMessage(
+                message.getRole().name().toLowerCase(), message.getContent()
+            ));
+        }
+        return AgentHistoryPolicy.normalize(messages);
     }
 
     /** 失败或取消的任务没有可配对的 assistant 回复，不把悬空问题再次送入下一轮模型上下文。 */

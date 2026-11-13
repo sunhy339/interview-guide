@@ -20,6 +20,15 @@ public interface AgentChatMessageRepository extends JpaRepository<AgentChatMessa
         Long sessionId, Pageable pageable
     );
 
+    /**
+     * 会话已经生成滚动摘要后，只把摘要边界之后的原始消息送入下一轮模型。
+     * 摘要边界之前的消息仍然永久保留在表中，不参与本次 Prompt 重建。
+     */
+    List<AgentChatMessageEntity>
+        findBySessionIdAndCompletedTrueAndSequenceNumGreaterThanOrderBySequenceNumAsc(
+            Long sessionId, Integer sequenceNum
+        );
+
     Optional<AgentChatMessageEntity> findTopBySessionIdOrderBySequenceNumDesc(Long sessionId);
 
     Optional<AgentChatMessageEntity> findTopBySessionIdAndCompletedFalseOrderBySequenceNumDesc(Long sessionId);

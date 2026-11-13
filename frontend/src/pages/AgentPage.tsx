@@ -49,10 +49,12 @@ import { normalizeAgentMarkdown } from './agentMarkdown';
 import { isNearChatBottom } from './agentChatScroll';
 import {
   detectAgentActionIntent,
+  detectDocumentExportIntent,
   detectQuickInterviewIntent,
   extractScheduleDetails,
   isScheduleDetailsMessage,
   type AgentActionIntent,
+  type DocumentExportFormat,
   type QuickInterviewIntent,
 } from './agentIntent';
 import { isExternalMarkdownHref, sanitizeMarkdownHref } from './markdownSecurity';
@@ -383,6 +385,12 @@ function buildAgentHistory(messages: AgentMessage[]): AgentHistoryMessage[] {
     .map(({ role, content }) => ({ role, content }));
 }
 
+function isExportableDocumentContent(content: string) {
+  const normalized = content.replace(/\s+/g, ' ').trim();
+  if (normalized.length < 120) return false;
+  return !/(无法直接生成|不能直接生成|当前不能|暂时不能|请先.*(?:上传|绑定|添加).*(?:简历|资料)|只能输出.*(?:文字|文本)|没有可用.*(?:简历|资料))/i.test(normalized);
+}
+
 function quickInterviewSummary(handoff: QuickInterviewHandoff) {
   const difficulty = handoff.difficulty === 'junior'
     ? '初级'
@@ -487,15 +495,14 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const routeSessionId = searchParams.get('sessionId');
   const routeAgentSessionId = searchParams.get('agentSessionId');
   const explicitInterviewMode = isExplicitInterviewAgentMode(searchParams.get('mode'));
-  const storedGeneralAgentSessionId = useMemo(() => getStoredAgentThreadId('general'), []);
-  const storedInterviewReportId = useMemo(() => getStoredAgentSessionId(), []);
-  const storedInterviewAgentSessionId = useMemo(
-    () => getStoredInterviewAgentThreadId(routeSessionId)
-      || (routeSessionId && routeSessionId === storedInterviewReportId
-        ? getStoredAgentThreadId('interview')
-        : null),
-    [routeSessionId, storedInterviewReportId],
-  );
+  // 这些值会在失效线程被清理、创建新线程或切换报告时变化，不能只在首次
+  // 渲染时 useMemo 一次，否则页面仍会拿旧 ID 发起下一轮请求。
+  const storedGeneralAgentSessionId = getStoredAgentThreadId('general');
+  const storedInterviewReportId = getStoredAgentSessionId();
+  const storedInterviewAgentSessionId = getStoredInterviewAgentThreadId(routeSessionId)
+    || (routeSessionId && routeSessionId === storedInterviewReportId
+      ? getStoredAgentThreadId('interview')
+      : null);
   // /agent 默认是通用 Agent；只有链接显式带 sessionId 时才读取面试报告。
   // 只有明确选择“面试复盘”时才读取报告；/agent 默认永远是通用对话。
   const sessionId = explicitInterviewMode ? routeSessionId : null;
@@ -955,6 +962,16 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         if (cancelled) return;
 
         const resolvedAgentSessionId = conversation.agentSessionId || null;
+        if (!resolvedAgentSessionId) {
+          // 报告仍然有效，但本地保存的 Agent 线程已经不存在时，清掉线程指针。
+          // 下次发送会创建一个新的、可追踪的会话，不会让后端静默生成孤立线程。
+          rememberAgentThreadId(null, 'interview');
+          rememberInterviewAgentThreadId(sessionId, null);
+          if (agentSessionId || routeAgentSessionId) {
+            setSearchParams({ mode: 'interview', sessionId }, { replace: true });
+          }
+          return;
+        }
         if (resolvedAgentSessionId
           && (!routeAgentSessionId || resolvedAgentSessionId !== routeAgentSessionId)) {
           rememberAgentThreadId(resolvedAgentSessionId, 'interview');
@@ -1009,8 +1026,26 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     if (!isGeneralWorkspace || !agentSessionId) return;
     let cancelled = false;
     void agentApi.getGeneralConversation(agentSessionId)
-      .then((conversation) => {
-        if (cancelled || !conversation.agentSessionId) return;
+      .then(async (conversation) => {
+        if (cancelled) return;
+        if (!conversation.agentSessionId) {
+          const existing = await agentApi.listGeneralConversations();
+          const target = existing[0];
+          if (target) {
+            rememberAgentThreadId(target.agentSessionId, 'general');
+            if (!cancelled) {
+              setSearchParams({ agentSessionId: target.agentSessionId }, { replace: true });
+            }
+            return;
+          }
+          // sessionStorage 里可能残留已经归档、被清理或来自另一套环境的线程。
+          // 清掉失效指针，交给会话列表选择已有线程；没有线程时发送消息会创建一次新线程。
+          rememberAgentThreadId(null, 'general');
+          if (routeAgentSessionId || agentSessionId) {
+            setSearchParams({}, { replace: true });
+          }
+          return;
+        }
         rememberRetryableRequest(conversation);
         restoreRunProgress(conversation);
         if (isGeneralWorkspace) {
@@ -1041,7 +1076,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       cancelled = true;
       clearReconciliationTimer();
     };
-  }, [agentSessionId, clearReconciliationTimer, isGeneralWorkspace, reconcileConversation, rememberRetryableRequest, restoreConversationMessages, restoreRunProgress]);
+  }, [agentSessionId, clearReconciliationTimer, isGeneralWorkspace, reconcileConversation, rememberRetryableRequest, restoreConversationMessages, restoreRunProgress, routeAgentSessionId, setSearchParams]);
 
   useEffect(() => {
     if (!isWorkspaceView || !agentSessionId || runStatus !== 'running') return;
@@ -1143,7 +1178,13 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
 
   const streamAgentMessage = async (
     content: string,
-    options?: { goal?: AgentGoal; providerId?: string; retrying?: boolean; actionIntent?: AgentActionIntent | null },
+    options?: {
+      goal?: AgentGoal;
+      providerId?: string;
+      retrying?: boolean;
+      actionIntent?: AgentActionIntent | null;
+      documentExportFormat?: DocumentExportFormat | null;
+    },
   ): Promise<void> => {
     if ((!isGeneralWorkspace && (!sessionId || !interview)) || !content || runStatus === 'running') {
       if (!isGeneralWorkspace && (!sessionId || !interview)) setRunError('请先加载一份面试报告，或直接使用通用 Agent');
@@ -1269,6 +1310,22 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         const actionsRequest = loadAgentActions();
         if (!actionIntent) autoProposeGoalAction(conversation, runGoal);
         autoProposeActionIntent(conversation, actionIntent);
+        if (options?.documentExportFormat) {
+          const assistantMessage = [...conversation.messages]
+            .reverse()
+            .find((message) => message.role === 'assistant' && message.content.trim());
+          if (assistantMessage && isExportableDocumentContent(assistantMessage.content)) {
+            exportAssistantDocument(
+              { id: assistantMessageId, role: 'assistant', content: assistantMessage.content },
+              options.documentExportFormat,
+            );
+          } else {
+            setDocumentExportNotice((current) => ({
+              ...current,
+              [assistantMessageId]: '资料不足，未生成空白文件；请先添加或绑定简历',
+            }));
+          }
+        }
         if (actionIntent?.type === 'schedule') {
           const assistantMessage = [...conversation.messages]
             .reverse()
@@ -1899,9 +1956,11 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     if (message.role !== 'assistant' || !message.content.trim() || documentExporting !== null) return;
     setDocumentExporting(message.id);
     setDocumentExportNotice((current) => ({ ...current, [message.id]: '正在生成文件...' }));
-    const title = isGeneralWorkspace
-      ? 'Agent 输出'
-      : `${interview?.title || '面试复盘'} Agent 输出`;
+    const title = /简历|求职目标|工作经历|项目经历/.test(message.content)
+      ? '简历优化版'
+      : isGeneralWorkspace
+        ? 'Agent 输出'
+        : `${interview?.title || '面试复盘'} Agent 输出`;
     void agentApi.exportDocument(format, title, message.content)
       .then((blob) => {
         const safeTitle = title.replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '') || 'agent-output';
@@ -2172,7 +2231,8 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       return;
     }
     const actionIntent = detectAgentActionIntent(content);
-    streamAgentMessage(content, { actionIntent });
+    const documentExportFormat = detectDocumentExportIntent(content);
+    streamAgentMessage(content, { actionIntent, documentExportFormat });
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {

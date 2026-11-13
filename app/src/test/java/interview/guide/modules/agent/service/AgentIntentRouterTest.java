@@ -31,6 +31,19 @@ class AgentIntentRouterTest {
     }
 
     @Test
+    @DisplayName("输出 Word 时保留文档 Skill 能力，不把请求降级为无法生成文件的普通问答")
+    void routesDocumentExportToSkillCapability() {
+        AgentIntentRouter.Decision decision = router.route(request(
+            "general", "输出word文档"
+        ));
+
+        assertThat(router.isDocumentOutputRequest("输出word文档")).isTrue();
+        assertThat(decision.capabilities()).contains(AgentIntentRouter.Capability.SKILL);
+        assertThat(router.isDocumentOutputRequest("如何生成 Word 文档")).isFalse();
+        assertThat(router.isDocumentOutputRequest("请导出这场面试报告 PDF")).isFalse();
+    }
+
+    @Test
     @DisplayName("简历优化同时加载上下文和任务方法 Skill")
     void routesResumeOptimizationToContextAndSkillTools() {
         AgentIntentRouter.Decision decision = router.route(request(

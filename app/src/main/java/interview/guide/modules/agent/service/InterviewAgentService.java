@@ -248,8 +248,11 @@ public class InterviewAgentService {
                     : agentConversationService.loadHistory(
                         sessionId, runRequest.agentSessionId(), dataOwnerKey
                     );
+                // 会话历史以服务端 agent_chat_messages 和会话摘要为唯一来源。
+                // 请求体中的 history 只保留兼容字段，不能在新会话为空时把其他会话的
+                // 前端状态带进来，否则切换会话或恢复页面时会发生上下文串线。
                 List<AgentHistoryMessage> historyMessages = AgentHistoryPolicy.normalize(
-                    persistedHistory.isEmpty() ? runRequest.history() : persistedHistory
+                    persistedHistory
                 );
                 boolean waitingForInput = agentConversationService.isWaitingForInput(
                     sessionId, runRequest.agentSessionId(), dataOwnerKey
@@ -2201,6 +2204,16 @@ public class InterviewAgentService {
         String question = message == null ? "" : message;
         String combined = (goal + "\n" + question).toLowerCase(java.util.Locale.ROOT);
         String requiredTool = agentIntentRouter.requiredToolName(question);
+        if (agentIntentRouter.isDocumentOutputRequest(question)) {
+            return """
+                本轮是文档输出请求。请先结合当前 Agent 会话已绑定的资料和真实对话历史，判断用户要输出哪份内容。
+                1. 如果上下文或历史中存在简历、用户上传的简历文件，或上一轮明确的简历优化任务，直接整理出完整、可审阅、可导出的简历正文；不要只输出优化建议，也不要回答“当前不能生成 Word/PDF”。
+                2. 只使用简历或已审核文件中的真实事实；不能把岗位要求、建议、推测或长期记忆写成用户经历。缺失事实放在“待确认信息”中。
+                3. 输出适合 Word/PDF 的 Markdown，包含清晰的基本信息、求职目标、职业概览、工作经历、项目经历、专业技能和教育经历；资料没有覆盖的部分不要编造。
+                4. 前端会把本轮正文转换为 Word/PDF 文件，因此不要声称需要用户复制到 Word，也不要输出文件生成失败的占位说明。
+                5. 如果当前会话、历史消息和已绑定资料都没有可用简历内容，明确说明需要先在输入框添加或绑定简历，并不要生成空文件。
+                """;
+        }
         if (requiredTool != null && intentDecision != null
             && intentDecision.capabilities().contains(AgentIntentRouter.Capability.SCHEDULE)) {
             return """
