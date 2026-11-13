@@ -118,8 +118,6 @@ class AgentConversationServiceTest {
     void rejectsUnknownExplicitAgentSession() {
         when(sessionRepository.findByAgentSessionId("missing-thread"))
             .thenReturn(Optional.empty());
-        when(sessionRepository.findByAgentSessionIdForUpdate("missing-thread"))
-            .thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.prepareMessage(
             null, "missing-thread", "general", "primary", "继续刚才的话题", "owner-1"
