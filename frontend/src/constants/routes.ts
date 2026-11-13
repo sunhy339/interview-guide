@@ -9,6 +9,7 @@ export const ROUTES = {
   agentMemory: '/agent/memory',
   agentActions: '/agent/actions',
   agentUsage: '/agent/usage',
+  agentSkills: '/agent/skills',
 } as const;
 
 export const ROUTE_PATTERNS = {

@@ -30,6 +30,7 @@ const InterviewHubPage = lazy(() => import('./pages/InterviewHubPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const InterviewDetailPanel = lazy(() => import('./components/InterviewDetailPanel'));
 const AgentPage = lazy(() => import('./pages/AgentPage'));
+const AgentSkillLibraryPage = lazy(() => import('./pages/AgentSkillLibraryPage'));
 const AuthPage = lazy(() => import('./pages/AuthPage'));
 const AuthActionPage = lazy(() => import('./pages/AuthActionPage'));
 const AdminPage = lazy(() => import('./pages/AdminPage'));
@@ -260,6 +261,7 @@ function App() {
             <Route path="agent/memory" element={<AgentPage view="memory" />} />
             <Route path="agent/actions" element={<AgentPage view="actions" />} />
             <Route path="agent/usage" element={<AgentPage view="usage" />} />
+            <Route path="agent/skills" element={<AgentSkillLibraryPage />} />
             <Route path="agent" element={<AgentPage view="workspace" />} />
 
             {/* 面试记录列表 */}

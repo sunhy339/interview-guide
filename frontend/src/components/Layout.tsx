@@ -113,6 +113,7 @@ export default function Layout() {
       title: '智能助手',
       items: [
         { id: 'agent', path: ROUTES.agent, label: 'AI 面试教练', icon: Bot, description: '直接对话，按需引用资料' },
+        { id: 'agent-skills', path: ROUTES.agentSkills, label: 'Skill 管理', icon: BookOpen, description: '安装和审核任务方法' },
       ],
     },
     {

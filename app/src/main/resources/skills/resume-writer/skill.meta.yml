@@ -1,0 +1,6 @@
+displayName: 简历成稿与导出
+display:
+  icon: W
+  gradient: from-sky-500 to-blue-600
+  iconBg: bg-sky-100 dark:bg-sky-900/30
+  iconColor: text-sky-600 dark:text-sky-400

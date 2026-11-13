@@ -1,7 +1,7 @@
 {"id":"general-learning-no-context","goal":"review","message":"现在想学习一下 Agent 开发相关知识","route":"GENERAL","capabilities":[],"tools":[],"includeSkills":false,"requiredTool":""}
 {"id":"general-schedule-how-to","goal":"review","message":"怎么取消我的面试日程？","route":"GENERAL","capabilities":[],"tools":[],"includeSkills":false,"requiredTool":""}
 {"id":"interview-review-explicit","goal":"review","message":"请复盘本场面试，指出最重要的改进点","route":"INTERVIEW_REVIEW","capabilities":["CONTEXT","INTERVIEW_REPORT","SKILL"],"tools":["interview_search","interview_attach_context","interview_clear_context","agent_context_list","agent_context_asset_action","agent_context_asset_status"],"includeSkills":true,"requiredTool":""}
-{"id":"resume-context-request","goal":"general","message":"请根据这份简历帮我优化 Agent 开发工程师方向的项目经历","route":"CONTEXT","capabilities":["CONTEXT"],"tools":["interview_search","interview_attach_context","interview_clear_context","agent_context_list","agent_context_asset_action","agent_context_asset_status"],"includeSkills":false,"requiredTool":""}
+{"id":"resume-context-request","goal":"general","message":"请根据这份简历帮我优化 Agent 开发工程师方向的项目经历","route":"CONTEXT","capabilities":["CONTEXT","SKILL"],"tools":["interview_search","interview_attach_context","interview_clear_context","agent_context_list","agent_context_asset_action","agent_context_asset_status"],"includeSkills":true,"requiredTool":""}
 {"id":"file-resume-import","goal":"general","message":"请把我刚上传的文件加入简历管理","route":"CONTEXT","capabilities":["CONTEXT"],"tools":["interview_search","interview_attach_context","interview_clear_context","agent_context_list","agent_context_asset_action","agent_context_asset_status"],"includeSkills":false,"requiredTool":""}
 {"id":"skill-only-reference","goal":"general","message":"请根据 Skill 参考资料给我设计一道练习题","route":"SKILL","capabilities":["SKILL"],"tools":[],"includeSkills":true,"requiredTool":""}
 {"id":"skill-and-rag-combination","goal":"general","message":"请结合 Skill 和知识库资料回答这个问题","route":"SKILL","capabilities":["RAG","SKILL"],"tools":["knowledge_base_search"],"includeSkills":true,"requiredTool":""}
@@ -12,7 +12,7 @@
 {"id":"review-report-question-not-review","goal":"review","message":"什么是面试复盘？请解释一下这个概念","route":"GENERAL","capabilities":[],"tools":[],"includeSkills":false,"requiredTool":""}
 {"id":"training-task-action","goal":"general","message":"请根据本场面试生成一个训练任务","route":"GENERAL","capabilities":["ACTION"],"tools":["agent_action_draft"],"includeSkills":false,"requiredTool":""}
 {"id":"resume-edit-request","goal":"general","message":"请修改这份简历的项目经历并保存为编辑版","route":"GENERAL","capabilities":["ACTION"],"tools":["agent_action_draft"],"includeSkills":false,"requiredTool":""}
-{"id":"resume-generation-advice","goal":"general","message":"请帮我生成一份简历初稿","route":"GENERAL","capabilities":[],"tools":[],"includeSkills":false,"requiredTool":""}
+{"id":"resume-generation-advice","goal":"general","message":"请帮我生成一份简历初稿","route":"SKILL","capabilities":["SKILL"],"tools":[],"includeSkills":true,"requiredTool":""}
 {"id":"natural-training-plan-action","goal":"general","message":"帮我安排一个训练计划","route":"GENERAL","capabilities":["ACTION"],"tools":["agent_action_draft"],"includeSkills":false,"requiredTool":""}
 {"id":"natural-practice-question-action","goal":"general","message":"帮我把几道练习题保存成训练草稿","route":"GENERAL","capabilities":["ACTION"],"tools":["agent_action_draft"],"includeSkills":false,"requiredTool":""}
 {"id":"practice-question-how-to","goal":"general","message":"如何保存一道练习题？","route":"GENERAL","capabilities":[],"tools":[],"includeSkills":false,"requiredTool":""}

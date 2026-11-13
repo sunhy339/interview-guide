@@ -13,6 +13,7 @@ import interview.guide.modules.agent.service.AgentRunStateService;
 import interview.guide.modules.agent.service.AgentSteeringService;
 import interview.guide.modules.agent.service.AgentToolDescriptor;
 import interview.guide.modules.agent.service.AgentToolRegistry;
+import interview.guide.modules.agent.service.AgentUserSkillToolCallbackFactory;
 import interview.guide.modules.llmprovider.model.LlmGlobalSettingEntity;
 import interview.guide.modules.llmprovider.model.LlmProviderEntity;
 import interview.guide.modules.llmprovider.repository.LlmGlobalSettingRepository;
@@ -75,6 +76,7 @@ public class LlmProviderRegistry {
     private final AgentMetrics agentMetrics;
     private final AgentAuditService agentAuditService;
     private final AgentContextToolCallbackFactory agentContextToolCallbackFactory;
+    private final AgentUserSkillToolCallbackFactory agentUserSkillToolCallbackFactory;
     private AgentToolRegistry agentToolRegistry;
     private AgentRunStateService agentRunStateService;
     private AgentSteeringService agentSteeringService;
@@ -90,7 +92,8 @@ public class LlmProviderRegistry {
             @Autowired(required = false) @Qualifier("interviewSkillsToolCallback") ToolCallback interviewSkillsToolCallback,
              @Autowired(required = false) AgentMetrics agentMetrics,
              @Autowired(required = false) AgentAuditService agentAuditService,
-             @Autowired(required = false) @Lazy AgentContextToolCallbackFactory agentContextToolCallbackFactory) {
+             @Autowired(required = false) @Lazy AgentContextToolCallbackFactory agentContextToolCallbackFactory,
+             @Autowired(required = false) @Lazy AgentUserSkillToolCallbackFactory agentUserSkillToolCallbackFactory) {
         this.properties = properties;
         this.providerRepository = providerRepository;
         this.globalSettingRepository = globalSettingRepository;
@@ -101,6 +104,7 @@ public class LlmProviderRegistry {
         this.agentMetrics = agentMetrics;
         this.agentAuditService = agentAuditService;
         this.agentContextToolCallbackFactory = agentContextToolCallbackFactory;
+        this.agentUserSkillToolCallbackFactory = agentUserSkillToolCallbackFactory;
     }
 
     /** 工具注册中心在迁移期可选接入；未注入时保留原有回调目录。 */
@@ -127,7 +131,7 @@ public class LlmProviderRegistry {
             ObservationRegistry observationRegistry,
             ToolCallback interviewSkillsToolCallback) {
         this(properties, null, null, null, toolCallingManager, observationRegistry,
-            interviewSkillsToolCallback, null, null, null);
+            interviewSkillsToolCallback, null, null, null, null);
     }
 
     /**
@@ -451,6 +455,16 @@ public class LlmProviderRegistry {
                 ? null : agentToolRegistry.descriptorForSkill(interviewSkillsToolCallback);
             agentTools.add(new AgentObservedToolCallback(
                 interviewSkillsToolCallback, agentMetrics, agentAuditService,
+                new PromptSanitizer(properties), skillContract, agentRunStateService,
+                agentSteeringService
+            ));
+        }
+        if (includeSkills && agentUserSkillToolCallbackFactory != null) {
+            ToolCallback userSkillCallback = agentUserSkillToolCallbackFactory.callback();
+            AgentToolDescriptor skillContract = agentToolRegistry == null
+                ? null : agentToolRegistry.descriptorForSkill(userSkillCallback);
+            agentTools.add(new AgentObservedToolCallback(
+                userSkillCallback, agentMetrics, agentAuditService,
                 new PromptSanitizer(properties), skillContract, agentRunStateService,
                 agentSteeringService
             ));

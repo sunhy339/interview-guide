@@ -46,7 +46,7 @@ public class AgentIntentRouter {
         - CONTEXT：用户明确要求使用、绑定、查找、上传、查看简历、简历管理、面试报告、文件或会话资料；把已审核上传文件加入简历管理也属于 CONTEXT。
         - ACTION：用户明确要求生成训练计划、练习题、训练任务、保存长期记忆、编辑简历、导出报告或修改面试名称；这类能力只生成待确认草稿，不直接写入业务数据。
         - INTERVIEW_REPORT：需要读取明确指定的面试报告。
-        - SKILL：需要加载或参考 Skill、技能资料或参考资料。
+        - SKILL：需要加载或参考 Skill、技能资料或参考资料；简历优化、简历成稿、简历排版等明确任务也应包含 SKILL，便于按需使用对应的任务方法。
         - RAG：需要使用知识库检索；如果当前会话没有绑定知识库，应说明需要先绑定或选择。
         capabilities 可以是 CONTEXT、INTERVIEW_REPORT、SKILL、RAG、SCHEDULE、ACTION 的任意组合，不能因为选择了某一个能力就删除其他真实需要的能力。
 
@@ -92,6 +92,11 @@ public class AgentIntentRouter {
             + "(?:skill|技能资料|技能参考|参考资料)"
             + "|(?:skill|技能资料|技能参考|参考资料).{0,20}"
             + "(?:根据|基于|结合|参考|使用|加载|调用|查找|检索|应用)",
+        Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern RESUME_SKILL_ACTION = Pattern.compile(
+        "(?:简历|简历内容|项目经历).{0,24}(?:优化|改写|润色|成稿|排版|关键词|ATS|导出)"
+            + "|(?:优化|改写|润色|整理|排版|生成).{0,24}(?:简历|项目经历)",
         Pattern.CASE_INSENSITIVE
     );
     private static final Pattern RAG_ACTION = Pattern.compile(
@@ -417,6 +422,8 @@ public class AgentIntentRouter {
             capabilities.addAll(defaultCapabilities(Route.INTERVIEW_REVIEW));
         }
         boolean skillRequested = !informational && SKILL_ACTION.matcher(message).find();
+        skillRequested = skillRequested
+            || !informational && RESUME_SKILL_ACTION.matcher(message).find();
         if (skillRequested) {
             capabilities.add(Capability.SKILL);
         }

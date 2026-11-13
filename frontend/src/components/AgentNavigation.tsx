@@ -1,4 +1,4 @@
-import { BarChart3, Brain, ClipboardCheck, MessageSquare } from 'lucide-react';
+import { BarChart3, Brain, ClipboardCheck, LibraryBig, MessageSquare } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import { ROUTES } from '../constants/routes';
 
@@ -7,6 +7,7 @@ const items = [
   { path: ROUTES.agentMemory, label: '记忆管理', icon: Brain },
   { path: ROUTES.agentActions, label: '动作与训练', icon: ClipboardCheck },
   { path: ROUTES.agentUsage, label: '用量与活动', icon: BarChart3 },
+  { path: ROUTES.agentSkills, label: 'Skill 管理', icon: LibraryBig },
 ] as const;
 
 export default function AgentNavigation() {

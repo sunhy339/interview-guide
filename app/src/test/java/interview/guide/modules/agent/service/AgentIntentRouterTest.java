@@ -31,15 +31,18 @@ class AgentIntentRouterTest {
     }
 
     @Test
-    @DisplayName("根据简历或报告请求资料时只暴露上下文工具")
-    void routesExplicitContextRequestToContextTools() {
+    @DisplayName("简历优化同时加载上下文和任务方法 Skill")
+    void routesResumeOptimizationToContextAndSkillTools() {
         AgentIntentRouter.Decision decision = router.route(request(
             "general", "请根据这份简历帮我优化 Agent 开发工程师方向的项目经历"
         ));
 
         assertThat(decision.route()).isEqualTo(AgentIntentRouter.Route.CONTEXT);
         assertThat(decision.capabilities())
-            .containsExactly(AgentIntentRouter.Capability.CONTEXT);
+            .containsExactlyInAnyOrder(
+                AgentIntentRouter.Capability.CONTEXT,
+                AgentIntentRouter.Capability.SKILL
+            );
     }
 
     @Test
