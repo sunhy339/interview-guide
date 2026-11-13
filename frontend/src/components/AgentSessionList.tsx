@@ -135,6 +135,20 @@ export default function AgentSessionList({
     };
   }, [agentConversationDisabled, conversationReloadToken, generalMode, selectedSessionId]);
 
+  useEffect(() => {
+    if (conversationLoading || conversationError || conversations.length === 0
+      || !onSelectAgentConversation || agentConversationDisabled) {
+      return;
+    }
+    // 页面重新打开、浏览器存储被清理或旧环境线程失效时，直接恢复当前账号
+    // 最近的服务端会话。这样会话上下文以服务端记录为准，不会出现空白的新对话。
+    if (!selectedAgentSessionId
+      || !conversations.some((item) => item.agentSessionId === selectedAgentSessionId)) {
+      onSelectAgentConversation(conversations[0].agentSessionId);
+    }
+  }, [agentConversationDisabled, conversationError, conversationLoading, conversations,
+    onSelectAgentConversation, selectedAgentSessionId]);
+
   const createAgentConversation = async () => {
     if (!onCreateAgentConversation || creatingConversationRef.current) return;
     creatingConversationRef.current = true;

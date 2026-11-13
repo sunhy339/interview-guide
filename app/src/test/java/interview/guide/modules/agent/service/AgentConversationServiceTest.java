@@ -30,6 +30,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import tools.jackson.databind.ObjectMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
@@ -110,6 +111,57 @@ class AgentConversationServiceTest {
             );
         assertThat(captor.getAllValues().get(0).getContent()).isEqualTo("请复盘一下");
         assertThat(captor.getAllValues().get(1).getCompleted()).isFalse();
+    }
+
+    @Test
+    @DisplayName("显式线程不存在时拒绝写入，不静默创建新线程")
+    void rejectsUnknownExplicitAgentSession() {
+        when(sessionRepository.findByAgentSessionIdForUpdate("missing-thread"))
+            .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.prepareMessage(
+            null, "missing-thread", "general", "primary", "继续刚才的话题", "owner-1"
+        ))
+            .isInstanceOf(interview.guide.common.exception.BusinessException.class)
+            .hasMessageContaining("Agent 会话不存在");
+
+        verify(sessionRepository, never()).save(any(AgentChatSessionEntity.class));
+        verify(messageRepository, never()).save(any(AgentChatMessageEntity.class));
+    }
+
+    @Test
+    @DisplayName("会话摘要生成后只读取摘要边界之后的增量消息")
+    void loadsOnlyMessagesAfterPersistedSummaryBoundary() {
+        AgentChatSessionEntity session = AgentChatSessionEntity.builder()
+            .id(11L)
+            .agentSessionId("agent-1")
+            .ownerKey("owner-1")
+            .contextSummary("较早对话摘要")
+            .contextSummaryUntilSequence(9)
+            .runStatus(AgentRunStatus.COMPLETED)
+            .build();
+        AgentChatMessageEntity old = AgentChatMessageEntity.builder()
+            .session(session).role(AgentChatMessageEntity.MessageRole.USER)
+            .content("摘要已覆盖的旧消息").sequenceNum(4).completed(true).build();
+        AgentChatMessageEntity currentUser = AgentChatMessageEntity.builder()
+            .session(session).role(AgentChatMessageEntity.MessageRole.USER)
+            .content("摘要之后的问题").sequenceNum(10).completed(true).build();
+        AgentChatMessageEntity currentAssistant = AgentChatMessageEntity.builder()
+            .session(session).role(AgentChatMessageEntity.MessageRole.ASSISTANT)
+            .content("摘要之后的回答").sequenceNum(11).completed(true).build();
+
+        when(sessionRepository.findByAgentSessionId("agent-1")).thenReturn(Optional.of(session));
+        when(messageRepository.findBySessionIdAndCompletedTrueOrderBySequenceNumDesc(
+            eq(11L), any(Pageable.class)
+        )).thenReturn(List.of(old));
+        when(messageRepository
+            .findBySessionIdAndCompletedTrueAndSequenceNumGreaterThanOrderBySequenceNumAsc(11L, 9))
+            .thenReturn(List.of(currentUser, currentAssistant));
+
+        List<AgentHistoryMessage> history = service.loadHistory(null, "agent-1", "owner-1");
+
+        assertThat(history).extracting(AgentHistoryMessage::content)
+            .containsExactly("摘要之后的问题", "摘要之后的回答");
     }
 
     @Test

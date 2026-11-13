@@ -495,15 +495,14 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
   const routeSessionId = searchParams.get('sessionId');
   const routeAgentSessionId = searchParams.get('agentSessionId');
   const explicitInterviewMode = isExplicitInterviewAgentMode(searchParams.get('mode'));
-  const storedGeneralAgentSessionId = useMemo(() => getStoredAgentThreadId('general'), []);
-  const storedInterviewReportId = useMemo(() => getStoredAgentSessionId(), []);
-  const storedInterviewAgentSessionId = useMemo(
-    () => getStoredInterviewAgentThreadId(routeSessionId)
-      || (routeSessionId && routeSessionId === storedInterviewReportId
-        ? getStoredAgentThreadId('interview')
-        : null),
-    [routeSessionId, storedInterviewReportId],
-  );
+  // 这些值会在失效线程被清理、创建新线程或切换报告时变化，不能只在首次
+  // 渲染时 useMemo 一次，否则页面仍会拿旧 ID 发起下一轮请求。
+  const storedGeneralAgentSessionId = getStoredAgentThreadId('general');
+  const storedInterviewReportId = getStoredAgentSessionId();
+  const storedInterviewAgentSessionId = getStoredInterviewAgentThreadId(routeSessionId)
+    || (routeSessionId && routeSessionId === storedInterviewReportId
+      ? getStoredAgentThreadId('interview')
+      : null);
   // /agent 默认是通用 Agent；只有链接显式带 sessionId 时才读取面试报告。
   // 只有明确选择“面试复盘”时才读取报告；/agent 默认永远是通用对话。
   const sessionId = explicitInterviewMode ? routeSessionId : null;
@@ -963,6 +962,16 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         if (cancelled) return;
 
         const resolvedAgentSessionId = conversation.agentSessionId || null;
+        if (!resolvedAgentSessionId) {
+          // 报告仍然有效，但本地保存的 Agent 线程已经不存在时，清掉线程指针。
+          // 下次发送会创建一个新的、可追踪的会话，不会让后端静默生成孤立线程。
+          rememberAgentThreadId(null, 'interview');
+          rememberInterviewAgentThreadId(sessionId, null);
+          if (agentSessionId || routeAgentSessionId) {
+            setSearchParams({ mode: 'interview', sessionId }, { replace: true });
+          }
+          return;
+        }
         if (resolvedAgentSessionId
           && (!routeAgentSessionId || resolvedAgentSessionId !== routeAgentSessionId)) {
           rememberAgentThreadId(resolvedAgentSessionId, 'interview');
@@ -1017,8 +1026,26 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     if (!isGeneralWorkspace || !agentSessionId) return;
     let cancelled = false;
     void agentApi.getGeneralConversation(agentSessionId)
-      .then((conversation) => {
-        if (cancelled || !conversation.agentSessionId) return;
+      .then(async (conversation) => {
+        if (cancelled) return;
+        if (!conversation.agentSessionId) {
+          const existing = await agentApi.listGeneralConversations();
+          const target = existing[0];
+          if (target) {
+            rememberAgentThreadId(target.agentSessionId, 'general');
+            if (!cancelled) {
+              setSearchParams({ agentSessionId: target.agentSessionId }, { replace: true });
+            }
+            return;
+          }
+          // sessionStorage 里可能残留已经归档、被清理或来自另一套环境的线程。
+          // 清掉失效指针，交给会话列表选择已有线程；没有线程时发送消息会创建一次新线程。
+          rememberAgentThreadId(null, 'general');
+          if (routeAgentSessionId || agentSessionId) {
+            setSearchParams({}, { replace: true });
+          }
+          return;
+        }
         rememberRetryableRequest(conversation);
         restoreRunProgress(conversation);
         if (isGeneralWorkspace) {
@@ -1049,7 +1076,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       cancelled = true;
       clearReconciliationTimer();
     };
-  }, [agentSessionId, clearReconciliationTimer, isGeneralWorkspace, reconcileConversation, rememberRetryableRequest, restoreConversationMessages, restoreRunProgress]);
+  }, [agentSessionId, clearReconciliationTimer, isGeneralWorkspace, reconcileConversation, rememberRetryableRequest, restoreConversationMessages, restoreRunProgress, routeAgentSessionId, setSearchParams]);
 
   useEffect(() => {
     if (!isWorkspaceView || !agentSessionId || runStatus !== 'running') return;

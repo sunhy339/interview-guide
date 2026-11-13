@@ -248,8 +248,11 @@ public class InterviewAgentService {
                     : agentConversationService.loadHistory(
                         sessionId, runRequest.agentSessionId(), dataOwnerKey
                     );
+                // 会话历史以服务端 agent_chat_messages 和会话摘要为唯一来源。
+                // 请求体中的 history 只保留兼容字段，不能在新会话为空时把其他会话的
+                // 前端状态带进来，否则切换会话或恢复页面时会发生上下文串线。
                 List<AgentHistoryMessage> historyMessages = AgentHistoryPolicy.normalize(
-                    persistedHistory.isEmpty() ? runRequest.history() : persistedHistory
+                    persistedHistory
                 );
                 boolean waitingForInput = agentConversationService.isWaitingForInput(
                     sessionId, runRequest.agentSessionId(), dataOwnerKey
