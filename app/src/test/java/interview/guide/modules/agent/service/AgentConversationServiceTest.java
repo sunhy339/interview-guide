@@ -116,6 +116,8 @@ class AgentConversationServiceTest {
     @Test
     @DisplayName("显式线程不存在时拒绝写入，不静默创建新线程")
     void rejectsUnknownExplicitAgentSession() {
+        when(sessionRepository.findByAgentSessionId("missing-thread"))
+            .thenReturn(Optional.empty());
         when(sessionRepository.findByAgentSessionIdForUpdate("missing-thread"))
             .thenReturn(Optional.empty());
 
