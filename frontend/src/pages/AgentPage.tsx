@@ -1263,6 +1263,9 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         : agentApi.getConversation(sessionId!, targetAgentSessionId);
       void conversationRequest.then((conversation) => {
         restoreRunProgress(conversation);
+        // SSE 可能只收到 done 事件，正文已经由服务端持久化但没有通过
+        // delta 传回浏览器。完成后重新合并持久化消息，避免页面只显示用户输入。
+        restoreConversationMessages(conversation, undefined, getTransientRunMessages());
         const actionsRequest = loadAgentActions();
         if (!actionIntent) autoProposeGoalAction(conversation, runGoal);
         autoProposeActionIntent(conversation, actionIntent);
@@ -3026,7 +3029,7 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
                     ) : (
                       <p className="whitespace-pre-wrap">{message.content}</p>
                     )}
-                    {message.role === 'assistant' && message.content.trim().length >= 80 ? (
+                    {message.role === 'assistant' && message.id !== 1 && message.content.trim() ? (
                       <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-slate-200/80 pt-2 dark:border-slate-600/80">
                         <span className="mr-1 text-[11px] text-slate-400 dark:text-slate-500">输出文件</span>
                         <button
