@@ -16,7 +16,29 @@ export type AgentActionIntent =
   | { type: 'reportExport' }
   | { type: 'resumeEdit' };
 
+export type DocumentExportFormat = 'docx' | 'pdf';
+
 export type QuickInterviewIntent = Extract<AgentActionIntent, { type: 'mockInterview' }>;
+
+/**
+ * 识别“把当前对话资料整理成文件”的请求。
+ * 面试报告导出仍走已有的确认动作，避免把报告动作和 Agent 正文导出混在一起。
+ */
+export function detectDocumentExportIntent(message: string): DocumentExportFormat | null {
+  const normalized = message.replace(/\s+/g, ' ').trim();
+  if (!normalized || /(面试报告|报告).{0,16}(导出|下载|生成)|(?:导出|下载|生成).{0,16}(面试报告|报告)/i.test(normalized)) {
+    return null;
+  }
+  if (/(如何|怎么|什么是|能不能|可以吗|是否)/.test(normalized)
+    && !/(请|帮我|替我|直接|现在就)/.test(normalized)) {
+    return null;
+  }
+  const hasDocument = /(word|docx|pdf|文档|文件)/i.test(normalized);
+  const hasExportVerb = /(输出|生成|导出|下载|制作|整理|转换)/.test(normalized);
+  if (!hasDocument || !hasExportVerb) return null;
+  if (/(pdf)/i.test(normalized)) return 'pdf';
+  return 'docx';
+}
 
 function pad(value: number) {
   return String(value).padStart(2, '0');

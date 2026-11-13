@@ -49,10 +49,12 @@ import { normalizeAgentMarkdown } from './agentMarkdown';
 import { isNearChatBottom } from './agentChatScroll';
 import {
   detectAgentActionIntent,
+  detectDocumentExportIntent,
   detectQuickInterviewIntent,
   extractScheduleDetails,
   isScheduleDetailsMessage,
   type AgentActionIntent,
+  type DocumentExportFormat,
   type QuickInterviewIntent,
 } from './agentIntent';
 import { isExternalMarkdownHref, sanitizeMarkdownHref } from './markdownSecurity';
@@ -381,6 +383,12 @@ function buildAgentHistory(messages: AgentMessage[]): AgentHistoryMessage[] {
     .filter((message) => message.content.trim().length > 0)
     .slice(-MAX_HISTORY_MESSAGES)
     .map(({ role, content }) => ({ role, content }));
+}
+
+function isExportableDocumentContent(content: string) {
+  const normalized = content.replace(/\s+/g, ' ').trim();
+  if (normalized.length < 120) return false;
+  return !/(无法直接生成|不能直接生成|当前不能|暂时不能|请先.*(?:上传|绑定|添加).*(?:简历|资料)|只能输出.*(?:文字|文本)|没有可用.*(?:简历|资料))/i.test(normalized);
 }
 
 function quickInterviewSummary(handoff: QuickInterviewHandoff) {
@@ -1143,7 +1151,13 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
 
   const streamAgentMessage = async (
     content: string,
-    options?: { goal?: AgentGoal; providerId?: string; retrying?: boolean; actionIntent?: AgentActionIntent | null },
+    options?: {
+      goal?: AgentGoal;
+      providerId?: string;
+      retrying?: boolean;
+      actionIntent?: AgentActionIntent | null;
+      documentExportFormat?: DocumentExportFormat | null;
+    },
   ): Promise<void> => {
     if ((!isGeneralWorkspace && (!sessionId || !interview)) || !content || runStatus === 'running') {
       if (!isGeneralWorkspace && (!sessionId || !interview)) setRunError('请先加载一份面试报告，或直接使用通用 Agent');
@@ -1269,6 +1283,22 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
         const actionsRequest = loadAgentActions();
         if (!actionIntent) autoProposeGoalAction(conversation, runGoal);
         autoProposeActionIntent(conversation, actionIntent);
+        if (options?.documentExportFormat) {
+          const assistantMessage = [...conversation.messages]
+            .reverse()
+            .find((message) => message.role === 'assistant' && message.content.trim());
+          if (assistantMessage && isExportableDocumentContent(assistantMessage.content)) {
+            exportAssistantDocument(
+              { id: assistantMessageId, role: 'assistant', content: assistantMessage.content },
+              options.documentExportFormat,
+            );
+          } else {
+            setDocumentExportNotice((current) => ({
+              ...current,
+              [assistantMessageId]: '资料不足，未生成空白文件；请先添加或绑定简历',
+            }));
+          }
+        }
         if (actionIntent?.type === 'schedule') {
           const assistantMessage = [...conversation.messages]
             .reverse()
@@ -1899,9 +1929,11 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
     if (message.role !== 'assistant' || !message.content.trim() || documentExporting !== null) return;
     setDocumentExporting(message.id);
     setDocumentExportNotice((current) => ({ ...current, [message.id]: '正在生成文件...' }));
-    const title = isGeneralWorkspace
-      ? 'Agent 输出'
-      : `${interview?.title || '面试复盘'} Agent 输出`;
+    const title = /简历|求职目标|工作经历|项目经历/.test(message.content)
+      ? '简历优化版'
+      : isGeneralWorkspace
+        ? 'Agent 输出'
+        : `${interview?.title || '面试复盘'} Agent 输出`;
     void agentApi.exportDocument(format, title, message.content)
       .then((blob) => {
         const safeTitle = title.replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '') || 'agent-output';
@@ -2172,7 +2204,8 @@ export default function AgentPage({ view = 'workspace' }: AgentPageProps) {
       return;
     }
     const actionIntent = detectAgentActionIntent(content);
-    streamAgentMessage(content, { actionIntent });
+    const documentExportFormat = detectDocumentExportIntent(content);
+    streamAgentMessage(content, { actionIntent, documentExportFormat });
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {

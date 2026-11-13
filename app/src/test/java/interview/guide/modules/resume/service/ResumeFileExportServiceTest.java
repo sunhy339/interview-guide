@@ -70,6 +70,26 @@ class ResumeFileExportServiceTest {
         assertThat(result.bytes()).startsWith(new byte[]{0x25, 0x50, 0x44, 0x46});
     }
 
+    @Test
+    void shouldExportAgentRawResumeTextAsDocx() throws IOException {
+        ResumeFileExportService.ExportResult result = service.exportAgentDocx(
+            "简历优化版",
+            "## 基本信息\n\n孙扬\n\n## 项目经历\n\n- 负责 Agent 会话开发"
+        );
+
+        assertThat(result.filename()).isEqualTo("简历优化版.docx");
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(result.bytes()))) {
+            String document = null;
+            java.util.zip.ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                if (entry.getName().equals("word/document.xml")) {
+                    document = new String(zip.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                }
+            }
+            assertThat(document).contains("基本信息", "孙扬", "项目经历", "负责 Agent 会话开发");
+        }
+    }
+
     private ResumeEntity resume() {
         ResumeEntity resume = new ResumeEntity();
         resume.setId(1L);

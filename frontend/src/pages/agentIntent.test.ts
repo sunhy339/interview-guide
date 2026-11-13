@@ -3,10 +3,18 @@ import test from 'node:test';
 
 import {
   detectAgentActionIntent,
+  detectDocumentExportIntent,
   detectQuickInterviewIntent,
   extractScheduleDetails,
   suggestScheduleTime,
 } from './agentIntent.ts';
+
+test('识别当前资料的 Word/PDF 输出请求，但不覆盖面试报告导出动作', () => {
+  assert.equal(detectDocumentExportIntent('输出word文档'), 'docx');
+  assert.equal(detectDocumentExportIntent('帮我把刚刚优化的简历导出 PDF'), 'pdf');
+  assert.equal(detectDocumentExportIntent('请导出这场面试报告 PDF'), null);
+  assert.equal(detectDocumentExportIntent('如何生成 Word 文档'), null);
+});
 
 const now = new Date(2026, 9, 27, 10, 15);
 
