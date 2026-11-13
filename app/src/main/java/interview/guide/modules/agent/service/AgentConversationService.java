@@ -593,7 +593,11 @@ public class AgentConversationService {
         assertInterviewAccess(interviewSessionId, normalizedOwnerKey);
         Optional<AgentChatSessionEntity> session = findRawSession(interviewSessionId, agentSessionId);
         if (agentSessionId != null && !agentSessionId.isBlank() && session.isEmpty()) {
-            throw accessDenied();
+            // 显式线程 ID 已经失效时返回可恢复的 404。否则前端无法清理旧指针，
+            // 下一轮会继续带着同一个失效 ID 重试，表现为会话一直加载或消息丢失。
+            throw new BusinessException(
+                ErrorCode.NOT_FOUND, "Agent 会话不存在，请重新打开或新建会话"
+            );
         }
         if (interviewSessionId == null && session.isPresent()
             && session.get().getInterviewSessionId() != null) {
